@@ -4,13 +4,54 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy import text
 from app.db import models
 from app.db.database import engine
-from app.routes import user_routes, attendance_routes, leave_routes, task_routes, auth_routes, dashboard_routes
+from app.routes import (
+    user_routes,
+    attendance_routes,
+    leave_routes,
+    task_routes,
+    auth_routes,
+    dashboard_routes,
+    hiring_routes,
+    shift_routes,
+    department_routes,
+)
 import os
 
 
-models.Base.metadata.create_all(bind=engine)
+# Create all database tables
+try:
+    models.Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created/verified successfully")
+except Exception as e:
+    print(f"⚠️ Warning: Could not create database tables: {e}")
+
+# Lightweight schema safeguard for new columns (MySQL)
+try:
+    with engine.begin() as conn:
+        # Check if 'leave_type' exists on 'leaves' table; if not, add it
+        result = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'leaves'
+                  AND COLUMN_NAME = 'leave_type'
+                """
+            )
+        )
+        row = result.first()
+        has_leave_type = bool(row[0] if row else 0)
+        if not has_leave_type:
+            conn.execute(
+                text("ALTER TABLE leaves ADD COLUMN leave_type VARCHAR(50) NOT NULL DEFAULT 'annual'")
+            )
+except Exception as _e:
+    # Fail-soft: app will still boot; detailed error returned via middleware if used
+    pass
 
 # Custom middleware to add CORS headers to all responses
 class CORSMiddlewareWithErrorHandling(BaseHTTPMiddleware):
@@ -101,6 +142,9 @@ app.include_router(leave_routes.router)
 app.include_router(task_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(dashboard_routes.router)
+app.include_router(hiring_routes.router)
+app.include_router(shift_routes.router)
+app.include_router(department_routes.router)
 
 @app.get("/")
 async def home():

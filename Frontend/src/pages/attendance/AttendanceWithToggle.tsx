@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,13 +12,25 @@ import { toast } from '@/hooks/use-toast';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
-import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter } from 'lucide-react';
+import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X } from 'lucide-react';
 import { AttendanceRecord, UserRole } from '@/types';
 import { format } from 'date-fns';
+
+type GeoLocation = {
+  latitude: number;
+  longitude: number;
+  accuracy?: number | null;
+  address?: string;
+};
 
 const AttendanceWithToggle: React.FC = () => {
   const { user } = useAuth();
   const { t } = useLanguage();
+  interface EmployeeAttendanceRecord extends AttendanceRecord {
+    name?: string;
+    email?: string;
+    department?: string;
+  }
   const [viewMode, setViewMode] = useState<'self' | 'employee'>('self');
   const [showCamera, setShowCamera] = useState(false);
   const [isCheckingIn, setIsCheckingIn] = useState(true);
@@ -27,11 +39,15 @@ const AttendanceWithToggle: React.FC = () => {
   const [workPdf, setWorkPdf] = useState<File | null>(null);
   const [currentAttendance, setCurrentAttendance] = useState<AttendanceRecord | null>(null);
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
-  const [employeeAttendanceData, setEmployeeAttendanceData] = useState<AttendanceRecord[]>([]);
-  const [location, setLocation] = useState<{ latitude: number; longitude: number; address?: string } | null>(null);
+  const [employeeAttendanceData, setEmployeeAttendanceData] = useState<EmployeeAttendanceRecord[]>([]);
+  const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [filterRole, setFilterRole] = useState<'all' | UserRole>('all');
+  const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendanceRecord | null>(null);
+  const [showSelfieModal, setShowSelfieModal] = useState(false);
+  const initialLocationRequestedRef = useRef(false);
+  const lastGeocodeKeyRef = useRef<string | null>(null);
 
   // Determine if user can view employee attendance
   const canViewEmployeeAttendance = user?.role && ['admin', 'hr', 'manager'].includes(user.role);
@@ -46,74 +62,95 @@ const AttendanceWithToggle: React.FC = () => {
 
   useEffect(() => {
     loadFromBackend();
-    getCurrentLocation();
+    if (!initialLocationRequestedRef.current) {
+      initialLocationRequestedRef.current = true;
+      void getCurrentLocation();
+    }
+  }, []);
+
+  useEffect(() => {
     if (viewMode === 'employee' && canViewEmployeeAttendance) {
       loadEmployeeAttendance();
     }
-  }, [viewMode]);
+  }, [viewMode, selectedDate]);
 
-  const getCurrentLocation = () => {
-    if (navigator.geolocation) {
-      const MIN_ACCURACY = 10;
-      const TIMEOUT_MS = 15000;
-      let watchId: number | null = null;
-      const clear = () => { if (watchId !== null) navigator.geolocation.clearWatch(watchId); };
-      watchId = navigator.geolocation.watchPosition(async (position) => {
-        const loc = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          address: ''
-        };
-        try {
-          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${loc.latitude}&lon=${loc.longitude}&format=json&addressdetails=1&zoom=18`);
-          const data = await response.json();
-          if (data.address) {
-            const addressParts: string[] = [];
-            if (data.address.house_number) addressParts.push(data.address.house_number);
-            if (data.address.road) addressParts.push(data.address.road);
-            if (data.address.suburb) addressParts.push(data.address.suburb);
-            if (data.address.village) addressParts.push(data.address.village);
-            if (data.address.town) addressParts.push(data.address.town);
-            if (data.address.city) addressParts.push(data.address.city);
-            if (data.address.state_district) addressParts.push(data.address.state_district);
-            if (data.address.state) addressParts.push(data.address.state);
-            if (data.address.postcode) addressParts.push(data.address.postcode);
-            loc.address = addressParts.join(', ') || data.display_name;
-          } else {
-            loc.address = data.display_name || `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`;
-          }
-        } catch {
-          loc.address = `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`;
-        }
-        setLocation(loc);
-        if (loc.accuracy <= MIN_ACCURACY) {
-          clear();
-        }
-      }, (error) => {
-        clear();
-        let errorMessage = t.attendance.locationRequired;
-        switch(error.code) {
-          case error.PERMISSION_DENIED:
-            errorMessage = "Location permission denied. Please enable location access in your browser settings.";
-            break;
-          case error.POSITION_UNAVAILABLE:
-            errorMessage = "Location information is unavailable. Please check your GPS settings.";
-            break;
-          case error.TIMEOUT:
-            errorMessage = "Location request timed out. Please try again.";
-            break;
-        }
-        toast({ title: 'Location Error', description: errorMessage, variant: 'destructive' });
-      }, { enableHighAccuracy: true, maximumAge: 0, timeout: TIMEOUT_MS });
-      setTimeout(() => clear(), TIMEOUT_MS);
-    } else {
+  const getCurrentLocation = async (): Promise<void> => {
+    if (!navigator.geolocation) {
       toast({
         title: 'Location Not Supported',
         description: 'Your browser does not support geolocation. Please use a modern browser.',
         variant: 'destructive',
       });
+      return;
     }
+
+    const enhanceAddress = async (coords: GeoLocation) => {
+      const coordKey = `${coords.latitude.toFixed(6)},${coords.longitude.toFixed(6)}`;
+      if (lastGeocodeKeyRef.current === coordKey) {
+        return;
+      }
+      lastGeocodeKeyRef.current = coordKey;
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/attendance/reverse-geocode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: coords.latitude, lon: coords.longitude }),
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        setLocation((prev) => {
+          if (!prev) return prev;
+          if (Math.abs(prev.latitude - coords.latitude) > 0.000001 || Math.abs(prev.longitude - coords.longitude) > 0.000001) {
+            return prev;
+          }
+          return {
+            ...prev,
+            address: data.address || `${coords.latitude.toFixed(6)}, ${coords.longitude.toFixed(6)}`,
+          };
+        });
+      } catch {
+        // ignore fetch errors; fallback address already set
+      }
+    };
+
+    const acquire = (options: PositionOptions): Promise<void> => {
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const coords: GeoLocation = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy ?? null,
+              address: `${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`,
+            };
+            setLocation(coords);
+            void enhanceAddress(coords);
+            resolve();
+          },
+          (error) => {
+            let errorMessage = t.attendance.locationRequired;
+            switch (error.code) {
+              case error.PERMISSION_DENIED:
+                errorMessage = 'Location permission denied. Please enable location access in your browser settings.';
+                break;
+              case error.POSITION_UNAVAILABLE:
+                errorMessage = 'Location information is unavailable. Please check your GPS settings.';
+                break;
+              case error.TIMEOUT:
+                errorMessage = 'Location request timed out. Please try again.';
+                break;
+            }
+            toast({ title: 'Location Error', description: errorMessage, variant: 'destructive' });
+            resolve();
+          },
+          options
+        );
+      });
+    };
+
+    await acquire({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
   };
 
   const loadFromBackend = async () => {
@@ -127,28 +164,57 @@ const AttendanceWithToggle: React.FC = () => {
           id: String(rec.attendance_id),
           userId: String(rec.user_id),
           date: format(new Date(rec.check_in), 'yyyy-MM-dd'),
-          checkInTime: rec.check_in, // Use ISO datetime string
-          checkOutTime: rec.check_out || undefined, // Use ISO datetime string
-          checkInLocation: { latitude: 0, longitude: 0, address: rec.gps_location || 'N/A' },
-          checkInSelfie: rec.selfie || '',
+          checkInTime: rec.check_in,
+          checkOutTime: rec.check_out || undefined,
+          checkInLocation: {
+            latitude: 0,
+            longitude: 0,
+            address: rec.checkInLocationLabel || rec.locationLabel || 'N/A',
+          },
+          checkOutLocation: {
+            latitude: 0,
+            longitude: 0,
+            address: rec.checkOutLocationLabel || rec.locationLabel || 'N/A',
+          },
+          checkInSelfie: rec.checkInSelfie || '',
+          checkOutSelfie: rec.checkOutSelfie || '',
           status: 'present',
           workHours: rec.total_hours,
         }))
       );
       const today = format(new Date(), 'yyyy-MM-dd');
-      const todayRecord = data.find((rec: any) => format(new Date(rec.check_in), 'yyyy-MM-dd') === today);
+      const todayRecord = data.find((rec: any) => {
+        const recordDate = format(new Date(rec.check_in), 'yyyy-MM-dd');
+        return recordDate === today;
+      });
+
       if (todayRecord) {
-        setCurrentAttendance({
-          id: String(todayRecord.attendance_id),
-          userId: String(todayRecord.user_id),
-          date: format(new Date(todayRecord.check_in), 'yyyy-MM-dd'),
+        const checkInDate = new Date(todayRecord.check_in);
+        const attendance: AttendanceRecord = {
+          id: todayRecord.attendance_id.toString(),
+          userId: todayRecord.user_id.toString(),
+          date: format(checkInDate, 'yyyy-MM-dd'),
           checkInTime: todayRecord.check_in, // Use ISO datetime string
           checkOutTime: todayRecord.check_out || undefined, // Use ISO datetime string
-          checkInLocation: { latitude: 0, longitude: 0, address: todayRecord.gps_location || 'N/A' },
-          checkInSelfie: todayRecord.selfie || '',
+          checkInLocation: {
+            latitude: 0,
+            longitude: 0,
+            address: todayRecord.checkInLocationLabel || todayRecord.locationLabel || todayRecord.gps_location || 'N/A',
+          },
+          checkOutLocation: {
+            latitude: 0,
+            longitude: 0,
+            address: todayRecord.checkOutLocationLabel || todayRecord.locationLabel || todayRecord.gps_location || 'N/A',
+          },
+          checkInSelfie: todayRecord.checkInSelfie || todayRecord.selfie || '',
+          checkOutSelfie: todayRecord.checkOutSelfie || '',
           status: 'present',
-          workHours: todayRecord.total_hours,
-        });
+          workHours: todayRecord.total_hours
+        };
+        setCurrentAttendance(attendance);
+
+        // Store all history
+        setAttendanceHistory((prev) => prev);
       } else {
         setCurrentAttendance(null);
       }
@@ -159,30 +225,63 @@ const AttendanceWithToggle: React.FC = () => {
 
   const loadEmployeeAttendance = async () => {
     try {
+      setIsLoading(true);
       const token = localStorage.getItem('token');
       const res = await fetch('http://127.0.0.1:8000/attendance/all', {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
-      if (!res.ok) return;
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`Failed to load employee attendance: ${res.status}`, errorText);
+        toast({
+          title: 'Error',
+          description: `Failed to load attendance: ${res.status === 403 ? 'Access denied' : res.status === 400 ? 'Department not assigned' : 'Server error'}`,
+          variant: 'destructive',
+        });
+        setEmployeeAttendanceData([]);
+        return;
+      }
+      
       const data = await res.json();
-      const records: AttendanceRecord[] = data
-        .filter((rec: any) => new Date(rec.check_in))
+      const records: EmployeeAttendanceRecord[] = data
+        .filter((rec: any) => rec.check_in && new Date(rec.check_in))
         .map((rec: any) => ({
-          id: String(rec.attendance_id),
-          userId: String(rec.employee_id || rec.user_id),
+          id: String(rec.attendance_id || rec.id || ''),
+          userId: String(rec.user_id || rec.employee_id || ''),
           date: rec.check_in ? (rec.check_in.includes('T') ? rec.check_in.slice(0,10) : format(new Date(rec.check_in), 'yyyy-MM-dd')) : selectedDate,
           checkInTime: rec.check_in || undefined, // Use ISO datetime string if available
           checkOutTime: rec.check_out || undefined, // Use ISO datetime string if available
-          checkInLocation: { latitude: 0, longitude: 0, address: rec.gps_location || 'N/A' },
-          checkInSelfie: rec.selfie || '',
+          checkInLocation: {
+            latitude: 0,
+            longitude: 0,
+            address: rec.checkInLocationLabel || rec.locationLabel || rec.gps_location || 'N/A',
+          },
+          checkOutLocation: {
+            latitude: 0,
+            longitude: 0,
+            address: rec.checkOutLocationLabel || rec.locationLabel || 'N/A',
+          },
+          checkInSelfie: rec.checkInSelfie || rec.selfie || '',
+          checkOutSelfie: rec.checkOutSelfie || '',
           status: 'present',
-          workHours: rec.total_hours,
+          workHours: rec.total_hours || 0,
+          name: rec.name || rec.userName || undefined,
+          email: rec.email || rec.userEmail || undefined,
+          department: rec.department || undefined,
         }))
-        .filter((r: AttendanceRecord) => r.date === selectedDate)
-        .filter((r: AttendanceRecord) => filterRole === 'all' ? true : true);
+        .filter((r: AttendanceRecord) => r.date === selectedDate);
       setEmployeeAttendanceData(records);
-    } catch (e) {
-      // ignore
+    } catch (e: any) {
+      console.error('Error loading employee attendance:', e);
+      toast({
+        title: 'Error',
+        description: e.message || 'Failed to load employee attendance',
+        variant: 'destructive',
+      });
+      setEmployeeAttendanceData([]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -224,16 +323,27 @@ const AttendanceWithToggle: React.FC = () => {
         await getCurrentLocation();
       }
       if (!location || !user?.id) throw new Error('Location or user missing');
-      const gpsLocation = `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}${location.address ? ' - ' + location.address : ''}`;
+      const locationPayload = {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        accuracy: location.accuracy ?? null,
+        address: location.address ?? '',
+        timestamp: new Date().toISOString(),
+      };
       if (location.accuracy && location.accuracy > 10) {
         toast({ title: 'Low GPS Accuracy', description: `Proceeding with ±${Math.round(location.accuracy)}m.`, variant: 'default' });
       }
       const payload = {
         user_id: user.id,
-        gps_location: gpsLocation,
+        gps_location: locationPayload,
+        location_data: {
+          [isCheckingIn ? 'check_in' : 'check_out']: locationPayload,
+        },
         selfie: imageData,
       };
-      const endpoint = isCheckingIn ? 'http://127.0.0.1:8000/attendance/check-in-json' : 'http://127.0.0.1:8000/attendance/check-out-json';
+      const endpoint = isCheckingIn
+        ? 'http://127.0.0.1:8000/attendance/check-in/json'
+        : 'http://127.0.0.1:8000/attendance/check-out/json';
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -522,36 +632,66 @@ const AttendanceWithToggle: React.FC = () => {
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead>Employee (Name & Email)</TableHead>
                         <TableHead>Employee ID</TableHead>
-                        <TableHead>Date</TableHead>
-                        <TableHead>Check-in</TableHead>
-                        <TableHead>Check-out</TableHead>
-                        <TableHead>Work Hours</TableHead>
-                        <TableHead>Status</TableHead>
+                        <TableHead>Department</TableHead>
+                        <TableHead>Check In</TableHead>
+                        <TableHead>Check Out</TableHead>
+                        <TableHead>Hours</TableHead>
                         <TableHead>Location</TableHead>
+                        <TableHead>Selfie</TableHead>
+                        <TableHead>Status</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {employeeAttendanceData.length > 0 ? (
                         employeeAttendanceData.map((record) => (
                           <TableRow key={record.id}>
+                            <TableCell className="text-sm">
+                              <div className="flex flex-col">
+                                <span className="font-medium truncate max-w-[220px]">{record.name || '-'}</span>
+                                <span className="text-muted-foreground truncate max-w-[220px]">{record.email || '-'}</span>
+                              </div>
+                            </TableCell>
                             <TableCell className="font-medium">{record.userId}</TableCell>
-                            <TableCell>{format(new Date(record.date), 'dd MMM yyyy')}</TableCell>
+                            <TableCell>{record.department || '-'}</TableCell>
                             <TableCell>{formatIST(record.date, record.checkInTime)}</TableCell>
                             <TableCell>{formatIST(record.date, record.checkOutTime)}</TableCell>
                             <TableCell>{record.workHours || '-'} h</TableCell>
-                            <TableCell>
-                              {getStatusBadge(record.status, record.checkInTime, record.checkOutTime)}
-                            </TableCell>
                             <TableCell className="text-sm text-muted-foreground">
                               {record.checkInLocation.address || 'N/A'}
+                            </TableCell>
+                            <TableCell>
+                              {record.checkInSelfie ? (
+                                <div
+                                  className="h-10 w-10 rounded-full overflow-hidden border-2 border-gray-200 dark:border-gray-700 cursor-pointer hover:opacity-80 transition-opacity"
+                                  onClick={() => {
+                                    setSelectedRecord(record);
+                                    setShowSelfieModal(true);
+                                  }}
+                                >
+                                  <img
+                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `http://localhost:8000${record.checkInSelfie}`}
+                                    alt="Selfie"
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                    }}
+                                  />
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground">-</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {getStatusBadge(record.status, record.checkInTime, record.checkOutTime)}
                             </TableCell>
                           </TableRow>
                         ))
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                            No attendance records found
+                          <TableCell colSpan={7} className="text-center text-muted-foreground">
+                            No records found for selected date
                           </TableCell>
                         </TableRow>
                       )}
@@ -608,6 +748,86 @@ const AttendanceWithToggle: React.FC = () => {
             </Button>
             <Button onClick={confirmCheckOut}>
               Proceed to Check-out
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Selfie Modal */}
+      <Dialog open={showSelfieModal} onOpenChange={setShowSelfieModal}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <User className="h-5 w-5" />
+              {selectedRecord?.name || 'Employee'}'s Attendance
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-4">
+            {/* Check-in Selfie */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <div className="h-3 w-3 rounded-full bg-green-500"></div>
+                <h3 className="font-medium">Check-in Selfie</h3>
+              </div>
+              <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
+                {selectedRecord?.checkInSelfie ? (
+                  <img 
+                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `http://localhost:8000${selectedRecord.checkInSelfie}`}
+                    alt="Check-in selfie" 
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
+                    <User className="h-12 w-12 mb-2" />
+                    <p>No selfie available</p>
+                  </div>
+                )}
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
+                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatIST(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
+                  <p className="text-sm opacity-80">{selectedRecord?.checkInLocation?.address || 'Location not available'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Check-out Selfie */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <div className="h-3 w-3 rounded-full bg-red-500"></div>
+                <h3 className="font-medium">Check-out Selfie</h3>
+              </div>
+              <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
+                {selectedRecord?.checkOutSelfie ? (
+                  <img 
+                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `http://localhost:8000${selectedRecord.checkOutSelfie}`}
+                    alt="Check-out selfie" 
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
+                    <User className="h-12 w-12 mb-2" />
+                    <p>No check-out selfie</p>
+                    <p className="text-sm">Not checked out yet</p>
+                  </div>
+                )}
+                {selectedRecord?.checkOutTime && (
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
+                    <p className="font-medium">Check-out: {formatIST(selectedRecord.date, selectedRecord.checkOutTime)}</p>
+                    <p className="text-sm opacity-80">{selectedRecord?.checkOutLocation?.address || 'Location not available'}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowSelfieModal(false)}
+              className="gap-2"
+            >
+              <X className="h-4 w-4" />
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

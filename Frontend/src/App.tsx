@@ -24,7 +24,10 @@ import EmployeeManagement from "@/pages/employees/EmployeeManagement";
 import DepartmentManagement from "@/pages/departments/DepartmentManagement";
 import Reports from "@/pages/reports/Reports";
 import LeaveManagement from "@/pages/leaves/LeaveManagement";
+import HiringManagement from "@/pages/hiring/HiringManagement";
 import TeamManagement from "@/pages/teams/TeamManagement";
+import ShiftScheduleManagement from "@/pages/shifts/ShiftScheduleManagement";
+import TeamShifts from "@/pages/shifts/TeamShifts";
 import AccessControl from "@/pages/access/AccessControl";
 import Inbox from "@/pages/inbox/Inbox";
 import Profile from "@/pages/profile/Profile";
@@ -111,6 +114,11 @@ const App = () => (
                   <LeaveManagement />
                 </ProtectedRoute>
               } />
+              <Route path="/admin/hiring" element={
+                <ProtectedRoute allowedRoles={['admin']}>
+                  <HiringManagement />
+                </ProtectedRoute>
+              } />
               <Route path="/admin/profile" element={
                 <ProtectedRoute allowedRoles={['admin']}>
                   <Profile />
@@ -169,6 +177,11 @@ const App = () => (
                     <Reports />
                   </ProtectedRoute>
                 } />
+                <Route path="/hr/hiring" element={
+                  <ProtectedRoute allowedRoles={['hr']}>
+                    <HiringManagement />
+                  </ProtectedRoute>
+                } />
                 <Route path="/hr/profile" element={
                   <ProtectedRoute allowedRoles={['hr']}>
                     <Profile />
@@ -200,6 +213,11 @@ const App = () => (
               <Route path="/manager/chat" element={
                 <ProtectedRoute allowedRoles={['manager']}>
                   <TeamManagement />
+                </ProtectedRoute>
+              } />
+                <Route path="/manager/shift-schedule" element={
+                  <ProtectedRoute allowedRoles={['manager']}>
+                    <ShiftScheduleManagement />
                 </ProtectedRoute>
               } />
                 <Route path="/manager/attendance" element={
@@ -254,6 +272,11 @@ const App = () => (
                     <LeaveManagement />
                   </ProtectedRoute>
                 } />
+                <Route path="/team_lead/team" element={
+                  <ProtectedRoute allowedRoles={['team_lead']}>
+                    <TeamShifts />
+                  </ProtectedRoute>
+                } />
                 <Route path="/team_lead/teams" element={
                   <ProtectedRoute allowedRoles={['team_lead']}>
                     <TeamManagement />
@@ -294,6 +317,11 @@ const App = () => (
                 <Route path="/employee/tasks" element={
                   <ProtectedRoute allowedRoles={['employee']}>
                     <TaskManagement />
+                  </ProtectedRoute>
+                } />
+                <Route path="/employee/team" element={
+                  <ProtectedRoute allowedRoles={['employee']}>
+                    <TeamShifts />
                   </ProtectedRoute>
                 } />
                 <Route path="/employee/leaves" element={

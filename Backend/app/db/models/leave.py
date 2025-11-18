@@ -10,5 +10,7 @@ class Leave(Base):
     end_date = Column(DateTime, nullable=False)
     reason = Column(String(255))
     status = Column(String(50), default="Pending")
+    leave_type = Column(String(50), default="annual")
 
     user = relationship("User", back_populates="leaves")
+    notifications = relationship("LeaveNotification", back_populates="leave", cascade="all, delete-orphan")

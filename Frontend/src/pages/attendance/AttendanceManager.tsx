@@ -8,7 +8,8 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { AttendanceRecord } from '@/types';
 import { format, subMonths, subDays } from 'date-fns';
@@ -19,11 +20,25 @@ interface EmployeeAttendance extends AttendanceRecord {
   userEmail: string;
   department: string;
   employeeId?: string;
+  checkInStatus?: string;
+  checkOutStatus?: string;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+}
+
+interface OfficeTiming {
+  id: number;
+  department?: string | null;
+  start_time: string;
+  end_time: string;
+  check_in_grace_minutes: number;
+  check_out_grace_minutes: number;
 }
 
 const AttendanceManager: React.FC = () => {
   const { user } = useAuth();
   const { t } = useLanguage();
+  const isAdmin = user?.role === 'admin';
   const [attendanceRecords, setAttendanceRecords] = useState<EmployeeAttendance[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<EmployeeAttendance[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendance | null>(null);
@@ -43,15 +58,49 @@ const AttendanceManager: React.FC = () => {
   const [endDate, setEndDate] = useState<Date | undefined>(new Date());
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'specific'>('all');
   const [employeeSearch, setEmployeeSearch] = useState('');
-  const [employees, setEmployees] = useState<Array<{ user_id: number; employee_id: string; name: string }>>([]);
-  const [filteredEmployees, setFilteredEmployees] = useState<Array<{ user_id: number; employee_id: string; name: string }>>([]);
-  const [selectedEmployee, setSelectedEmployee] = useState<{ user_id: number; employee_id: string; name: string } | null>(null);
+  const [employees, setEmployees] = useState<Array<{ user_id: number; employee_id: string; name: string; department?: string | null }>>([]);
+  const [filteredEmployees, setFilteredEmployees] = useState<Array<{ user_id: number; employee_id: string; name: string; department?: string | null }>>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<'attendance' | 'office-hours'>('attendance');
+  const [officeTimings, setOfficeTimings] = useState<OfficeTiming[]>([]);
+  const [officeFormLoading, setOfficeFormLoading] = useState(false);
+  const [globalTimingForm, setGlobalTimingForm] = useState({
+    startTime: '09:30',
+    endTime: '18:00',
+    checkInGrace: 15,
+    checkOutGrace: 0,
+  });
+  const [departmentTimingForm, setDepartmentTimingForm] = useState({
+    department: '',
+    startTime: '09:30',
+    endTime: '18:00',
+    checkInGrace: 15,
+    checkOutGrace: 0,
+  });
+ 
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('token');
+    return token ? { Authorization: token } : {};
+  };
+
+  const resolveMediaUrl = (url?: string | null) => {
+    if (!url) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    const normalized = url.startsWith('/') ? url : `/${url}`;
+    return `http://127.0.0.1:8000${normalized}`;
+  };
 
   useEffect(() => {
     loadAllAttendance();
     fetchSummary();
     loadEmployees();
   }, []);
+
+  useEffect(() => {
+    if (isAdmin) {
+      loadOfficeTimings();
+    }
+  }, [isAdmin]);
 
   useEffect(() => {
     if (employeeSearch) {
@@ -70,17 +119,199 @@ const AttendanceManager: React.FC = () => {
       const res = await fetch('http://127.0.0.1:8000/employees');
       if (!res.ok) throw new Error(`Failed to load employees: ${res.status}`);
       const data = await res.json();
-      const mapped = data.map((emp: any) => ({
+      const departmentSet = new Set<string>();
+      const mapped = data.map((emp: any) => {
+        const department = emp.department || emp.department_name || '';
+        if (department) {
+          departmentSet.add(department);
+        }
+        return {
         user_id: emp.user_id || emp.userId,
         employee_id: emp.employee_id || emp.employeeId || '',
-        name: emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim()
-      }));
+          name: emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
+          department,
+        };
+      });
       setEmployees(mapped);
+      setDepartments(Array.from(departmentSet).sort((a, b) => a.localeCompare(b)));
     } catch (err) {
       console.error('loadEmployees error', err);
     }
   };
 
+  const loadOfficeTimings = async () => {
+    if (!isAdmin) return;
+    setOfficeFormLoading(true);
+    try {
+      const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+      });
+      if (!res.ok) throw new Error(`Failed to load office timings: ${res.status}`);
+      const data: OfficeTiming[] = await res.json();
+      setOfficeTimings(data);
+
+      const globalTiming = data.find((entry) => !entry.department || entry.department === '');
+      if (globalTiming) {
+        setGlobalTimingForm({
+          startTime: (globalTiming.start_time || '').slice(0, 5) || '09:30',
+          endTime: (globalTiming.end_time || '').slice(0, 5) || '18:00',
+          checkInGrace: globalTiming.check_in_grace_minutes ?? 0,
+          checkOutGrace: globalTiming.check_out_grace_minutes ?? 0,
+        });
+      }
+
+      const timingDepartments = data
+        .map((entry) => entry.department)
+        .filter((dept): dept is string => Boolean(dept && dept.trim()));
+      if (timingDepartments.length) {
+        setDepartments((prev) => {
+          const merged = new Set(prev);
+          timingDepartments.forEach((dept) => merged.add(dept));
+          return Array.from(merged).sort((a, b) => a.localeCompare(b));
+        });
+      }
+    } catch (error) {
+      console.error('loadOfficeTimings error', error);
+      toast({
+        title: 'Office timing fetch failed',
+        description: 'Unable to load configured office timings.',
+        variant: 'destructive',
+      });
+    } finally {
+      setOfficeFormLoading(false);
+    }
+  };
+
+  const handleGlobalTimingSave = async () => {
+    try {
+      setOfficeFormLoading(true);
+      const payload = {
+        department: null,
+        start_time: globalTimingForm.startTime,
+        end_time: globalTimingForm.endTime,
+        check_in_grace_minutes: globalTimingForm.checkInGrace,
+        check_out_grace_minutes: globalTimingForm.checkOutGrace,
+      };
+      const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`Failed to save office timing: ${res.status}`);
+      await loadOfficeTimings();
+      toast({ title: 'Office time saved', description: 'Global office timing updated successfully.' });
+    } catch (error) {
+      console.error('handleGlobalTimingSave error', error);
+      toast({
+        title: 'Save failed',
+        description: 'Unable to save global office time. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setOfficeFormLoading(false);
+    }
+  };
+
+  const handleDepartmentTimingSave = async () => {
+    if (!departmentTimingForm.department.trim()) {
+      toast({
+        title: 'Department required',
+        description: 'Please specify a department before saving.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setOfficeFormLoading(true);
+      const payload = {
+        department: departmentTimingForm.department.trim(),
+        start_time: departmentTimingForm.startTime,
+        end_time: departmentTimingForm.endTime,
+        check_in_grace_minutes: departmentTimingForm.checkInGrace,
+        check_out_grace_minutes: departmentTimingForm.checkOutGrace,
+      };
+      const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`Failed to save department office timing: ${res.status}`);
+      await loadOfficeTimings();
+      toast({
+        title: 'Department timing saved',
+        description: `Office timing updated for ${departmentTimingForm.department}.`,
+      });
+    } catch (error) {
+      console.error('handleDepartmentTimingSave error', error);
+      toast({
+        title: 'Save failed',
+        description: 'Unable to save department office time. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setOfficeFormLoading(false);
+    }
+  };
+
+  const handleDepartmentTimingEdit = (timing: OfficeTiming) => {
+    setDepartmentTimingForm({
+      department: timing.department || '',
+      startTime: (timing.start_time || '').slice(0, 5) || '09:30',
+      endTime: (timing.end_time || '').slice(0, 5) || '18:00',
+      checkInGrace: timing.check_in_grace_minutes ?? 0,
+      checkOutGrace: timing.check_out_grace_minutes ?? 0,
+    });
+  };
+
+  const handleDepartmentTimingDelete = async (timing: OfficeTiming) => {
+    if (!window.confirm(`Remove office timing for ${timing.department || 'all departments'}?`)) {
+      return;
+    }
+
+    try {
+      setOfficeFormLoading(true);
+      const res = await fetch(`http://127.0.0.1:8000/attendance/office-hours/${timing.id}`, {
+        method: 'DELETE',
+        headers: {
+          ...getAuthHeaders(),
+        },
+      });
+      if (!res.ok) throw new Error(`Failed to delete office timing: ${res.status}`);
+      await loadOfficeTimings();
+      if (
+        timing.department &&
+        departmentTimingForm.department.trim().toLowerCase() === timing.department.trim().toLowerCase()
+      ) {
+        setDepartmentTimingForm({
+          department: '',
+          startTime: globalTimingForm.startTime,
+          endTime: globalTimingForm.endTime,
+          checkInGrace: globalTimingForm.checkInGrace,
+          checkOutGrace: globalTimingForm.checkOutGrace,
+        });
+      }
+      toast({ title: 'Office timing removed', description: 'The office timing has been deactivated.' });
+    } catch (error) {
+      console.error('handleDepartmentTimingDelete error', error);
+      toast({
+        title: 'Delete failed',
+        description: 'Unable to remove the office timing. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setOfficeFormLoading(false);
+    }
+  };
 
   const fetchSummary = async () => {
     try {
@@ -118,22 +349,12 @@ const AttendanceManager: React.FC = () => {
           const checkIn = rec.check_in || rec.checkInTime;
           const checkOut = rec.check_out || rec.checkOutTime;
           const checkInDate = checkIn ? new Date(checkIn) : null;
-          const checkOutDate = checkOut ? new Date(checkOut) : null;
-          
-          // Determine status
-          let status = 'present';
-          if (checkInDate) {
-            const istTimeString = checkInDate.toLocaleString('en-IN', { 
-              timeZone: 'Asia/Kolkata',
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false
-            });
-            const [istHour, istMinute] = istTimeString.split(':').map(Number);
-            if (istHour > 9 || (istHour === 9 && istMinute > 30)) {
-              status = 'late';
-            }
-          }
+
+          const status = (rec.status || 'present').toLowerCase();
+          const checkInStatus = rec.checkInStatus || rec.check_in_status || null;
+          const checkOutStatus = rec.checkOutStatus || rec.check_out_status || null;
+          const scheduledStart = rec.scheduledStart || rec.scheduled_start || null;
+          const scheduledEnd = rec.scheduledEnd || rec.scheduled_end || null;
           
           return {
             id: String(rec.attendance_id || rec.id || ''),
@@ -148,11 +369,16 @@ const AttendanceManager: React.FC = () => {
             checkInLocation: { 
               latitude: 0, 
               longitude: 0, 
-              address: rec.gps_location || rec.checkInLocation?.address || 'N/A' 
+              address: rec.checkInLocationLabel || rec.locationLabel || rec.gps_location || rec.checkInLocation?.address || 'N/A' 
             },
-            checkInSelfie: rec.selfie || rec.checkInSelfie || '',
-            status: status as any,
-            workHours: rec.total_hours || rec.workHours || 0
+            checkInSelfie: resolveMediaUrl(rec.checkInSelfie || rec.selfie || rec.selfie_url),
+            checkOutSelfie: resolveMediaUrl(rec.checkOutSelfie || rec.check_out_selfie || rec.checkout_selfie_url),
+            status: (status as any) || 'present',
+            workHours: rec.total_hours || rec.workHours || 0,
+            checkInStatus: checkInStatus || undefined,
+            checkOutStatus: checkOutStatus || undefined,
+            scheduledStart: scheduledStart || undefined,
+            scheduledEnd: scheduledEnd || undefined,
           };
         });
         
@@ -186,9 +412,18 @@ const AttendanceManager: React.FC = () => {
     // Filter by status
     if (filterStatus !== 'all') {
       filtered = filtered.filter(record => {
-        if (filterStatus === 'late') return record.status === 'late' || (record.checkInTime && record.checkInTime > '09:30:00');
-        if (filterStatus === 'early') return record.checkOutTime && record.checkOutTime < '18:00:00';
-        if (filterStatus === 'present') return record.status === 'present';
+        const statusValue = record.status?.toLowerCase() || '';
+        const checkInStatusValue = record.checkInStatus?.toLowerCase() || '';
+        const checkOutStatusValue = record.checkOutStatus?.toLowerCase() || '';
+        if (filterStatus === 'late') {
+          return statusValue === 'late' || checkInStatusValue === 'late';
+        }
+        if (filterStatus === 'early') {
+          return checkOutStatusValue === 'early';
+        }
+        if (filterStatus === 'present') {
+          return statusValue === 'present' && checkOutStatusValue !== 'early';
+        }
         return true;
       });
     }
@@ -202,21 +437,38 @@ const AttendanceManager: React.FC = () => {
   };
 
   const getStatusBadge = (record: EmployeeAttendance) => {
-    const badges = [];
+    const badges: React.ReactNode[] = [];
     
-    // Check if user hasn't checked out yet
     if (!record.checkOutTime) {
-      badges.push(<Badge key="active" variant="default" className="bg-blue-500 text-xs">Active (Not Checked Out)</Badge>);
+      badges.push(
+        <Badge key="active" variant="default" className="bg-blue-500 text-xs">
+          Awaiting Check-out
+        </Badge>,
+      );
     }
     
-    if (record.status === 'late' || (record.checkInTime && record.checkInTime > '09:30:00')) {
-      badges.push(<Badge key="late" variant="destructive" className="text-xs">Late</Badge>);
+    if (record.checkInStatus === 'late' || record.status === 'late') {
+      badges.push(
+        <Badge key="late" variant="destructive" className="text-xs">
+          Late Check-in
+        </Badge>,
+      );
     }
-    if (record.checkOutTime && record.checkOutTime < '18:00:00') {
-      badges.push(<Badge key="early" variant="outline" className="border-orange-500 text-orange-500 text-xs">Early</Badge>);
+
+    if (record.checkOutStatus === 'early') {
+      badges.push(
+        <Badge key="early" variant="outline" className="border-orange-500 text-orange-500 text-xs">
+          Early Check-out
+        </Badge>,
+      );
     }
-    if (badges.length === 0 && record.status === 'present') {
-      badges.push(<Badge key="ontime" variant="default" className="bg-green-500 text-xs">On Time</Badge>);
+
+    if (badges.length === 0) {
+      badges.push(
+        <Badge key="ontime" variant="default" className="bg-green-500 text-xs">
+          On Schedule
+        </Badge>,
+      );
     }
     
     return badges;
@@ -393,9 +645,8 @@ const AttendanceManager: React.FC = () => {
     early: summary.early_departures,
   };
 
-  return (
+  const attendanceContent = (
     <div className="space-y-6">
-      {/* Modern Header */}
       <div className="bg-gradient-to-r from-slate-50 to-gray-100 dark:from-slate-900 dark:to-gray-800 rounded-2xl p-6 shadow-sm border">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -430,7 +681,6 @@ const AttendanceManager: React.FC = () => {
         </div>
       </div>
 
-      {/* Statistics Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
@@ -466,7 +716,6 @@ const AttendanceManager: React.FC = () => {
         </Card>
       </div>
 
-      {/* Filters */}
       <Card className="border-0 shadow-lg">
         <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
           <CardTitle className="text-xl font-semibold">Attendance Records</CardTitle>
@@ -492,7 +741,7 @@ const AttendanceManager: React.FC = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="present">On Time</SelectItem>
+                <SelectItem value="present">On Schedule</SelectItem>
                 <SelectItem value="late">Late Arrivals</SelectItem>
                 <SelectItem value="early">Early Departures</SelectItem>
               </SelectContent>
@@ -510,7 +759,6 @@ const AttendanceManager: React.FC = () => {
             />
           </div>
 
-          {/* Attendance Table */}
           <div className="rounded-lg border border-gray-200 dark:border-gray-800 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -551,12 +799,22 @@ const AttendanceManager: React.FC = () => {
                             <Clock className="h-4 w-4 text-green-500" />
                             <span>{formatIST(record.date, record.checkInTime)}</span>
                           </div>
+                          {record.scheduledStart && (
+                            <div className="text-xs text-muted-foreground">
+                              Scheduled: {record.scheduledStart}
+                            </div>
+                          )}
                         </td>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-red-500" />
                             <span>{formatIST(record.date, record.checkOutTime)}</span>
                           </div>
+                          {record.scheduledEnd && (
+                            <div className="text-xs text-muted-foreground">
+                              Scheduled: {record.scheduledEnd}
+                            </div>
+                          )}
                         </td>
                         <td className="p-3">
                           {record.workHours ? (
@@ -577,13 +835,17 @@ const AttendanceManager: React.FC = () => {
                               setShowSelfieModal(true);
                             }}
                           >
-                            {record.selfie ? (
+                            {record.checkInSelfie ? (
                               <img 
-                                src={record.selfie} 
+                                src={record.checkInSelfie} 
                                 alt={`${record.userName}'s selfie`} 
                                 className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                }}
                               />
-                            ) : (
+                            ) : null}
+                            {!record.checkInSelfie && (
                               <div className="w-full h-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
                                 <User className="h-5 w-5 text-gray-400" />
                               </div>
@@ -591,7 +853,7 @@ const AttendanceManager: React.FC = () => {
                           </div>
                         </td>
                         <td className="p-3">
-                          <div className="flex gap-1">
+                          <div className="flex flex-wrap gap-1">
                             {getStatusBadge(record)}
                           </div>
                         </td>
@@ -599,7 +861,7 @@ const AttendanceManager: React.FC = () => {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                      <td colSpan={9} className="p-8 text-center text-muted-foreground">
                         <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
                         <p>No attendance records found for the selected date</p>
                       </td>
@@ -612,7 +874,6 @@ const AttendanceManager: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* Selfie Modal */}
       <Dialog open={showSelfieModal} onOpenChange={setShowSelfieModal}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
@@ -630,9 +891,9 @@ const AttendanceManager: React.FC = () => {
                 <h3 className="font-medium">Check-in Selfie</h3>
               </div>
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
-                {selectedRecord?.selfie ? (
+                {selectedRecord?.checkInSelfie ? (
                   <img 
-                    src={selectedRecord.selfie} 
+                    src={selectedRecord.checkInSelfie} 
                     alt="Check-in selfie" 
                     className="w-full h-full object-cover"
                   />
@@ -855,6 +1116,266 @@ const AttendanceManager: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+
+  const officeHoursContent = (
+    <div className="space-y-6">
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle>Global Office Hours</CardTitle>
+          <CardDescription>Default schedule applied to every department unless specifically overridden.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="global-start">Start Time</Label>
+              <Input
+                id="global-start"
+                type="time"
+                value={globalTimingForm.startTime}
+                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, startTime: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="global-end">End Time</Label>
+              <Input
+                id="global-end"
+                type="time"
+                value={globalTimingForm.endTime}
+                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, endTime: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="global-grace-in">Check-in Grace (minutes)</Label>
+              <Input
+                id="global-grace-in"
+                type="number"
+                min={0}
+                max={180}
+                value={globalTimingForm.checkInGrace}
+                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, checkInGrace: Number(e.target.value) }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="global-grace-out">Check-out Grace (minutes)</Label>
+              <Input
+                id="global-grace-out"
+                type="number"
+                min={0}
+                max={180}
+                value={globalTimingForm.checkOutGrace}
+                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, checkOutGrace: Number(e.target.value) }))}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={handleGlobalTimingSave} disabled={officeFormLoading} className="gap-2">
+              {officeFormLoading ? 'Saving...' : 'Save Global Settings'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle>Department-specific Office Hours</CardTitle>
+          <CardDescription>Override the global schedule for particular departments.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-3">
+            <Label htmlFor="department-name">Department</Label>
+            <Input
+              id="department-name"
+              placeholder="e.g., Engineering"
+              value={departmentTimingForm.department}
+              onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, department: e.target.value }))}
+            />
+            {departments.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {departments.map((dept) => (
+                  <Button
+                    key={dept}
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const existing = officeTimings.find((entry) => (entry.department || '').toLowerCase() === dept.toLowerCase());
+                      if (existing) {
+                        handleDepartmentTimingEdit(existing);
+                      } else {
+                        setDepartmentTimingForm((prev) => ({ ...prev, department: dept }));
+                      }
+                    }}
+                  >
+                    {dept}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="dept-start">Start Time</Label>
+              <Input
+                id="dept-start"
+                type="time"
+                value={departmentTimingForm.startTime}
+                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, startTime: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dept-end">End Time</Label>
+              <Input
+                id="dept-end"
+                type="time"
+                value={departmentTimingForm.endTime}
+                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, endTime: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dept-grace-in">Check-in Grace (minutes)</Label>
+              <Input
+                id="dept-grace-in"
+                type="number"
+                min={0}
+                max={180}
+                value={departmentTimingForm.checkInGrace}
+                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, checkInGrace: Number(e.target.value) }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dept-grace-out">Check-out Grace (minutes)</Label>
+              <Input
+                id="dept-grace-out"
+                type="number"
+                min={0}
+                max={180}
+                value={departmentTimingForm.checkOutGrace}
+                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, checkOutGrace: Number(e.target.value) }))}
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                setDepartmentTimingForm({
+                  department: '',
+                  startTime: globalTimingForm.startTime,
+                  endTime: globalTimingForm.endTime,
+                  checkInGrace: globalTimingForm.checkInGrace,
+                  checkOutGrace: globalTimingForm.checkOutGrace,
+                })
+              }
+            >
+              Reset
+            </Button>
+            <Button onClick={handleDepartmentTimingSave} disabled={officeFormLoading || !departmentTimingForm.department.trim()} className="gap-2">
+              {officeFormLoading ? 'Saving...' : 'Save Department Timing'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle>Configured Schedules</CardTitle>
+          <CardDescription>Overview of current global and department-specific office timings.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {officeTimings.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-left">
+                    <th className="p-3">Target</th>
+                    <th className="p-3">Start</th>
+                    <th className="p-3">End</th>
+                    <th className="p-3">Check-in Grace</th>
+                    <th className="p-3">Check-out Grace</th>
+                    <th className="p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {officeTimings.map((timing) => {
+                    const isGlobalTiming = !timing.department;
+                    return (
+                      <tr key={timing.id} className="border-t">
+                        <td className="p-3 font-medium">
+                          {isGlobalTiming ? 'All Departments' : timing.department}
+                        </td>
+                        <td className="p-3">{(timing.start_time || '').slice(0, 5)}</td>
+                        <td className="p-3">{(timing.end_time || '').slice(0, 5)}</td>
+                        <td className="p-3">{timing.check_in_grace_minutes} mins</td>
+                        <td className="p-3">{timing.check_out_grace_minutes} mins</td>
+                        <td className="p-3 flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDepartmentTimingEdit(timing)}
+                          >
+                            Edit
+                          </Button>
+                          {!isGlobalTiming && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive"
+                              onClick={() => handleDepartmentTimingDelete(timing)}
+                              disabled={officeFormLoading}
+                            >
+                              Remove
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="p-6 text-center text-muted-foreground">
+              No office timings configured yet.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      {isAdmin ? (
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as 'attendance' | 'office-hours')}
+          className="space-y-6"
+        >
+          <TabsList className="flex w-full md:w-auto">
+            <TabsTrigger value="attendance" className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Attendance
+            </TabsTrigger>
+            <TabsTrigger value="office-hours" className="flex items-center gap-2">
+              <Settings className="h-4 w-4" />
+              Office Hours
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="attendance" className="space-y-6">
+            {attendanceContent}
+          </TabsContent>
+          <TabsContent value="office-hours" className="space-y-6">
+            {officeHoursContent}
+          </TabsContent>
+        </Tabs>
+      ) : (
+        attendanceContent
+      )}
     </div>
   );
 };

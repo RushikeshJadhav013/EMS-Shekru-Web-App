@@ -94,14 +94,17 @@ export interface TaskComment {
 }
 
 export interface Department {
-  id: string;
+  id: number | string;
   name: string;
   code: string;
-  managerId: string;
+  managerId?: string;
   description?: string;
   status: 'active' | 'inactive';
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  employeeCount?: number;
+  budget?: number;
+  location?: string;
 }
 
 export interface Notification {

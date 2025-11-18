@@ -45,20 +45,61 @@ interface Employee {
 
 interface LeaveRequestData {
   employee_id: string;
-  leave_type: string;
   start_date: string;
   end_date: string;
   reason: string;
+  leave_type: string;
 }
 
 interface LeaveRequestResponse {
-  id: string;
-  employee_id: string;
-  leave_type: string;
+  leave_id: number;
+  user_id: number;
   start_date: string;
   end_date: string;
   reason: string;
   status: string;
+  leave_type: string;
+}
+
+interface LeaveUpdateData {
+  start_date?: string;
+  end_date?: string;
+  reason?: string;
+  leave_type?: string;
+}
+
+interface LeaveBalanceItem {
+  leave_type: string;
+  allocated: number;
+  used: number;
+  remaining: number;
+}
+
+interface LeaveBalanceResponse {
+  balances: LeaveBalanceItem[];
+}
+
+export interface DepartmentData {
+  name: string;
+  code: string;
+  manager_id?: number | null;
+  description?: string | null;
+  status?: string;
+  employee_count?: number | null;
+  budget?: number | null;
+  location?: string | null;
+}
+
+export interface Department {
+  id: number;
+  name: string;
+  code: string;
+  manager_id?: number | null;
+  description?: string | null;
+  status: string;
+  employee_count?: number | null;
+  budget?: number | null;
+  location?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -89,15 +130,82 @@ class ApiService {
       const response = await fetch(url, config);
 
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          throw new Error('Not authenticated');
+        // Try to extract error details from response
+        let errorMessage = `HTTP error! status: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) {
+            if (Array.isArray(errorData.detail)) {
+              errorMessage = errorData.detail.map((item: any) => 
+                typeof item === 'string' ? item : item.msg || JSON.stringify(item)
+              ).join(', ');
+            } else if (typeof errorData.detail === 'string') {
+              errorMessage = errorData.detail;
+            } else {
+              errorMessage = JSON.stringify(errorData.detail);
+            }
+          } else if (errorData.message) {
+            errorMessage = errorData.message;
+          }
+        } catch (parseError) {
+          // If JSON parsing fails, use status text
+          errorMessage = response.statusText || `HTTP error! status: ${response.status}`;
         }
-        throw new Error(`HTTP error! status: ${response.status}`);
+        
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(errorMessage || 'Not authenticated');
+        }
+        throw new Error(errorMessage);
       }
 
-      return await response.json();
-    } catch (error) {
-      console.error('API request failed:', error);
+      // Handle 204 No Content responses (common for DELETE operations)
+      if (response.status === 204) {
+        return null; // Return null for empty responses
+      }
+
+      // Check if response has content before trying to parse JSON
+      const contentType = response.headers.get('content-type');
+      const text = await response.text();
+      
+      // If response is empty, return null
+      if (!text || text.trim().length === 0) {
+        return null;
+      }
+
+      // Try to parse JSON if content-type indicates JSON or if text looks like JSON
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          return JSON.parse(text);
+        } catch (parseError) {
+          if (import.meta.env.DEV) {
+            console.warn('Failed to parse JSON response:', parseError);
+          }
+          return null;
+        }
+      }
+
+      // If not JSON, return the text as-is
+      return text || null;
+    } catch (error: any) {
+      // Handle network errors specifically
+      if (error instanceof TypeError && (error.message.includes('fetch') || error.message.includes('NetworkError'))) {
+        const networkError = new Error(
+          `Cannot connect to backend server at ${this.baseURL}. Please ensure the backend is running on port 8000.`
+        );
+        networkError.name = 'NetworkError';
+        // Only log network errors in development, suppress in production
+        if (import.meta.env.DEV) {
+          console.warn('Network error (backend may be down):', networkError.message);
+        }
+        throw networkError;
+      }
+      
+      // Log other errors normally
+      if (import.meta.env.DEV) {
+        console.error('API request failed:', error);
+      }
+      
+      // Re-throw other errors as-is
       throw error;
     }
   }
@@ -105,6 +213,41 @@ class ApiService {
   // Get all employees
   async getEmployees() {
     return this.request('/employees');
+  }
+
+  async getDepartmentManagers() {
+    return this.request('/departments/managers');
+  }
+
+  // Department APIs
+  async getDepartments(): Promise<Department[]> {
+    return this.request('/departments');
+  }
+
+  async createDepartment(data: DepartmentData): Promise<Department> {
+    return this.request('/departments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+
+  async updateDepartment(id: number, data: Partial<DepartmentData>): Promise<Department> {
+    return this.request(`/departments/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+
+  async deleteDepartment(id: number): Promise<void> {
+    await this.request(`/departments/${id}`, {
+      method: 'DELETE',
+    });
   }
 
   // Dashboard endpoints
@@ -258,9 +401,58 @@ class ApiService {
     });
   }
 
-  // Get all leave requests
-  async getLeaveRequests(): Promise<LeaveRequestResponse[]> {
-    return this.request('/leave/');
+  // Get all leave requests with optional period filter
+  async getLeaveRequests(period: string = 'current_month'): Promise<LeaveRequestResponse[]> {
+    return this.request(`/leave/?period=${period}`);
+  }
+
+  async getLeaveBalance(): Promise<LeaveBalanceResponse> {
+    return this.request('/leave/balance');
+  }
+
+  // Update a leave request
+  async updateLeaveRequest(leaveId: string, data: LeaveUpdateData): Promise<LeaveRequestResponse> {
+    return this.request(`/leave/${leaveId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Delete a leave request
+  async deleteLeaveRequest(leaveId: string): Promise<void> {
+    const url = `${this.baseURL}/leave/${leaveId}`;
+    const token = localStorage.getItem('token');
+    const response = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+  }
+
+  // Get approvals inbox for current approver
+  async getLeaveApprovals(): Promise<(LeaveRequestResponse & {
+    employee_id: string;
+    name: string;
+    department?: string;
+    role?: string;
+  })[]> {
+    return this.request('/leave/approvals');
+  }
+
+  // Get approvals decision history for current approver
+  async getLeaveApprovalsHistory(): Promise<(LeaveRequestResponse & {
+    employee_id: string;
+    name: string;
+    department?: string;
+    role?: string;
+  })[]> {
+    return this.request('/leave/approvals/history');
   }
 
   // Get leave requests by employee
@@ -310,6 +502,209 @@ class ApiService {
     }
 
     return await response.blob();
+  }
+
+  // Hiring Management APIs
+  async getVacancies(department?: string, status?: string) {
+    const params = new URLSearchParams();
+    if (department) params.append('department', department);
+    if (status) params.append('status_filter', status);
+    const query = params.toString();
+    return this.request(`/hiring/vacancies${query ? `?${query}` : ''}`);
+  }
+
+  async getVacancy(vacancyId: number) {
+    return this.request(`/hiring/vacancies/${vacancyId}`);
+  }
+
+  async createVacancy(vacancyData: any) {
+    return this.request('/hiring/vacancies', {
+      method: 'POST',
+      body: JSON.stringify(vacancyData),
+    });
+  }
+
+  async updateVacancy(vacancyId: number, vacancyData: any) {
+    return this.request(`/hiring/vacancies/${vacancyId}`, {
+      method: 'PUT',
+      body: JSON.stringify(vacancyData),
+    });
+  }
+
+  async deleteVacancy(vacancyId: number) {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`${this.baseURL}/hiring/vacancies/${vacancyId}`, {
+      method: 'DELETE',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    }
+  }
+
+  async postVacancyToSocialMedia(vacancyId: number, platforms: string[], links?: Record<string, string>) {
+    return this.request(`/hiring/vacancies/${vacancyId}/post-social`, {
+      method: 'POST',
+      body: JSON.stringify({ vacancy_id: vacancyId, platforms, links }),
+    });
+  }
+
+  async getCandidates(vacancyId?: number, status?: string) {
+    const params = new URLSearchParams();
+    if (vacancyId) params.append('vacancy_id', vacancyId.toString());
+    if (status) params.append('status_filter', status);
+    const query = params.toString();
+    return this.request(`/hiring/candidates${query ? `?${query}` : ''}`);
+  }
+
+  async getCandidate(candidateId: number) {
+    return this.request(`/hiring/candidates/${candidateId}`);
+  }
+
+  async createCandidate(candidateData: any, resumeFile?: File) {
+    const token = localStorage.getItem('token');
+    const formData = new FormData();
+    
+    Object.entries(candidateData).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        formData.append(key, String(value));
+      }
+    });
+    
+    if (resumeFile) {
+      formData.append('resume', resumeFile);
+    }
+
+    const response = await fetch(`${this.baseURL}/hiring/candidates`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
+  async updateCandidate(candidateId: number, candidateData: any) {
+    return this.request(`/hiring/candidates/${candidateId}`, {
+      method: 'PUT',
+      body: JSON.stringify(candidateData),
+    });
+  }
+
+  async deleteCandidate(candidateId: number) {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`${this.baseURL}/hiring/candidates/${candidateId}`, {
+      method: 'DELETE',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    }
+  }
+
+  // Shift Management APIs
+  async getShifts(department?: string) {
+    const params = new URLSearchParams();
+    if (department) params.append('department', department);
+    const query = params.toString();
+    return this.request(`/shift${query ? `?${query}` : ''}`);
+  }
+
+  async getShift(shiftId: number) {
+    return this.request(`/shift/${shiftId}`);
+  }
+
+  async createShift(shiftData: any) {
+    return this.request('/shift', {
+      method: 'POST',
+      body: JSON.stringify(shiftData),
+    });
+  }
+
+  async updateShift(shiftId: number, shiftData: any) {
+    return this.request(`/shift/${shiftId}`, {
+      method: 'PUT',
+      body: JSON.stringify(shiftData),
+    });
+  }
+
+  async deleteShift(shiftId: number) {
+    return this.request(`/shift/${shiftId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async assignShift(assignmentData: any) {
+    return this.request('/shift/assignment', {
+      method: 'POST',
+      body: JSON.stringify(assignmentData),
+    });
+  }
+
+  async bulkAssignShift(assignmentData: any) {
+    return this.request('/shift/assignment/bulk', {
+      method: 'POST',
+      body: JSON.stringify(assignmentData),
+    });
+  }
+
+  async getDepartmentSchedule(scheduleDate: string, department?: string) {
+    const params = new URLSearchParams();
+    params.append('schedule_date', scheduleDate);
+    if (department) params.append('department', department);
+    return this.request(`/shift/schedule/department?${params.toString()}`);
+  }
+
+  async getMyShiftSchedule(startDate?: string, endDate?: string) {
+    const params = new URLSearchParams();
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+    const query = params.toString();
+    return this.request(`/shift/schedule/my${query ? `?${query}` : ''}`);
+  }
+
+  async updateShiftAssignment(assignmentId: number, assignmentData: any) {
+    return this.request(`/shift/assignment/${assignmentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(assignmentData),
+    });
+  }
+
+  async deleteShiftAssignment(assignmentId: number) {
+    return this.request(`/shift/assignment/${assignmentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getDepartmentScheduleWeek(startDate: string, endDate?: string) {
+    const params = new URLSearchParams({ start_date: startDate });
+    if (endDate) {
+      params.append('end_date', endDate);
+    }
+    return this.request(`/shift/schedule/department/week?${params.toString()}`);
+  }
+
+  async getShiftNotifications() {
+    return this.request('/shift/notifications');
+  }
+
+  async markShiftNotificationAsRead(notificationId: number) {
+    return this.request(`/shift/notifications/${notificationId}/read`, {
+      method: 'PUT',
+    });
   }
 }
 

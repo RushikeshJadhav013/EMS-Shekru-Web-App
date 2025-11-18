@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, Check, Trash2, X } from 'lucide-react';
+import { Bell, Check, Trash2, X, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -35,6 +35,19 @@ export const NotificationBell: React.FC = () => {
       // For task notifications, go to role-based tasks page with taskId
       navigate(`/${userRole}/tasks?taskId=${notification.metadata.taskId}`);
       setIsOpen(false);
+    } else if (notification.type === 'shift') {
+      // For shift notifications, redirect to Team page
+      if (notification.actionUrl) {
+        navigate(notification.actionUrl);
+      } else {
+        // Fallback based on role
+        if (userRole === 'team_lead') {
+          navigate('/team_lead/team');
+        } else {
+          navigate('/employee/team');
+        }
+      }
+      setIsOpen(false);
     } else if (notification.actionUrl) {
       // Fallback to actionUrl if provided
       navigate(notification.actionUrl);
@@ -47,6 +60,9 @@ export const NotificationBell: React.FC = () => {
   };
 
   const getNotificationIcon = (type: string) => {
+    if (type === 'shift') {
+      return <Clock className="h-4 w-4 text-blue-500" />;
+    }
     switch (type) {
       case 'leave':
         return '📅';

@@ -1,12 +1,17 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+/* eslint-disable react-refresh/only-export-components */
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './AuthContext';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const FETCH_INTERVAL_MS = 60_000;
+const POLLING_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 export interface Notification {
   id: string;
   userId: string;
   title: string;
   message: string;
-  type: 'leave' | 'task' | 'info' | 'warning';
+  type: 'leave' | 'task' | 'info' | 'warning' | 'shift';
   read: boolean;
   actionUrl?: string;
   createdAt: string;
@@ -15,6 +20,13 @@ export interface Notification {
     taskId?: string;
     requesterId?: string;
     requesterName?: string;
+    shiftAssignmentId?: string;
+  };
+  backendId?: number;
+  passDetails?: {
+    from?: string;
+    to?: string;
+    note?: string;
   };
 }
 
@@ -22,33 +34,94 @@ interface NotificationContextType {
   notifications: Notification[];
   unreadCount: number;
   addNotification: (notification: Omit<Notification, 'id' | 'userId' | 'createdAt' | 'read'>) => void;
-  markAsRead: (notificationId: string) => void;
-  markAllAsRead: () => void;
+  markAsRead: (notificationId: string) => Promise<void>;
+  markAllAsRead: () => Promise<void>;
   clearNotification: (notificationId: string) => void;
   clearAll: () => void;
+  refreshNotifications: () => Promise<void>;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
 
+type BackendTaskNotification = {
+  notification_id: number;
+  user_id: number;
+  task_id: number;
+  notification_type: string;
+  title: string;
+  message: string;
+  pass_details: string | Record<string, unknown> | null;
+  is_read: boolean;
+  created_at: string;
+};
+
+type BackendLeaveNotification = {
+  notification_id: number;
+  user_id: number;
+  leave_id: number;
+  notification_type: string;
+  title: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+};
+
+type BackendShiftNotification = {
+  notification_id: number;
+  user_id: number;
+  shift_assignment_id: number;
+  notification_type: string;
+  title: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+};
+
+const getAuthHeader = (): string | null => {
+  const storedToken = localStorage.getItem('token') || '';
+  if (!storedToken) return null;
+  return storedToken.startsWith('Bearer ') ? storedToken : `Bearer ${storedToken}`;
+};
+
 export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<{ play: () => void } | null>(null);
+  const pollIntervalRef = useRef<number | null>(null);
+  const pollIdleTimeoutRef = useRef<number | null>(null);
 
   // Load notifications from localStorage
   useEffect(() => {
-    if (user) {
-      const stored = localStorage.getItem(`notifications_${user.id}`);
-      if (stored) {
-        setNotifications(JSON.parse(stored));
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+
+    const stored = localStorage.getItem(`notifications_${user.id}`);
+    if (stored) {
+      try {
+        const parsed: Notification[] = JSON.parse(stored);
+        setNotifications(parsed);
+      } catch (error) {
+        console.error('Failed to parse stored notifications', error);
+        localStorage.removeItem(`notifications_${user.id}`);
+        setNotifications([]);
       }
+    } else {
+      setNotifications([]);
     }
   }, [user]);
 
   // Save notifications to localStorage
   useEffect(() => {
-    if (user && notifications.length > 0) {
-      localStorage.setItem(`notifications_${user.id}`, JSON.stringify(notifications));
+    if (!user) return;
+
+    const localNotifications = notifications.filter((notification) => !notification.backendId);
+
+    if (localNotifications.length > 0) {
+      localStorage.setItem(`notifications_${user.id}`, JSON.stringify(localNotifications));
+    } else {
+      localStorage.removeItem(`notifications_${user.id}`);
     }
   }, [notifications, user]);
 
@@ -74,19 +147,303 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     };
 
     audioRef.current = {
-      play: createNotificationSound
-    } as any;
+      play: createNotificationSound,
+    };
   }, []);
 
   const playNotificationSound = () => {
     try {
       if (audioRef.current) {
-        (audioRef.current as any).play();
+        audioRef.current.play();
       }
     } catch (error) {
       console.error('Error playing notification sound:', error);
     }
   };
+
+  const mapBackendTaskNotification = useCallback((notification: BackendTaskNotification): Notification => {
+    let parsedDetails: Record<string, unknown> | null = null;
+    if (notification.pass_details) {
+      if (typeof notification.pass_details === 'string') {
+        try {
+          parsedDetails = JSON.parse(notification.pass_details);
+        } catch (error) {
+          console.error('Failed to parse task pass details', error);
+        }
+      } else if (typeof notification.pass_details === 'object') {
+        parsedDetails = notification.pass_details as Record<string, unknown>;
+      }
+    }
+
+    const fromValue = parsedDetails && typeof parsedDetails === 'object' ? parsedDetails['from'] : undefined;
+    const toValue = parsedDetails && typeof parsedDetails === 'object' ? parsedDetails['to'] : undefined;
+    const noteValue = parsedDetails && typeof parsedDetails === 'object' ? parsedDetails['note'] : undefined;
+
+    return {
+      id: `backend-task-${notification.notification_id}`,
+      backendId: notification.notification_id,
+      userId: String(notification.user_id),
+      title: notification.title,
+      message: notification.message,
+      type: 'task',
+      read: notification.is_read,
+      createdAt: notification.created_at,
+      metadata: {
+        taskId: String(notification.task_id),
+        requesterId: fromValue !== undefined ? String(fromValue) : undefined,
+      },
+      passDetails: {
+        from: fromValue !== undefined ? String(fromValue) : undefined,
+        to: toValue !== undefined ? String(toValue) : undefined,
+        note: typeof noteValue === 'string' ? noteValue : undefined,
+      },
+    };
+  }, []);
+
+  const mapBackendLeaveNotification = useCallback((notification: BackendLeaveNotification): Notification => {
+    return {
+      id: `backend-leave-${notification.notification_id}`,
+      backendId: notification.notification_id,
+      userId: String(notification.user_id),
+      title: notification.title,
+      message: notification.message,
+      type: 'leave',
+      read: notification.is_read,
+      createdAt: notification.created_at,
+      metadata: {
+        leaveId: String(notification.leave_id),
+      },
+    };
+  }, []);
+
+  const mapBackendShiftNotification = useCallback((notification: BackendShiftNotification, userRole?: string): Notification => {
+    // Determine the team page route based on user role
+    let teamRoute = '/employee/team';
+    if (userRole === 'team_lead') {
+      teamRoute = '/team_lead/team';
+    } else if (userRole === 'employee') {
+      teamRoute = '/employee/team';
+    }
+
+    return {
+      id: `backend-shift-${notification.notification_id}`,
+      backendId: notification.notification_id,
+      userId: String(notification.user_id),
+      title: notification.title,
+      message: notification.message,
+      type: 'shift',
+      read: notification.is_read,
+      createdAt: notification.created_at,
+      actionUrl: teamRoute,
+      metadata: {
+        shiftAssignmentId: String(notification.shift_assignment_id),
+      },
+    };
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      window.clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    if (pollIdleTimeoutRef.current) {
+      window.clearTimeout(pollIdleTimeoutRef.current);
+      pollIdleTimeoutRef.current = null;
+    }
+  }, []);
+
+  const fetchBackendNotifications = useCallback(async () => {
+    if (!user) return;
+    const authHeader = getAuthHeader();
+    if (!authHeader) {
+      stopPolling();
+      return;
+    }
+
+    try {
+      const [taskResult, leaveResult, shiftResult] = await Promise.allSettled([
+        fetch(`${API_BASE_URL}/tasks/notifications`, {
+          headers: {
+            Authorization: authHeader,
+          },
+        }),
+        fetch(`${API_BASE_URL}/leave/notifications`, {
+          headers: {
+            Authorization: authHeader,
+          },
+        }),
+        fetch(`${API_BASE_URL}/shift/notifications`, {
+          headers: {
+            Authorization: authHeader,
+          },
+        }),
+      ]);
+
+      // Check for 401 errors - if any endpoint returns 401, stop polling
+      let hasUnauthorized = false;
+      if (taskResult.status === 'fulfilled' && taskResult.value.status === 401) {
+        hasUnauthorized = true;
+      }
+      if (leaveResult.status === 'fulfilled' && leaveResult.value.status === 401) {
+        hasUnauthorized = true;
+      }
+      if (shiftResult.status === 'fulfilled' && shiftResult.value.status === 401) {
+        hasUnauthorized = true;
+      }
+
+      if (hasUnauthorized) {
+        stopPolling();
+        return;
+      }
+
+      const taskData: BackendTaskNotification[] = [];
+      const leaveData: BackendLeaveNotification[] = [];
+      const shiftData: BackendShiftNotification[] = [];
+
+      // Handle task notifications
+      if (taskResult.status === 'fulfilled' && taskResult.value.ok) {
+        try {
+          const data = await taskResult.value.json();
+          taskData.push(...data);
+        } catch (error) {
+          // Silently handle parse errors
+          if (import.meta.env.DEV) {
+            console.error('Failed to parse task notifications', error);
+          }
+        }
+      } else if (taskResult.status === 'rejected') {
+        // Silently handle network errors for notifications
+        if (import.meta.env.DEV && !taskResult.reason?.message?.includes('fetch')) {
+          console.error('Failed to fetch task notifications:', taskResult.reason);
+        }
+      }
+
+      // Handle leave notifications
+      if (leaveResult.status === 'fulfilled' && leaveResult.value.ok) {
+        try {
+          const data = await leaveResult.value.json();
+          leaveData.push(...data);
+        } catch (error) {
+          // Silently handle parse errors
+          if (import.meta.env.DEV) {
+            console.error('Failed to parse leave notifications', error);
+          }
+        }
+      } else if (leaveResult.status === 'rejected') {
+        // Silently handle network errors for notifications
+        if (import.meta.env.DEV && !leaveResult.reason?.message?.includes('fetch')) {
+          console.error('Failed to fetch leave notifications:', leaveResult.reason);
+        }
+      }
+
+      // Handle shift notifications
+      if (shiftResult.status === 'fulfilled' && shiftResult.value.ok) {
+        try {
+          const data = await shiftResult.value.json();
+          shiftData.push(...data);
+        } catch (error) {
+          // Silently handle parse errors
+          if (import.meta.env.DEV) {
+            console.error('Failed to parse shift notifications', error);
+          }
+        }
+      } else if (shiftResult.status === 'rejected') {
+        // Silently handle network errors for notifications
+        if (import.meta.env.DEV && !shiftResult.reason?.message?.includes('fetch')) {
+          console.error('Failed to fetch shift notifications:', shiftResult.reason);
+        }
+      }
+
+      const backendNotifications = [
+        ...taskData.map(mapBackendTaskNotification),
+        ...leaveData.map(mapBackendLeaveNotification),
+        ...shiftData.map(n => mapBackendShiftNotification(n, user.role)),
+      ];
+
+      setNotifications((prev) => {
+        const localOnly = prev.filter((notification) => !notification.backendId);
+        const combined = [...backendNotifications, ...localOnly];
+        const uniqueById = new Map<string, Notification>();
+        combined.forEach((notification) => {
+          if (!uniqueById.has(notification.id)) {
+            uniqueById.set(notification.id, notification);
+          }
+        });
+        return Array.from(uniqueById.values()).sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      });
+    } catch (error) {
+      console.error('Failed to fetch notifications', error);
+    }
+  }, [mapBackendLeaveNotification, mapBackendTaskNotification, mapBackendShiftNotification, user, stopPolling]);
+
+  const schedulePollingStop = useCallback(() => {
+    if (pollIdleTimeoutRef.current) {
+      window.clearTimeout(pollIdleTimeoutRef.current);
+    }
+    pollIdleTimeoutRef.current = window.setTimeout(() => {
+      stopPolling();
+    }, POLLING_IDLE_TIMEOUT_MS);
+  }, [stopPolling]);
+
+  const startPolling = useCallback(() => {
+    if (!user || document.visibilityState === 'hidden') {
+      stopPolling();
+      return;
+    }
+
+    // Check if we have a valid token before starting
+    const authHeader = getAuthHeader();
+    if (!authHeader) {
+      stopPolling();
+      return;
+    }
+
+    fetchBackendNotifications();
+
+    if (!pollIntervalRef.current) {
+      pollIntervalRef.current = window.setInterval(fetchBackendNotifications, FETCH_INTERVAL_MS);
+    }
+
+    schedulePollingStop();
+  }, [fetchBackendNotifications, schedulePollingStop, stopPolling, user]);
+
+  useEffect(() => {
+    if (!user) {
+      stopPolling();
+      return;
+    }
+
+    startPolling();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    const handleUserActivity = () => {
+      if (document.visibilityState === 'visible') {
+        startPolling();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleUserActivity);
+    window.addEventListener('click', handleUserActivity);
+    window.addEventListener('keydown', handleUserActivity);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleUserActivity);
+      window.removeEventListener('click', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      stopPolling();
+    };
+  }, [startPolling, stopPolling, user]);
 
   const addNotification = (notification: Omit<Notification, 'id' | 'userId' | 'createdAt' | 'read'>) => {
     if (!user) return;
@@ -103,8 +460,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     playNotificationSound();
 
     // Show browser notification if permitted
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(notification.title, {
+    if ('Notification' in window && window.Notification.permission === 'granted') {
+      new window.Notification(notification.title, {
         body: notification.message,
         icon: '/favicon.ico',
         badge: '/favicon.ico',
@@ -112,19 +469,105 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   };
 
-  const markAsRead = (notificationId: string) => {
-    setNotifications(prev =>
-      prev.map(notif =>
-        notif.id === notificationId ? { ...notif, read: true } : notif
-      )
+  const markAsRead = useCallback(async (notificationId: string) => {
+    let backendId: number | undefined;
+    let backendType: Notification['type'] | undefined;
+    setNotifications((prev) =>
+      prev.map((notif) => {
+        if (notif.id === notificationId) {
+          backendId = notif.backendId;
+          backendType = notif.type;
+          return { ...notif, read: true };
+        }
+        return notif;
+      })
     );
-  };
 
-  const markAllAsRead = () => {
-    setNotifications(prev =>
-      prev.map(notif => ({ ...notif, read: true }))
+    if (!user || !backendId || !backendType) {
+      return;
+    }
+    const authHeader = getAuthHeader();
+    if (!authHeader) {
+      return;
+    }
+
+    try {
+      let endpoint = '';
+      if (backendType === 'task') {
+        endpoint = `${API_BASE_URL}/tasks/notifications/${backendId}/read`;
+      } else if (backendType === 'leave') {
+        endpoint = `${API_BASE_URL}/leave/notifications/${backendId}/read`;
+      } else if (backendType === 'shift') {
+        endpoint = `${API_BASE_URL}/shift/notifications/${backendId}/read`;
+      } else {
+        return;
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'PUT',
+        headers: {
+          Authorization: authHeader,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to mark notification as read (${response.status})`);
+      }
+    } catch (error) {
+      console.error('Failed to mark notification as read', error);
+      fetchBackendNotifications();
+    }
+  }, [fetchBackendNotifications, user]);
+
+  const markAllAsRead = useCallback(async () => {
+    const taskIds: number[] = [];
+    const leaveIds: number[] = [];
+    setNotifications((prev) =>
+      prev.map((notif) => {
+        if (!notif.read && notif.backendId) {
+          if (notif.type === 'leave') {
+            leaveIds.push(notif.backendId);
+          } else if (notif.type === 'task') {
+            taskIds.push(notif.backendId);
+          }
+        }
+        if (notif.read) return notif;
+        return { ...notif, read: true };
+      })
     );
-  };
+
+    if (!user || (taskIds.length === 0 && leaveIds.length === 0)) {
+      return;
+    }
+    const authHeader = getAuthHeader();
+    if (!authHeader) {
+      return;
+    }
+
+    try {
+      await Promise.all([
+        ...taskIds.map((id) =>
+          fetch(`${API_BASE_URL}/tasks/notifications/${id}/read`, {
+            method: 'PUT',
+            headers: {
+              Authorization: authHeader,
+            },
+          })
+        ),
+        ...leaveIds.map((id) =>
+          fetch(`${API_BASE_URL}/leave/notifications/${id}/read`, {
+            method: 'PUT',
+            headers: {
+              Authorization: authHeader,
+            },
+          })
+        ),
+      ]);
+    } catch (error) {
+      console.error('Failed to mark all task notifications as read', error);
+      fetchBackendNotifications();
+    }
+  }, [fetchBackendNotifications, user]);
 
   const clearNotification = (notificationId: string) => {
     setNotifications(prev => prev.filter(notif => notif.id !== notificationId));
@@ -149,6 +592,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         markAllAsRead,
         clearNotification,
         clearAll,
+        refreshNotifications: fetchBackendNotifications,
       }}
     >
       {children}

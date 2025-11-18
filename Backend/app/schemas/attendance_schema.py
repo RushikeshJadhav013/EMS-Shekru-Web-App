@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, validator
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from datetime import datetime
 import json
 
@@ -22,9 +22,9 @@ class LocationData(BaseModel):
         }
 
 class AttendanceBase(BaseModel):
-    gps_location: Optional[Dict[str, Any]] = None
+    gps_location: Optional[Union[Dict[str, Any], str]] = None
     selfie: Optional[str] = None
-    location_data: Optional[Dict[str, Any]] = None
+    location_data: Optional[Union[Dict[str, Any], str]] = None
 
 class AttendanceOut(AttendanceBase):
     attendance_id: int

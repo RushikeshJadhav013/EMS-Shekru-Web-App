@@ -1,15 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, case, or_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from app.db.database import get_db
 from app.db.models.attendance import Attendance
 from app.db.models.user import User
+from app.db.models.office_timing import OfficeTiming
 from app.schemas.attendance_schema import AttendanceOut, LocationData
 from fastapi.responses import StreamingResponse, JSONResponse
 from app.dependencies import get_current_user
 from app.enums import RoleEnum
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
+from decimal import Decimal
 from pydantic import BaseModel, ValidationError
 import base64
 import os
@@ -18,6 +20,7 @@ from io import BytesIO
 import logging
 import json
 from ..utils.geolocation import location_service
+from app.schemas.office_timing_schema import OfficeTimingOut, OfficeTimingCreate
 
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
@@ -34,16 +37,315 @@ class AttendanceJSONPayload(BaseModel):
 # ---------------------------------
 logger = logging.getLogger(__name__)
 
+
+def _ensure_location_dict(location_input: Optional[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """Normalize incoming location payloads to a dictionary."""
+    if not location_input:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Location data is required for check-in/out",
+        )
+
+    if isinstance(location_input, dict):
+        return location_input
+
+    if isinstance(location_input, str):
+        try:
+            return json.loads(location_input)
+        except json.JSONDecodeError as exc:  # pragma: no cover - detailed error path
+            logger.error("Failed to decode location string: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid location data format. Must be valid JSON.",
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Unsupported location data type",
+    )
+
+
+def _format_location_label(details: Dict[str, Any]) -> str:
+    """Convert processed location details to a concise string for storage."""
+    if not details:
+        return "Location not available"
+
+    address = details.get("address") or ""
+    if address and len(address) > 180:
+        address = address[:177] + "..."
+
+    lat = details.get("latitude")
+    lon = details.get("longitude")
+    coord_text = None
+    try:
+        if lat is not None and lon is not None:
+            coord_text = f"({float(lat):.6f}, {float(lon):.6f})"
+    except (TypeError, ValueError):  # pragma: no cover - defensive conversion
+        coord_text = None
+
+    parts: list[str] = []
+    if address:
+        parts.append(address)
+    if coord_text:
+        parts.append(coord_text)
+
+    return " ".join(parts) if parts else "Location available"
+
+
+def _compose_location_entry(existing: Optional[str], entry_type: str, details: Dict[str, Any]) -> str:
+    """Append or replace location information with a labelled entry."""
+    label = _format_location_label(details)
+    new_entry = f"{entry_type}: {label}"
+    new_entry = _sanitize_text(new_entry, max_length=240) or new_entry
+
+    if not existing:
+        return new_entry
+
+    segments = [segment.strip() for segment in existing.split("|") if segment.strip()]
+    filtered = [segment for segment in segments if not segment.lower().startswith(entry_type.lower())]
+    filtered.append(new_entry)
+    combined = " | ".join(filtered)
+    return _sanitize_text(combined, max_length=250) or combined
+
+
+def _split_location_labels(label: Optional[str]) -> Dict[str, Optional[str]]:
+    sections = {"check_in": None, "check_out": None}
+    if not label:
+        return sections
+
+    for segment in label.split("|"):
+        part = segment.strip()
+        if not part:
+            continue
+        lower = part.lower()
+        if lower.startswith("check-in"):  # format: "Check-in: ..."
+            value = part.split(":", 1)[1].strip() if ":" in part else part
+            sections["check_in"] = value or None
+        elif lower.startswith("check-out"):
+            value = part.split(":", 1)[1].strip() if ":" in part else part
+            sections["check_out"] = value or None
+    return sections
+
+
+def _load_selfie_data(serialized: Optional[str]) -> Dict[str, Optional[str]]:
+    if not serialized:
+        return {}
+
+    if isinstance(serialized, str):
+        try:
+            data = json.loads(serialized)
+            if isinstance(data, dict):
+                return {
+                    "check_in": data.get("check_in"),
+                    "check_out": data.get("check_out"),
+                }
+        except json.JSONDecodeError:
+            if serialized.strip():
+                return {"check_in": serialized.strip()}
+
+    return {}
+
+
+def _dump_selfie_data(
+    existing: Optional[str],
+    *,
+    check_in: Optional[str] = None,
+    check_out: Optional[str] = None,
+) -> Optional[str]:
+    data = _load_selfie_data(existing)
+    if check_in:
+        data["check_in"] = check_in
+    if check_out:
+        data["check_out"] = check_out
+
+    if not data:
+        return None
+
+    return json.dumps(data)
+
+
+def _make_selfie_url(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    normalized = path.lstrip("/")
+    return f"/{normalized}"
+
+
+def _sanitize_text(value: Optional[str], *, max_length: int = 250) -> Optional[str]:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > max_length:
+        return text[: max_length - 3] + "..."
+    return text
+
+
+# ---------------------------------
+# Office timing helpers & endpoints
+# ---------------------------------
+
+def _normalize_department_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _serialize_office_timing(timing: OfficeTiming) -> OfficeTimingOut:
+    return OfficeTimingOut(
+        id=timing.id,
+        department=_normalize_department_value(timing.department),
+        start_time=timing.start_time.strftime("%H:%M"),
+        end_time=timing.end_time.strftime("%H:%M"),
+        check_in_grace_minutes=timing.check_in_grace_minutes or 0,
+        check_out_grace_minutes=timing.check_out_grace_minutes or 0,
+    )
+
+
+def _build_office_timing_cache(db: Session) -> Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]:
+    records = (
+        db.query(OfficeTiming)
+        .filter(OfficeTiming.is_active.is_(True))
+        .order_by(OfficeTiming.updated_at.desc())
+        .all()
+    )
+
+    global_entry: Optional[OfficeTiming] = None
+    department_entries: Dict[str, OfficeTiming] = {}
+
+    for entry in records:
+        dept_key = _normalize_department_value(entry.department)
+        if dept_key is None:
+            if global_entry is None:
+                global_entry = entry
+            else:
+                if entry.updated_at and (global_entry.updated_at is None or entry.updated_at > global_entry.updated_at):
+                    global_entry = entry
+        else:
+            existing = department_entries.get(dept_key)
+            if existing is None or (
+                entry.updated_at and (existing.updated_at is None or entry.updated_at > existing.updated_at)
+            ):
+                department_entries[dept_key] = entry
+
+    return global_entry, department_entries
+
+
+def _resolve_office_timing(
+    db: Session,
+    department: Optional[str],
+    cache: Optional[Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]] = None,
+) -> Optional[OfficeTiming]:
+    if cache is None:
+        cache = _build_office_timing_cache(db)
+    global_entry, department_entries = cache
+    dept_key = _normalize_department_value(department)
+    if dept_key and dept_key in department_entries:
+        return department_entries[dept_key]
+    return global_entry
+
+
+def _evaluate_attendance_status(
+    check_in: Optional[datetime],
+    check_out: Optional[datetime],
+    timing: Optional[OfficeTiming],
+) -> Dict[str, Any]:
+    scheduled_start: Optional[str] = None
+    scheduled_end: Optional[str] = None
+    if timing:
+        scheduled_start = timing.start_time.strftime("%H:%M")
+        scheduled_end = timing.end_time.strftime("%H:%M")
+
+    if not check_in:
+        return {
+            "status": "absent",
+            "check_in_status": "absent",
+            "check_out_status": "absent",
+            "scheduled_start": scheduled_start,
+            "scheduled_end": scheduled_end,
+        }
+
+    late = False
+    early = False
+    check_in_status = "on_time"
+    check_out_status = "pending"
+
+    if timing:
+        start_dt = datetime.combine(check_in.date(), timing.start_time)
+        if timing.check_in_grace_minutes:
+            start_dt += timedelta(minutes=timing.check_in_grace_minutes)
+        if check_in > start_dt:
+            late = True
+            check_in_status = "late"
+
+    if check_out:
+        check_out_status = "on_time"
+        if timing:
+            end_reference_date = check_out.date() if check_out else check_in.date()
+            end_dt = datetime.combine(end_reference_date, timing.end_time)
+            if timing.check_out_grace_minutes:
+                end_dt -= timedelta(minutes=timing.check_out_grace_minutes)
+            if check_out < end_dt:
+                early = True
+                check_out_status = "early"
+    else:
+        check_out_status = "pending"
+
+    if not timing:
+        check_in_status = "on_time"
+        check_out_status = "on_time" if check_out else "pending"
+
+    status = "present"
+    if late:
+        status = "late"
+
+    return {
+        "status": status,
+        "check_in_status": check_in_status,
+        "check_out_status": check_out_status,
+        "scheduled_start": scheduled_start,
+        "scheduled_end": scheduled_end,
+    }
+
+
+def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
+    selfie_data = _load_selfie_data(getattr(attendance, "selfie", None))
+    location_sections = _split_location_labels(getattr(attendance, "gps_location", None))
+    check_in_selfie_path = _make_selfie_url(selfie_data.get("check_in"))
+    check_out_selfie_path = _make_selfie_url(selfie_data.get("check_out"))
+    location_label = location_sections.get("check_in") or getattr(attendance, "gps_location", None)
+    total_hours_value = getattr(attendance, "total_hours", None)
+    if isinstance(total_hours_value, Decimal):
+        total_hours_value = float(total_hours_value)
+
+    return {
+        "attendance_id": attendance.attendance_id,
+        "user_id": attendance.user_id,
+        "employee_id": getattr(attendance, "employee_id", None),
+        "name": getattr(attendance, "name", None),
+        "department": getattr(attendance, "department", None),
+        "check_in": attendance.check_in,
+        "check_out": attendance.check_out,
+        "total_hours": total_hours_value,
+        "gps_location": location_label,
+        "locationLabel": location_label,
+        "checkInLocationLabel": location_sections.get("check_in"),
+        "checkOutLocationLabel": location_sections.get("check_out"),
+        "selfie": check_in_selfie_path,
+        "checkInSelfie": check_in_selfie_path,
+        "checkOutSelfie": check_out_selfie_path,
+    }
+
 def get_attendance_summary(db: Session) -> Dict[str, Any]:
-    """
-    Compute today's attendance summary: total employees, present, absent, late arrivals,
-    early departures, and average work hours for today.
-    """
+    """Compute today's summary using configured office timings."""
     try:
         today = datetime.utcnow().date()
         
-        # Total active employees
-        total_employees = db.query(User).filter(User.is_active == True).count()
+        total_employees = db.query(User).filter(User.is_active.is_(True)).count()
         if total_employees == 0:
             return {
                 "total_employees": 0,
@@ -52,81 +354,88 @@ def get_attendance_summary(db: Session) -> Dict[str, Any]:
                 "late_arrivals": 0,
                 "early_departures": 0,
                 "average_work_hours": 0.0,
-                "date": today.isoformat()
+                "date": today.isoformat(),
             }
 
-        # Get all attendance records for today with user details
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
         
-        records = db.query(
-            User.user_id,
-            User.name,
-            Attendance.check_in,
-            Attendance.check_out
-        ).join(
-            Attendance, User.user_id == Attendance.user_id
-        ).filter(
-            Attendance.check_in.between(today_start, today_end),
-            User.is_active == True
-        ).all()
+        records = (
+            db.query(Attendance, User)
+            .join(User, Attendance.user_id == User.user_id)
+            .filter(
+                Attendance.check_in >= today_start,
+                Attendance.check_in <= today_end,
+                User.is_active.is_(True),
+            )
+            .all()
+        )
 
-        # Process records
+        global_timing, dept_cache = _build_office_timing_cache(db)
+
         present_user_ids = set()
         late_arrivals = 0
         early_departures = 0
-        work_durations = []
-        
-        # Define working hours (10:00 - 18:00)
-        work_start = datetime.strptime("10:00:00", "%H:%M:%S").time()
-        work_end = datetime.strptime("18:00:00", "%H:%M:%S").time()
-        
-        for user_id, name, check_in, check_out in records:
-            present_user_ids.add(user_id)
-            
-            # Check for late arrival
-            if check_in and check_in.time() > work_start:
+        work_durations: list[float] = []
+
+        for attendance, user in records:
+            present_user_ids.add(user.user_id)
+            effective_timing = _resolve_office_timing(db, user.department, (global_timing, dept_cache))
+            evaluation = _evaluate_attendance_status(attendance.check_in, attendance.check_out, effective_timing)
+
+            if evaluation["check_in_status"] == "late":
                 late_arrivals += 1
-                
-            # Check for early departure
-            if check_out and check_out.time() < work_end:
+            if evaluation["check_out_status"] == "early":
                 early_departures += 1
                 
-            # Calculate work duration if both check-in and check-out exist
-            if check_in and check_out:
-                duration = (check_out - check_in).total_seconds() / 3600.0
-                work_durations.append(duration)
-            elif check_in:  # If only checked in, calculate duration until now
-                duration = (datetime.utcnow() - check_in).total_seconds() / 3600.0
-                work_durations.append(duration)
+            if attendance.check_in and attendance.check_out:
+                duration = attendance.check_out - attendance.check_in
+                work_durations.append(duration.total_seconds() / 3600.0)
         
-        present_employees = len(present_user_ids)
-        absent_employees = max(0, total_employees - present_employees)
-        avg_work_hours = round(sum(work_durations) / len(work_durations), 2) if work_durations else 0.0
+        present_today = len(present_user_ids)
+        absent_today = max(total_employees - present_today, 0)
+        average_work_hours = sum(work_durations) / len(work_durations) if work_durations else 0.0
 
         return {
             "total_employees": total_employees,
-            "present_today": present_employees,
-            "absent_today": absent_employees,
+            "present_today": present_today,
+            "absent_today": absent_today,
             "late_arrivals": late_arrivals,
             "early_departures": early_departures,
-            "average_work_hours": avg_work_hours,
+            "average_work_hours": round(average_work_hours, 2),
             "date": today.isoformat(),
         }
-        
-    except Exception as e:
-        logger.error(f"Error in get_attendance_summary: {str(e)}", exc_info=True)
-        # Return default values in case of error
-        return {
-            "total_employees": 0,
-            "present_today": 0,
-            "absent_today": 0,
-            "late_arrivals": 0,
-            "early_departures": 0,
-            "average_work_hours": 0.0,
-            "date": datetime.utcnow().date().isoformat(),
-            "error": str(e)
-        }
+    except Exception as exc:
+        logger.error("Error calculating attendance summary: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to compute attendance summary",
+        )
+
+
+def get_today_attendance_status(db: Session, department: Optional[str] = None) -> List[Dict[str, Any]]:
+    records = get_today_attendance_records(db)
+    if department:
+        dept_key = _normalize_department_value(department)
+        if dept_key:
+            records = [record for record in records if _normalize_department_value(record.get("department")) == dept_key]
+    return records
+
+
+class ReverseGeocodePayload(BaseModel):
+    lat: float
+    lon: float
+
+
+@router.post("/reverse-geocode")
+def reverse_geocode(payload: ReverseGeocodePayload):
+    """Return human-readable location details for the given coordinates via server-side geocoding."""
+    try:
+        details = location_service.get_location_details(payload.lat, payload.lon)
+        return details
+    except Exception as exc:  # pragma: no cover - defensive catch
+        logger.error("Reverse geocode failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Unable to fetch location details")
 
 def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
     """
@@ -138,7 +447,7 @@ def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
         today_end = today_start + timedelta(days=1)
 
         # Get only users who have checked in today
-        attendance_records = (
+        raw_records = (
             db.query(
                 User.user_id,
                 User.employee_id,
@@ -161,76 +470,65 @@ def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
             .order_by(Attendance.check_in.desc())
             .all()
         )
-        
+
         # Prepare the final result with only users who have checked in today
         results: List[Dict[str, Any]] = []
-        
-        for (
-            user_id,
-            employee_id,
-            name,
-            email,
-            department,
-            attendance_id,
-            check_in,
-            check_out,
-            gps_location,
-            selfie,
-            total_hours
-        ) in attendance_records:
-            status_text = "Checked In"
-            if check_out:
-                status_text = "Checked Out"
-                
-            # Format check-in and check-out times as ISO strings
-            check_in_iso = check_in.isoformat() if check_in else None
-            check_out_iso = check_out.isoformat() if check_out else None
-            
-            # Get location from GPS data if available
-            location = "Location not available"
-            if gps_location:
-                try:
-                    # If GPS is stored as a string, try to parse it
-                    if isinstance(gps_location, str):
-                        location = gps_location
-                    # If it's a dictionary, extract relevant parts
-                    elif isinstance(gps_location, dict):
-                        location = gps_location.get("address", "Location available")
-                except Exception as e:
-                    logger.warning(f"Error parsing GPS data: {str(e)}")
-                    location = "Location available"
-            
-            # Get selfie URL if available
-            selfie_url = None
-            if selfie:
-                if selfie.startswith('http'):
-                    selfie_url = selfie
-                else:
-                    # Assuming selfie is stored as a path relative to your static files
-                    selfie_url = f"/static/selfies/{selfie}" if selfie else None
-            
-            # Calculate total hours if not provided
+        timing_cache = _build_office_timing_cache(db)
+
+        for row in raw_records:
+            (
+                user_id,
+                employee_id,
+                name,
+                email,
+                department,
+                attendance_id,
+                check_in,
+                check_out,
+                gps_location,
+                selfie,
+                total_hours,
+            ) = row
+
+            # calculate hours if needed
             calculated_hours = 0.0
             if check_in and check_out:
                 duration = check_out - check_in
                 calculated_hours = round(duration.total_seconds() / 3600, 2)
-            
-            results.append({
-                "attendance_id": attendance_id,
-                "user_id": user_id,
-                "employee_id": employee_id,
-                "name": name or "Unknown",
-                "email": email or "",
-                "department": department or "N/A",
-                "check_in": check_in_iso,
-                "check_out": check_out_iso,
-                "status": status_text,
-                "location": location,
-                "gps_data": gps_location if gps_location else None,
-                "selfie": selfie_url,
-                "total_hours": float(total_hours) if total_hours is not None else calculated_hours
-            })
-            
+
+            attendance_obj = Attendance(
+                attendance_id=attendance_id,
+                user_id=user_id,
+                check_in=check_in,
+                check_out=check_out,
+                total_hours=total_hours if total_hours is not None else calculated_hours,
+                gps_location=gps_location,
+                selfie=selfie,
+            )
+
+            payload = _prepare_attendance_payload(attendance_obj)
+            payload.update(
+                {
+                    "employee_id": employee_id,
+                    "name": name or "Unknown",
+                    "email": email or "",
+                    "department": department or "N/A",
+                }
+            )
+
+            timing = _resolve_office_timing(db, department, timing_cache)
+            evaluation = _evaluate_attendance_status(check_in, check_out, timing)
+            payload.update(
+                {
+                    "status": evaluation["status"],
+                    "checkInStatus": evaluation["check_in_status"],
+                    "checkOutStatus": evaluation["check_out_status"],
+                    "scheduledStart": evaluation["scheduled_start"],
+                    "scheduledEnd": evaluation["scheduled_end"],
+                }
+            )
+            results.append(payload)
+
         return results
         
     except Exception as e:
@@ -348,26 +646,14 @@ async def employee_check_in_route(
         )
 
         if existing_attendance:
-            return {
-                "attendance_id": existing_attendance.attendance_id,
-                "user_id": existing_attendance.user_id,
-                "check_in": existing_attendance.check_in,
-                "check_out": existing_attendance.check_out,
-                "gps_location": existing_attendance.gps_location,
-                "selfie": existing_attendance.selfie,
-                "total_hours": existing_attendance.total_hours
-            }
+            return _prepare_attendance_payload(existing_attendance)
 
         # Create new check-in with location data
         attendance = Attendance(
             user_id=user_id,
             check_in=datetime.utcnow(),
-            gps_location={
-                'latitude': processed_location['latitude'],
-                'longitude': processed_location['longitude']
-            },
-            location_data=processed_location,
-            selfie=selfie_path,
+            gps_location=_compose_location_entry(None, "Check-in", processed_location),
+            selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
             total_hours=0.0
         )
         
@@ -377,15 +663,7 @@ async def employee_check_in_route(
         
         print(f"Successfully created check-in for user {user_id}, attendance ID: {attendance.attendance_id}")
         
-        return {
-            "attendance_id": attendance.attendance_id,
-            "user_id": attendance.user_id,
-            "check_in": attendance.check_in,
-            "check_out": attendance.check_out,
-            "gps_location": attendance.gps_location,
-            "selfie": attendance.selfie,
-            "total_hours": attendance.total_hours
-        }
+        return _prepare_attendance_payload(attendance)
         
     except Exception as e:
         db.rollback()
@@ -423,6 +701,9 @@ async def employee_check_in_json(
                 f.write(raw)
             selfie_path = file_path
 
+        location_payload = _ensure_location_dict(payload.gps_location)
+        processed_location = validate_and_process_location(location_payload)
+
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         existing_attendance = (
             db.query(Attendance)
@@ -434,40 +715,20 @@ async def employee_check_in_json(
             .first()
         )
         if existing_attendance:
-            return {
-                "attendance_id": existing_attendance.attendance_id,
-                "user_id": existing_attendance.user_id,
-                "check_in": existing_attendance.check_in,
-                "check_out": existing_attendance.check_out,
-                "gps_location": existing_attendance.gps_location,
-                "selfie": existing_attendance.selfie,
-                "total_hours": existing_attendance.total_hours
-            }
+            return _prepare_attendance_payload(existing_attendance)
 
         # Create new check-in with location data
         attendance = Attendance(
             user_id=payload.user_id,
             check_in=datetime.utcnow(),
-            gps_location={
-                'latitude': payload.gps_location['latitude'],
-                'longitude': payload.gps_location['longitude']
-            },
-            location_data=payload.gps_location,
-            selfie=selfie_path,
+            gps_location=_compose_location_entry(None, "Check-in", processed_location),
+            selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
             total_hours=0.0
         )
         db.add(attendance)
         db.commit()
         db.refresh(attendance)
-        return {
-            "attendance_id": attendance.attendance_id,
-            "user_id": attendance.user_id,
-            "check_in": attendance.check_in,
-            "check_out": attendance.check_out,
-            "gps_location": attendance.gps_location,
-            "selfie": attendance.selfie,
-            "total_hours": attendance.total_hours
-        }
+        return _prepare_attendance_payload(attendance)
     except HTTPException:
         raise
     except Exception as e:
@@ -495,14 +756,19 @@ async def employee_check_out_route(
             )
 
         # Parse and validate location data
+        location_source = location_data or gps_location
+        processed_location: Dict[str, Any]
         try:
-            loc_data = json.loads(location_data) if location_data else None
-            processed_location = validate_and_process_location(loc_data or gps_location)
-        except json.JSONDecodeError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid location data format. Must be valid JSON."
-            )
+            normalized_location = _ensure_location_dict(location_source)
+            processed_location = validate_and_process_location(normalized_location)
+        except HTTPException:
+            raise
+        except Exception:
+            processed_location = {
+                "address": "Location not provided",
+                "latitude": None,
+                "longitude": None,
+            }
 
         # Save selfie if provided
         selfie_path = save_selfie(user_id, selfie, 'checkout') if selfie else None
@@ -528,25 +794,13 @@ async def employee_check_out_route(
 
         # Update check-out with location data
         attendance.check_out = datetime.utcnow()
-        attendance.selfie = selfie_path or attendance.selfie
-        attendance.gps_location = {
-            'latitude': processed_location['latitude'],
-            'longitude': processed_location['longitude']
-        }
-        
-        # Update or set location data
-        if not attendance.location_data:
-            attendance.location_data = {}
-            
-        if 'check_out' not in attendance.location_data:
-            attendance.location_data['check_out'] = {}
-            
-        attendance.location_data.update({
-            'check_out': {
-                **processed_location,
-                'timestamp': attendance.check_out.isoformat()
-            }
-        })
+        if selfie_path:
+            attendance.selfie = _dump_selfie_data(attendance.selfie, check_out=selfie_path)
+        attendance.gps_location = _compose_location_entry(
+            attendance.gps_location,
+            "Check-out",
+            processed_location,
+        )
 
         # Calculate total hours worked
         time_worked = attendance.check_out - attendance.check_in
@@ -557,15 +811,7 @@ async def employee_check_out_route(
         
         print(f"Successfully processed check-out for user {user_id}, attendance ID: {attendance.attendance_id}")
         
-        return {
-            "attendance_id": attendance.attendance_id,
-            "user_id": attendance.user_id,
-            "check_in": attendance.check_in,
-            "check_out": attendance.check_out,
-            "gps_location": attendance.gps_location,
-            "selfie": attendance.selfie,
-            "total_hours": attendance.total_hours
-        }
+        return _prepare_attendance_payload(attendance)
         
     except HTTPException:
         raise
@@ -592,12 +838,19 @@ async def employee_check_out_json(
 
         selfie_path = None
         if payload.selfie:
-            data = payload.selfie
-            if data.startswith('data:image'):
-                header, b64data = data.split(',', 1)
-            else:
-                b64data = data
-            raw = base64.b64decode(b64data)
+            try:
+                data = payload.selfie
+                if data.startswith('data:image'):
+                    _, b64data = data.split(',', 1)
+                else:
+                    b64data = data
+                raw = base64.b64decode(b64data)
+            except Exception as decode_error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid selfie payload: {decode_error}"
+                )
+
             UPLOAD_DIR = "static/selfies"
             os.makedirs(UPLOAD_DIR, exist_ok=True)
             file_name = f"{payload.user_id}_checkout_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
@@ -605,6 +858,20 @@ async def employee_check_out_json(
             with open(file_path, 'wb') as f:
                 f.write(raw)
             selfie_path = file_path
+
+        location_source = payload.gps_location or (payload.location_data or {}).get('check_out') or (payload.location_data or {}).get('check_in')
+        processed_location: Dict[str, Any]
+        try:
+            location_payload = _ensure_location_dict(location_source)
+            processed_location = validate_and_process_location(location_payload)
+        except HTTPException:
+            raise
+        except Exception:
+            processed_location = {
+                "address": "Location not provided",
+                "latitude": None,
+                "longitude": None,
+            }
 
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         attendance = (
@@ -622,39 +889,19 @@ async def employee_check_out_json(
 
         # Update check-out with location data
         attendance.check_out = datetime.utcnow()
-        attendance.selfie = selfie_path or attendance.selfie
-        attendance.gps_location = {
-            'latitude': payload.gps_location['latitude'],
-            'longitude': payload.gps_location['longitude']
-        }
-        
-        # Update or set location data
-        if not attendance.location_data:
-            attendance.location_data = {}
-            
-        if 'check_out' not in attendance.location_data:
-            attendance.location_data['check_out'] = {}
-            
-        attendance.location_data.update({
-            'check_out': {
-                **payload.gps_location,
-                'timestamp': attendance.check_out.isoformat()
-            }
-        })
+        if selfie_path:
+            attendance.selfie = _dump_selfie_data(attendance.selfie, check_out=selfie_path)
+        attendance.gps_location = _compose_location_entry(
+            attendance.gps_location,
+            "Check-out",
+            processed_location,
+        )
 
         time_worked = attendance.check_out - attendance.check_in
         attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)
         db.commit()
         db.refresh(attendance)
-        return {
-            "attendance_id": attendance.attendance_id,
-            "user_id": attendance.user_id,
-            "check_in": attendance.check_in,
-            "check_out": attendance.check_out,
-            "gps_location": attendance.gps_location,
-            "selfie": attendance.selfie,
-            "total_hours": attendance.total_hours
-        }
+        return _prepare_attendance_payload(attendance)
     except HTTPException:
         raise
     except Exception as e:
@@ -665,12 +912,14 @@ async def employee_check_out_json(
 @router.get("/my-attendance/{user_id}", response_model=list[AttendanceOut])
 def get_self_attendance(user_id: int, db: Session = Depends(get_db)):
     six_months_ago = datetime.utcnow() - timedelta(days=180)
-    return (
+    records = (
         db.query(Attendance)
         .filter(Attendance.user_id == user_id, Attendance.check_in >= six_months_ago)
         .order_by(Attendance.check_in.desc())
         .all()
     )
+
+    return [_prepare_attendance_payload(record) for record in records]
 
 # Today's Attendance Summary
 @router.get("/summary")
@@ -771,23 +1020,28 @@ def download_attendance_pdf(
 # Get Today's Attendance Status (for Admin/HR/Manager)
 @router.get("/today-status")
 def get_today_status(
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Get today's attendance status for all employees
     - ADMIN: See all employees
-    - HR: See all employees
+    - HR: See only their department employees
     - MANAGER: See only their department employees
     - Others: Not allowed
     """
-    user_role = current_user.get("role")
-    user_department = current_user.get("department")
+    user_role = current_user.role
+    user_department = current_user.department
     
-    if user_role == RoleEnum.ADMIN.value or user_role == RoleEnum.HR.value:
-        # Admin and HR can see all employees
+    if user_role == RoleEnum.ADMIN:
+        # Admin can see all employees
         return get_today_attendance_status(db)
-    elif user_role == RoleEnum.MANAGER.value:
+    elif user_role == RoleEnum.HR:
+        # HR can see only their department
+        if not user_department:
+            raise HTTPException(status_code=400, detail="HR must have a department assigned")
+        return get_today_attendance_status(db, department=user_department)
+    elif user_role == RoleEnum.MANAGER:
         # Manager can see only their department
         if not user_department:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
@@ -799,49 +1053,185 @@ def get_today_status(
 @router.get("/all")
 def get_all_attendance_history(
     department: Optional[str] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Get all attendance history
-    - ADMIN: See all employees
-    - HR: See all employees  
+    - ADMIN: See all employees (or filter by department)
+    - HR: See only their department employees (department filter is automatic)
     - MANAGER: See only their department employees (department filter is automatic)
     - Others: Not allowed
     """
-    user_role = current_user.get("role")
-    user_department = current_user.get("department")
+    user_role = current_user.role
+    user_department = current_user.department
     
-    if user_role == RoleEnum.ADMIN.value or user_role == RoleEnum.HR.value:
-        # Admin and HR can see all or filter by department
-        records = get_all_attendance(db, department=department)
-    elif user_role == RoleEnum.MANAGER.value:
+    records_query = (
+        db.query(
+            Attendance,
+            User.name,
+            User.department,
+            User.employee_id,
+            User.email,
+        )
+        .join(User, Attendance.user_id == User.user_id)
+    )
+
+    if user_role == RoleEnum.ADMIN:
+        # Admin can see all or filter by department
+        if department:
+            records_query = records_query.filter(User.department == department)
+    elif user_role == RoleEnum.HR:
+        # HR can only see their department's attendance
+        if not user_department:
+            raise HTTPException(status_code=400, detail="HR must have a department assigned")
+        records_query = records_query.filter(User.department == user_department)
+        # Allow additional department filter if provided (for admin override scenarios)
+        if department and department != user_department:
+            raise HTTPException(status_code=403, detail="HR can only view their own department's attendance")
+    elif user_role == RoleEnum.MANAGER:
         # Manager can only see their department
         if not user_department:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
-        records = get_all_attendance(db, department=user_department)
+        records_query = records_query.filter(User.department == user_department)
     else:
         raise HTTPException(status_code=403, detail="Not authorized to view attendance")
-    
+
+    try:
+        records = records_query.order_by(Attendance.check_in.desc()).all()
+    except Exception as e:
+        logger.error(f"Error querying attendance records: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching attendance records: {str(e)}")
+
     # Format the response - include email and other user details
     result = []
-    for att, name, dept, emp_id in records:
-        # Get user details including email
-        user = db.query(User).filter(User.user_id == att.user_id).first()
-        result.append({
-            "attendance_id": att.attendance_id,
-            "user_id": att.user_id,
-            "employee_id": emp_id,
-            "name": name,
-            "userName": name,  # Add for frontend compatibility
-            "email": user.email if user else None,
-            "userEmail": user.email if user else None,  # Add for frontend compatibility
-            "department": dept,
-            "check_in": att.check_in.isoformat() if att.check_in else None,  # Return ISO format
-            "check_out": att.check_out.isoformat() if att.check_out else None,  # Return ISO format
-            "total_hours": att.total_hours,
-            "gps_location": att.gps_location,
-            "selfie": att.selfie
-        })
-    
+    timing_cache = _build_office_timing_cache(db)
+    for att, name, dept, emp_id, email in records:
+        payload = _prepare_attendance_payload(att)
+        payload.update(
+            {
+                "name": name,
+                "userName": name,
+                "department": dept,
+                "employee_id": emp_id,
+                "email": email,
+                "userEmail": email,
+            }
+        )
+        check_in_value = payload.get("check_in")
+        if isinstance(check_in_value, datetime):
+            payload["check_in"] = check_in_value.isoformat()
+        check_out_value = payload.get("check_out")
+        if isinstance(check_out_value, datetime):
+            payload["check_out"] = check_out_value.isoformat()
+
+        timing = _resolve_office_timing(db, dept, timing_cache)
+        evaluation = _evaluate_attendance_status(att.check_in, att.check_out, timing)
+        payload.update(
+            {
+                "status": evaluation["status"],
+                "checkInStatus": evaluation["check_in_status"],
+                "checkOutStatus": evaluation["check_out_status"],
+                "scheduledStart": evaluation["scheduled_start"],
+                "scheduledEnd": evaluation["scheduled_end"],
+            }
+        )
+        result.append(payload)
+
     return result
+
+@router.get("/office-hours", response_model=List[OfficeTimingOut])
+def list_office_timings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in {RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view office timings")
+
+    records = (
+        db.query(OfficeTiming)
+        .filter(OfficeTiming.is_active.is_(True))
+        .order_by(OfficeTiming.department.is_(None).desc(), OfficeTiming.department.asc())
+        .all()
+    )
+    return [_serialize_office_timing(record) for record in records]
+
+
+@router.get("/office-hours/effective", response_model=OfficeTimingOut)
+def get_effective_office_timing(
+    department: Optional[str] = Query(default=None, description="Department to resolve"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    timing = _resolve_office_timing(db, department)
+    if not timing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office timing not configured")
+    return _serialize_office_timing(timing)
+
+
+@router.put("/office-hours", response_model=OfficeTimingOut, status_code=status.HTTP_201_CREATED)
+def upsert_office_timing(
+    payload: OfficeTimingCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != RoleEnum.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can modify office timings")
+
+    normalized_department = _normalize_department_value(payload.department)
+
+    try:
+        start_time_obj = datetime.strptime(payload.start_time, "%H:%M").time()
+        end_time_obj = datetime.strptime(payload.end_time, "%H:%M").time()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid time format. Use HH:MM") from exc
+
+    if datetime.combine(datetime.utcnow().date(), end_time_obj) <= datetime.combine(datetime.utcnow().date(), start_time_obj):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End time must be after start time")
+
+    query = db.query(OfficeTiming).filter(OfficeTiming.is_active.is_(True))
+    if normalized_department is None:
+        existing = query.filter(OfficeTiming.department.is_(None)).first()
+    else:
+        existing = query.filter(func.lower(OfficeTiming.department) == normalized_department.lower()).first()
+
+    if existing:
+        existing.start_time = start_time_obj
+        existing.end_time = end_time_obj
+        existing.check_in_grace_minutes = payload.check_in_grace_minutes
+        existing.check_out_grace_minutes = payload.check_out_grace_minutes
+        existing.department = normalized_department
+        existing.is_active = True
+        timing = existing
+    else:
+        timing = OfficeTiming(
+            department=normalized_department,
+            start_time=start_time_obj,
+            end_time=end_time_obj,
+            check_in_grace_minutes=payload.check_in_grace_minutes,
+            check_out_grace_minutes=payload.check_out_grace_minutes,
+            is_active=True,
+        )
+        db.add(timing)
+
+    db.commit()
+    db.refresh(timing)
+    return _serialize_office_timing(timing)
+
+
+@router.delete("/office-hours/{timing_id}", status_code=status.HTTP_204_NO_CONTENT)
+def deactivate_office_timing(
+    timing_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != RoleEnum.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can delete office timings")
+
+    timing = db.query(OfficeTiming).filter(OfficeTiming.id == timing_id).first()
+    if not timing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office timing not found")
+
+    timing.is_active = False
+    db.commit()
+    return None

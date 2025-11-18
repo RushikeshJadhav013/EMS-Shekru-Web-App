@@ -45,3 +45,8 @@ class User(Base):
     leaves = relationship("Leave", back_populates="user", cascade="all, delete-orphan")
     assigned_tasks = relationship("Task", back_populates="assigned_to_user", foreign_keys="Task.assigned_to")
     created_tasks = relationship("Task", back_populates="assigned_by_user", foreign_keys="Task.assigned_by")
+    leave_notifications = relationship("LeaveNotification", back_populates="user", cascade="all, delete-orphan")
+    task_history_entries = relationship("TaskHistory", back_populates="user", cascade="all, delete-orphan")
+    task_notifications = relationship("TaskNotification", back_populates="user", cascade="all, delete-orphan")
+    shift_assignments = relationship("ShiftAssignment", foreign_keys="ShiftAssignment.user_id", back_populates="user", cascade="all, delete-orphan")
+    shift_notifications = relationship("ShiftNotification", back_populates="user", cascade="all, delete-orphan")

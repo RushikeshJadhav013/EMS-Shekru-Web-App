@@ -49,7 +49,15 @@ def admin_dashboard(db: Session = Depends(get_db)):
         or 0
     )
     pending_leaves = (
-        db.query(func.count(Leave.leave_id)).filter(Leave.status == "Pending").scalar() or 0
+        db.query(func.count(Leave.leave_id))
+        .join(User, User.user_id == Leave.user_id)
+        .filter(
+            Leave.status == "Pending",
+            User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+            User.is_active.is_(True),
+        )
+        .scalar()
+        or 0
     )
     active_tasks = (
         db.query(func.count(Task.task_id)).filter(Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)])).scalar() or 0
@@ -167,9 +175,9 @@ def hr_dashboard(db: Session = Depends(get_db)):
 
 @router.get("/manager")
 def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    if not current_user.get("department"):
+    if not current_user.department:
         raise HTTPException(status_code=400, detail="Manager must have a department assigned")
-    dept = current_user["department"]
+    dept = current_user.department
     today_start, today_end = _today_bounds()
 
     team_members = db.query(User).filter(User.department == dept).count()
@@ -203,9 +211,29 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     pending_approvals = (
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
-        .filter(User.department == dept, Leave.status == "Pending")
+        .filter(
+            User.department == dept,
+            Leave.status == "Pending",
+            User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD]),
+            User.is_active.is_(True),
+        )
+        .scalar()
+        or 0
+    )
+    overdue_items = (
+        db.query(func.count(Task.task_id))
+        .join(User, User.user_id == Task.assigned_to)
+        .filter(
+            User.department == dept,
+            Task.status != str(TaskStatus.COMPLETED),
+            Task.due_date.isnot(None),
+            Task.due_date < datetime.utcnow()
+        )
         .scalar() or 0
     )
+
+    total_tasks = active_tasks + completed_tasks
+    team_performance_percent = int((completed_tasks / max(total_tasks, 1)) * 100)
 
     # Recent activities within department (today's check-ins)
     attendance_today = (
@@ -216,15 +244,87 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         .limit(20)
         .all()
     )
-    recent_activities = []
+    activities = []
     for att, usr in attendance_today:
         status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 30) else 'late'
-        recent_activities.append({
-            "id": att.attendance_id,
-            "type": "check-in",
+        activities.append({
+            "id": f"attendance-{att.attendance_id}",
+            "type": "attendance",
             "user": usr.name,
             "time": att.check_in.isoformat(),
+            "description": "Checked in",
             "status": status,
+        })
+
+    pending_leaves = (
+        db.query(Leave, User)
+        .join(User, User.user_id == Leave.user_id)
+        .filter(
+            User.department == dept,
+            Leave.status == "Pending",
+            User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD]),
+            User.is_active.is_(True),
+        )
+        .order_by(Leave.start_date.desc())
+        .limit(10)
+        .all()
+    )
+    for leave, usr in pending_leaves:
+        activities.append({
+            "id": f"leave-{leave.leave_id}",
+            "type": "leave",
+            "user": usr.name,
+            "time": leave.start_date.isoformat(),
+            "description": "Leave request pending approval",
+            "status": leave.status.lower(),
+        })
+
+    recent_tasks = (
+        db.query(Task, User)
+        .join(User, User.user_id == Task.assigned_to)
+        .filter(User.department == dept)
+        .order_by(Task.due_date.is_(None), Task.due_date.desc())
+        .limit(10)
+        .all()
+    )
+    for task, usr in recent_tasks:
+        activities.append({
+            "id": f"task-{task.task_id}",
+            "type": "task",
+            "user": usr.name,
+            "time": (task.due_date or datetime.utcnow()).isoformat(),
+            "description": task.title,
+            "status": task.status.lower(),
+        })
+
+    activities.sort(key=lambda item: item["time"], reverse=True)
+    team_activities = activities[:15]
+
+    team_leads = db.query(User).filter(User.department == dept, User.role == RoleEnum.TEAM_LEAD).all()
+    team_performance = []
+    for lead in team_leads:
+        lead_tasks = (
+            db.query(Task)
+            .filter(Task.assigned_by == lead.user_id)
+            .all()
+        )
+        total_lead_tasks = len(lead_tasks)
+        completed_lead_tasks = len([t for t in lead_tasks if t.status == str(TaskStatus.COMPLETED)])
+        completion_rate = int((completed_lead_tasks / max(total_lead_tasks, 1)) * 100)
+        member_ids = {task.assigned_to for task in lead_tasks if task.assigned_to}
+        team_performance.append({
+            "team": lead.designation or f"{lead.name}'s Team",
+            "lead": lead.name,
+            "members": len(member_ids),
+            "completion": completion_rate,
+        })
+
+    if not team_performance:
+        team_performance.append({
+            "team": f"{dept} Team",
+            "lead": "N/A",
+            "members": team_members,
+            "completion": team_performance_percent,
         })
 
     return {
@@ -234,16 +334,19 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         "activeTasks": active_tasks,
         "completedTasks": completed_tasks,
         "pendingApprovals": pending_approvals,
-        "recentActivities": recent_activities,
+        "overdueItems": overdue_items,
+        "teamPerformancePercent": team_performance_percent,
+        "teamActivities": team_activities,
+        "teamPerformance": team_performance,
     }
 
 
 @router.get("/team-lead")
 def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     # Using department as team proxy
-    if not current_user.get("department"):
+    if not current_user.department:
         raise HTTPException(status_code=400, detail="Team Lead must have a department assigned")
-    dept = current_user["department"]
+    dept = current_user.department
     today_start, today_end = _today_bounds()
 
     team_size = db.query(User).filter(User.department == dept).count()
@@ -308,7 +411,7 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
 
 @router.get("/employee")
 def employee_dashboard(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    user_id = current_user.get("user_id")
+    user_id = current_user.user_id
     if not user_id:
         raise HTTPException(status_code=400, detail="Invalid user")
     today_start, today_end = _today_bounds()

@@ -1,8 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from sqlalchemy.exc import IntegrityError
+from typing import List, Optional, Union
+from pathlib import Path
 from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema
-from app.crud.user_crud import create_user, list_users, update_user_role, update_user_status, delete_user, get_user_by_email, get_user_by_employee_id, get_user, export_users_pdf, export_users_csv
+from app.crud.user_crud import (
+    create_user,
+    list_users,
+    update_user_role,
+    update_user_status,
+    delete_user,
+    get_user_by_email,
+    get_user_by_employee_id,
+    get_user,
+    export_users_pdf,
+    export_users_csv,
+)
 from app.db.database import get_db
 from app.dependencies import require_roles, get_current_user
 from app.enums import RoleEnum
@@ -14,10 +27,33 @@ from pydantic import EmailStr
 from starlette.responses import Response
 from starlette.background import BackgroundTask
 
-router = APIRouter(
-    prefix="/employees",
-    tags=["Employees"]
-)
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def _profile_photo_exists(photo_path: Optional[str]) -> bool:
+    if not photo_path:
+        return False
+    candidate = Path(photo_path)
+    if not candidate.is_absolute():
+        candidate = (BASE_DIR / photo_path).resolve()
+    return candidate.exists()
+
+
+def _sanitize_user_record(user: User) -> dict:
+    data = UserOut.model_validate(user).model_dump()
+    if data.get("profile_photo") and not _profile_photo_exists(data["profile_photo"]):
+        data["profile_photo"] = None
+    return data
+
+
+def _sanitize_users_response(payload: Union[User, List[User]]) -> Union[dict, List[dict]]:
+    if isinstance(payload, list):
+        return [_sanitize_user_record(item) for item in payload]
+    return _sanitize_user_record(payload)
+    return _sanitize_user_record(payload)
+
+
+router = APIRouter(prefix="/employees", tags=["Employees"])
 
 # ✅ Public: Register a new employee
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -40,15 +76,52 @@ def register_employee(
     db: Session = Depends(get_db)
 ):
 
+    email = email.strip()
+    employee_id = employee_id.strip()
+    pan_card = pan_card.strip().upper() if pan_card else None
+    aadhar_card = aadhar_card.strip() if aadhar_card else None
+
     # Check for duplicate email
     existing_user = get_user_by_email(db, email)
     if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Employee already exists with this email address",
+        )
     
     # Check for duplicate employee_id
     existing_employee = get_user_by_employee_id(db, employee_id)
     if existing_employee:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Employee ID '{employee_id}' already exists")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Employee already exists with ID '{employee_id}'",
+        )
+
+    if pan_card:
+        duplicate_pan = (
+            db.query(User)
+            .filter(User.pan_card.isnot(None))
+            .filter(User.pan_card == pan_card)
+            .first()
+        )
+        if duplicate_pan:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Employee already exists with this PAN card number",
+            )
+
+    if aadhar_card:
+        duplicate_aadhar = (
+            db.query(User)
+            .filter(User.aadhar_card.isnot(None))
+            .filter(User.aadhar_card == aadhar_card)
+            .first()
+        )
+        if duplicate_aadhar:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Employee already exists with this Aadhar card number",
+            )
 
     profile_photo_path = None
     if profile_photo:
@@ -84,7 +157,15 @@ def register_employee(
         profile_photo=profile_photo_path
     )
 
-    return create_user(db, user_in)
+    try:
+        created_user = create_user(db, user_in)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Employee already exists with the provided identifiers",
+        )
+    return _sanitize_users_response(created_user)
 
 # # ✅ Admin & HR: Get all employees with optional search and filter
 # @router.get("/", response_model=List[UserOut])
@@ -139,7 +220,7 @@ def get_all_employees_public(
     if role:
         employees = [emp for emp in employees if emp.role == role]
 
-    return employees
+    return _sanitize_users_response(employees)
 
 
 # ✅ Update employee details (Users can update their own profile, Admin/HR can update anyone)
@@ -182,7 +263,7 @@ def update_employee(
 
     db.commit()
     db.refresh(employee)
-    return employee
+    return _sanitize_users_response(employee)
 
 # # ✅ Admin only: Update employee role
 # @router.put("/{employee_id}/role", response_model=UserOut)
@@ -202,7 +283,7 @@ def update_role_public(
     employee = update_user_role(db, user_id, role_data.role)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return employee
+    return _sanitize_users_response(employee)
 
 @router.put("/{user_id}/status", response_model=UserOut, summary="Activate/Deactivate Employee")
 def update_employee_status(
@@ -218,7 +299,7 @@ def update_employee_status(
     employee = update_user_status(db, user_id, status_data.is_active)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return employee
+    return _sanitize_users_response(employee)
 
 @router.get("/export/pdf", summary="Download all user details as PDF")
 def download_users_pdf(
@@ -282,4 +363,4 @@ def get_single_employee(user_id: int, db: Session = Depends(get_db),
     employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return employee
+    return _sanitize_users_response(employee)

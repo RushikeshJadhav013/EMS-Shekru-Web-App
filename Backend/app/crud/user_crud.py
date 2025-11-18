@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from app.db.models.user import User
 from app.enums import RoleEnum
 from passlib.context import CryptContext
@@ -50,10 +50,24 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password_bytes)
 
 def get_user_by_email(db: Session, email: str):
-    return db.query(User).filter(User.email == email).first()
+    if not email:
+        return None
+    normalized_email = email.strip().lower()
+    return (
+        db.query(User)
+        .filter(func.lower(User.email) == normalized_email)
+        .first()
+    )
 
 def get_user_by_employee_id(db: Session, employee_id: str):
-    return db.query(User).filter(User.employee_id == employee_id).first()
+    if not employee_id:
+        return None
+    normalized_emp_id = employee_id.strip().lower()
+    return (
+        db.query(User)
+        .filter(func.lower(User.employee_id) == normalized_emp_id)
+        .first()
+    )
 
 def get_user(db: Session, user_id: int):
     return db.query(User).filter(User.user_id == user_id).first()

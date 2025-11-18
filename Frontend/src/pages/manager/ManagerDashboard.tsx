@@ -31,33 +31,31 @@ const ManagerDashboard: React.FC = () => {
     activeTasks: 0,
     completedTasks: 0,
     pendingApprovals: 0,
-    teamPerformance: 0,
+    teamPerformancePercent: 0,
     overdueItems: 0,
   });
 
-  const [recentActivities, setRecentActivities] = useState<{id: number; type: string; user: string; time: string; status: string;}[]>([]);
+  const [teamActivities, setTeamActivities] = useState<{id: string; type: string; user: string; time: string; description: string; status: string;}[]>([]);
+  const [teamPerformance, setTeamPerformance] = useState<{team: string; lead: string; members: number; completion: number;}[]>([]);
 
   useEffect(() => {
     apiService.getManagerDashboard()
       .then((data) => {
-        setStats(data);
-        setRecentActivities(data.recentActivities || []);
+        setStats({
+          teamMembers: data.teamMembers || 0,
+          presentToday: data.presentToday || 0,
+          onLeave: data.onLeave || 0,
+          activeTasks: data.activeTasks || 0,
+          completedTasks: data.completedTasks || 0,
+          pendingApprovals: data.pendingApprovals || 0,
+          teamPerformancePercent: data.teamPerformancePercent || 0,
+          overdueItems: data.overdueItems || 0,
+        });
+        setTeamActivities(data.teamActivities || []);
+        setTeamPerformance(data.teamPerformance || []);
       })
       .catch(() => {});
   }, []);
-
-  const teamActivities = [
-    { id: 1, type: 'task', user: 'Alice Cooper', task: 'Design Review', time: '11:00 AM', status: 'completed' },
-    { id: 2, type: 'leave', user: 'Bob Martin', time: '09:30 AM', status: 'pending' },
-    { id: 3, type: 'check-in', user: 'Carol White', time: '09:00 AM', status: 'on-time' },
-    { id: 4, type: 'task', user: 'Dave Brown', task: 'Backend API', time: '2:30 PM', status: 'in-progress' },
-  ];
-
-  const teamLeads = [
-    { name: 'Frontend Team', lead: 'Alice Cooper', members: 8, completion: 92 },
-    { name: 'Backend Team', lead: 'Bob Martin', members: 10, completion: 85 },
-    { name: 'QA Team', lead: 'Carol White', members: 6, completion: 88 },
-  ];
 
   return (
     <div className="space-y-6">
@@ -110,8 +108,8 @@ const ManagerDashboard: React.FC = () => {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.teamPerformance}%</div>
-            <Progress value={stats.teamPerformance} className="mt-2 h-2 bg-white/30" />
+            <div className="text-3xl font-bold">{stats.teamPerformancePercent}%</div>
+            <Progress value={stats.teamPerformancePercent} className="mt-2 h-2 bg-white/30" />
           </CardContent>
         </Card>
 
@@ -165,7 +163,7 @@ const ManagerDashboard: React.FC = () => {
             <CardDescription className="text-base">Recent updates from your team</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {teamActivities.map((activity) => (
+            {teamActivities.length > 0 ? teamActivities.map((activity) => (
               <div key={activity.id} className="flex items-start gap-3 p-3 rounded-lg border hover:bg-white/50 dark:hover:bg-gray-800/50 transition-colors">
                 <div className={`h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm ${
                   activity.type === 'task' ? 'bg-gradient-to-br from-blue-400 to-indigo-500' :
@@ -179,13 +177,13 @@ const ManagerDashboard: React.FC = () => {
                 <div className="flex-1 space-y-1">
                   <p className="text-sm font-medium">{activity.user}</p>
                   <p className="text-xs text-muted-foreground">
-                    {activity.type === 'task' && `Working on: ${activity.task}`}
-                    {activity.type === 'leave' && 'Applied for leave'}
-                    {activity.type === 'check-in' && 'Checked in'}
+                    {activity.description || ''}
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-xs text-muted-foreground">{activity.time}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(activity.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </p>
                   <Badge 
                     variant={
                       activity.status === 'completed' || activity.status === 'on-time' ? 'default' :
@@ -198,7 +196,9 @@ const ManagerDashboard: React.FC = () => {
                   </Badge>
                 </div>
               </div>
-            ))}
+            )) : (
+              <p className="text-sm text-muted-foreground">No recent activities</p>
+            )}
           </CardContent>
         </Card>
 
@@ -214,18 +214,20 @@ const ManagerDashboard: React.FC = () => {
             <CardDescription className="text-base">Task completion by team</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {teamLeads.map((team) => (
-              <div key={team.name} className="space-y-2">
+            {teamPerformance.length > 0 ? teamPerformance.map((team) => (
+              <div key={`${team.team}-${team.lead}`} className="space-y-2">
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="font-medium text-sm">{team.name}</p>
+                    <p className="font-medium text-sm">{team.team}</p>
                     <p className="text-xs text-muted-foreground">{team.lead} • {team.members} members</p>
                   </div>
                   <span className="text-sm font-semibold">{team.completion}%</span>
                 </div>
                 <Progress value={team.completion} className="h-2" />
               </div>
-            ))}
+            )) : (
+              <p className="text-sm text-muted-foreground">No performance data available</p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -238,6 +240,10 @@ const ManagerDashboard: React.FC = () => {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/shift-schedule')}>
+              <Clock className="h-5 w-5" />
+              <span className="text-xs">Shift Schedule</span>
+            </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/teams')}>
               <Users className="h-5 w-5" />
               <span className="text-xs">View Team</span>

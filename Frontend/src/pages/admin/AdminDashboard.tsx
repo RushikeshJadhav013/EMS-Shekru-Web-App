@@ -81,7 +81,7 @@ const AdminDashboard: React.FC = () => {
               <Users className="h-5 w-5 text-white" />
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent>   
             <div className="text-3xl font-bold">{stats.totalEmployees}</div>
             <div className="flex items-center gap-1 mt-2">
               <TrendingUp className="h-4 w-4 text-blue-100" />
@@ -238,7 +238,7 @@ const AdminDashboard: React.FC = () => {
           <CardDescription>Frequently used administrative actions</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/admin/employees')}>
               <Users className="h-5 w-5" />
               <span className="text-xs">Manage Employees</span>
@@ -250,6 +250,10 @@ const AdminDashboard: React.FC = () => {
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/admin/leaves')}>
               <CalendarDays className="h-5 w-5" />
               <span className="text-xs">Approve Leaves</span>
+            </Button>
+            <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/admin/hiring')}>
+              <UserPlus className="h-5 w-5" />
+              <span className="text-xs">Hiring Management</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/admin/reports')}>
               <Award className="h-5 w-5" />

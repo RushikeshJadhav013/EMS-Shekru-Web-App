@@ -1,8 +1,11 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Tuple
+
 from app.db.models.attendance import Attendance
-from app.db.models.user import User # Import User model
+from app.db.models.user import User  # Import User model
+from app.db.models.office_timing import OfficeTiming
 import csv 
 import io 
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -102,43 +105,153 @@ def get_all_attendance(db: Session, department: str = None):
     
     return query.order_by(Attendance.check_in.desc()).all()
 
-def get_today_attendance_status(db: Session, department: str = None):
-    """Get today's attendance status for all employees"""
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # Get all users
-    users_query = db.query(User)
-    if department:
-        users_query = users_query.filter(User.department == department)
-    
-    all_users = users_query.all()
-    
-    # Get today's attendance
-    attendance_records = (
-        db.query(Attendance)
-        .filter(Attendance.check_in >= today_start)
+def _normalize_department_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _build_office_timing_cache(db: Session) -> Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]:
+    records = (
+        db.query(OfficeTiming)
+        .filter(OfficeTiming.is_active.is_(True))
+        .order_by(OfficeTiming.updated_at.desc())
         .all()
     )
     
-    # Create a map of user_id to attendance
-    attendance_map = {att.user_id: att for att in attendance_records}
-    
-    # Build result
+    global_entry: Optional[OfficeTiming] = None
+    department_entries: Dict[str, OfficeTiming] = {}
+
+    for entry in records:
+        dept_key = _normalize_department_value(entry.department)
+        if dept_key is None:
+            if global_entry is None or (
+                entry.updated_at and (global_entry.updated_at is None or entry.updated_at > global_entry.updated_at)
+            ):
+                global_entry = entry
+        else:
+            existing = department_entries.get(dept_key)
+            if existing is None or (
+                entry.updated_at and (existing.updated_at is None or entry.updated_at > existing.updated_at)
+            ):
+                department_entries[dept_key] = entry
+
+    return global_entry, department_entries
+
+
+def _resolve_office_timing(
+    db: Session,
+    department: Optional[str],
+    cache: Optional[Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]] = None,
+) -> Optional[OfficeTiming]:
+    if cache is None:
+        cache = _build_office_timing_cache(db)
+    global_entry, department_entries = cache
+    dept_key = _normalize_department_value(department)
+    if dept_key and dept_key in department_entries:
+        return department_entries[dept_key]
+    return global_entry
+
+
+def _evaluate_attendance_status(
+    check_in: Optional[datetime],
+    check_out: Optional[datetime],
+    timing: Optional[OfficeTiming],
+) -> Dict[str, str | None]:
+    scheduled_start = timing.start_time.strftime("%H:%M") if timing else None
+    scheduled_end = timing.end_time.strftime("%H:%M") if timing else None
+
+    if not check_in:
+        return {
+            "status": "absent",
+            "check_in_status": "absent",
+            "check_out_status": "absent",
+            "scheduled_start": scheduled_start,
+            "scheduled_end": scheduled_end,
+        }
+
+    late = False
+    early = False
+    check_in_status = "on_time"
+    check_out_status = "pending"
+
+    if timing:
+        start_dt = datetime.combine(check_in.date(), timing.start_time)
+        if timing.check_in_grace_minutes:
+            start_dt += timedelta(minutes=timing.check_in_grace_minutes)
+        if check_in > start_dt:
+            late = True
+            check_in_status = "late"
+
+    if check_out:
+        check_out_status = "on_time"
+        if timing:
+            ref_date = check_out.date() if check_out else check_in.date()
+            end_dt = datetime.combine(ref_date, timing.end_time)
+            if timing.check_out_grace_minutes:
+                end_dt -= timedelta(minutes=timing.check_out_grace_minutes)
+            if check_out < end_dt:
+                early = True
+                check_out_status = "early"
+    else:
+        check_out_status = "pending"
+
+    if not timing:
+        check_in_status = "on_time"
+        check_out_status = "on_time" if check_out else "pending"
+
+    status = "present"
+    if late:
+        status = "late"
+
+    return {
+        "status": status,
+        "check_in_status": check_in_status,
+        "check_out_status": check_out_status,
+        "scheduled_start": scheduled_start,
+        "scheduled_end": scheduled_end,
+    }
+
+
+def get_today_attendance_status(db: Session, department: str = None):
+    records_query = (
+        db.query(
+            Attendance,
+            User.name,
+            User.department,
+            User.employee_id,
+            User.email,
+        )
+        .join(User, Attendance.user_id == User.user_id)
+    )
+
+    if department:
+        records_query = records_query.filter(User.department == department)
+
+    records = records_query.order_by(Attendance.check_in.desc()).all()
+
     result = []
-    for user in all_users:
-        attendance = attendance_map.get(user.user_id)
-        result.append({
-            "user_id": user.user_id,
-            "employee_id": user.employee_id,
-            "name": user.name,
-            "department": user.department,
-            "designation": user.designation,
-            "has_checked_in": attendance is not None,
-            "check_in": attendance.check_in if attendance else None,
-            "check_out": attendance.check_out if attendance else None,
-            "total_hours": attendance.total_hours if attendance else 0.0,
-            "status": "Present" if attendance else "Absent"
-        })
+    timing_cache = _build_office_timing_cache(db)
+    for att, name, dept, emp_id, email in records:
+        evaluation = _evaluate_attendance_status(att.check_in, att.check_out, _resolve_office_timing(db, dept, timing_cache))
+        payload = {
+            "attendance_id": att.attendance_id,
+            "user_id": att.user_id,
+            "employee_id": emp_id,
+            "name": name,
+            "department": dept,
+            "check_in": att.check_in.isoformat() if att.check_in else None,
+            "check_out": att.check_out.isoformat() if att.check_out else None,
+            "total_hours": att.total_hours,
+            "email": email,
+            "status": evaluation["status"],
+            "checkInStatus": evaluation["check_in_status"],
+            "checkOutStatus": evaluation["check_out_status"],
+            "scheduledStart": evaluation["scheduled_start"],
+            "scheduledEnd": evaluation["scheduled_end"],
+        }
+        result.append(payload)
     
     return result
 
@@ -156,14 +269,11 @@ def get_today_attendance_records(db: Session):
     )
     
     result = []
+    timing_cache = _build_office_timing_cache(db)
     for attendance, user in records:
-        # Determine status based on check-in time
-        check_in_time = attendance.check_in.time() if attendance.check_in else None
-        status = "present"
-        
-        # Late if checked in after 9:30 AM
-        if check_in_time and check_in_time.hour >= 9 and (check_in_time.hour > 9 or check_in_time.minute > 30):
-            status = "late"
+        evaluation = _evaluate_attendance_status(
+            attendance.check_in, attendance.check_out, _resolve_office_timing(db, user.department, timing_cache)
+        )
         
         result.append({
             "id": attendance.attendance_id,
@@ -175,7 +285,11 @@ def get_today_attendance_records(db: Session):
             "checkInTime": attendance.check_in.isoformat() if attendance.check_in else None,  # Return ISO datetime for proper timezone handling
             "checkOutTime": attendance.check_out.isoformat() if attendance.check_out else None,  # Return ISO datetime for proper timezone handling
             "workHours": round(attendance.total_hours or 0, 2),
-            "status": status,
+            "status": evaluation["status"],
+            "checkInStatus": evaluation["check_in_status"],
+            "checkOutStatus": evaluation["check_out_status"],
+            "scheduledStart": evaluation["scheduled_start"],
+            "scheduledEnd": evaluation["scheduled_end"],
             "checkInLocation": {
                 "address": attendance.gps_location or "N/A"
             }
@@ -188,42 +302,48 @@ def get_attendance_summary(db: Session):
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
-    # Total employees
     total_employees = db.query(User).count()
     
-    # Present today (checked in today)
-    present_today = db.query(Attendance).filter(
-        Attendance.check_in >= today_start,
-        Attendance.check_in < today_end
-    ).count()
-    
-    # Late arrivals (checked in after 9:30 AM)
-    late_today = db.query(Attendance).filter(
-        Attendance.check_in >= today_start,
-        Attendance.check_in < today_end
-    ).filter(
-        func.extract('hour', Attendance.check_in) * 60 + func.extract('minute', Attendance.check_in) > 9 * 60 + 30
-    ).count()
-    
-    # Early departures (checked out before 6:00 PM)
-    early_today = db.query(Attendance).filter(
-        Attendance.check_in >= today_start,
-        Attendance.check_in < today_end,
-        Attendance.check_out.isnot(None)
-    ).filter(
-        func.extract('hour', Attendance.check_out) * 60 + func.extract('minute', Attendance.check_out) < 18 * 60
-    ).count()
-    
-    # Absent today
-    absent_today = total_employees - present_today
-    
-    return {
+    records = (
+        db.query(Attendance, User)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(Attendance.check_in >= today_start, Attendance.check_in <= today_end)
+        .all()
+    )
+
+    timing_cache = _build_office_timing_cache(db)
+    present_user_ids = set()
+    late_arrivals = 0
+    early_departures = 0
+    work_durations: list[float] = []
+
+    for attendance, user in records:
+        present_user_ids.add(user.user_id)
+        evaluation = _evaluate_attendance_status(
+            attendance.check_in, attendance.check_out, _resolve_office_timing(db, user.department, timing_cache)
+        )
+        if evaluation["check_in_status"] == "late":
+            late_arrivals += 1
+        if evaluation["check_out_status"] == "early":
+            early_departures += 1
+        if attendance.check_in and attendance.check_out:
+            duration = attendance.check_out - attendance.check_in
+            work_durations.append(duration.total_seconds() / 3600.0)
+
+    present_today = len(present_user_ids)
+    absent_today = max(total_employees - present_today, 0)
+    average_work_hours = sum(work_durations) / len(work_durations) if work_durations else 0.0
+
+    summary = {
         "total_employees": total_employees,
         "present_today": present_today,
-        "late_today": late_today,
-        "early_today": early_today,
-        "absent_today": absent_today
+        "late_arrivals": late_arrivals,
+        "early_departures": early_departures,
+        "absent_today": absent_today,
+        "average_work_hours": round(average_work_hours, 2),
     }
+
+    return summary
 
 # ✅ Export Attendance to CSV
 def export_attendance_csv(db: Session, user_id: int = None, start_date: datetime = None, end_date: datetime = None, employee_id: str = None):

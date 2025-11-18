@@ -36,6 +36,7 @@ import {
   Briefcase,
   Clock,
   CalendarDays,
+  UserPlus,
 } from 'lucide-react';
 import { UserRole } from '@/types';
 import { Language } from '@/i18n/translations';
@@ -63,24 +64,30 @@ const MainLayout: React.FC = () => {
         ...commonItems,
         { icon: Users, label: t.navigation.employees, path: '/admin/employees' },
         { icon: Briefcase, label: t.navigation.departments, path: '/admin/departments' },
+        { icon: UserPlus, label: t.navigation.hiring, path: '/admin/hiring' },
         { icon: BarChart3, label: t.navigation.reports, path: '/admin/reports' },
       ],
       hr: [
         ...commonItems,
         { icon: Users, label: t.navigation.employees, path: '/hr/employees' },
+        { icon: UserPlus, label: t.navigation.hiring, path: '/hr/hiring' },
         { icon: BarChart3, label: t.navigation.reports, path: '/hr/reports' },
       ],
       manager: [
         ...commonItems,
+        { icon: Clock, label: t.navigation.shiftSchedule, path: '/manager/shift-schedule' },
         { icon: Users, label: 'Team', path: '/manager/team' },
         { icon: BarChart3, label: t.navigation.reports, path: '/manager/reports' },
       ],
       team_lead: [
         ...commonItems,
-        { icon: Users, label: 'Teams', path: '/team_lead/teams' },
+        { icon: Users, label: t.navigation.team, path: '/team_lead/team' },
         { icon: BarChart3, label: t.navigation.reports, path: '/team_lead/reports' },
       ],
-      employee: commonItems,
+      employee: [
+        ...commonItems,
+        { icon: Users, label: t.navigation.team, path: '/employee/team' },
+      ],
     };
 
     return roleSpecificItems[user.role];

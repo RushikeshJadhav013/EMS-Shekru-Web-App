@@ -13,6 +13,13 @@ import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCir
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
 
+type GeoLocation = {
+  latitude: number;
+  longitude: number;
+  accuracy?: number | null;
+  address?: string;
+};
+
 const AttendancePage: React.FC = () => {
   const { user } = useAuth();
   const { t } = useLanguage();
@@ -23,7 +30,7 @@ const AttendancePage: React.FC = () => {
   const [workPdf, setWorkPdf] = useState<File | null>(null);
   const [currentAttendance, setCurrentAttendance] = useState<AttendanceRecord | null>(null);
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
-  const [location, setLocation] = useState<{ latitude: number; longitude: number; address?: string } | null>(null);
+  const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Helper to fetch today's attendance for current user
@@ -107,10 +114,10 @@ const AttendancePage: React.FC = () => {
         let watchId: number | null = null;
         const clear = () => { if (watchId !== null) navigator.geolocation.clearWatch(watchId); };
         const onSuccess = async (position: GeolocationPosition) => {
-          const loc = {
+          const loc: GeoLocation = {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
-            accuracy: position.coords.accuracy,
+            accuracy: position.coords.accuracy ?? null,
             address: ''
           };
           try {
@@ -230,10 +237,18 @@ const AttendancePage: React.FC = () => {
       
       const formData = new FormData();
       formData.append('user_id', String(user.id));
-      
-      // Format GPS location properly
-      const gpsLocation = `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}${location.address ? ' - ' + location.address : ''}`;
-      formData.append('gps_location', gpsLocation);
+
+      const locationPayload = {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        accuracy: location.accuracy ?? null,
+        address: location.address ?? '',
+        timestamp: new Date().toISOString(),
+      };
+      const locationJson = JSON.stringify(locationPayload);
+      formData.append('gps_location', locationJson);
+      formData.append('location_data', locationJson);
+
       
       // Convert base64 image to blob and append
       const selfieBlob = await fetch(imageData).then(r => r.blob());

@@ -42,6 +42,13 @@ const EmployeeDashboard: React.FC = () => {
     apiService.getMyTasks().then(setMyTasks).catch(() => {});
   }, []);
 
+  const formatWorkHours = (hours: number) => {
+    if (!hours) return '0.00';
+    const parsed = Number(hours);
+    if (Number.isNaN(parsed)) return '0.00';
+    return parsed.toFixed(2);
+  };
+
   
 
   const recentActivities = [
@@ -134,7 +141,7 @@ const EmployeeDashboard: React.FC = () => {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.currentMonthHours}h</div>
+            <div className="text-3xl font-bold">{formatWorkHours(stats.currentMonthHours)}h</div>
             <div className="flex items-center gap-1 mt-2">
               <TrendingUp className="h-4 w-4 text-rose-100" />
               <span className="text-sm text-rose-100">{t.dashboard.onTrack}</span>

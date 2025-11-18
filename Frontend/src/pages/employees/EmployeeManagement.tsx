@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,6 +31,8 @@ import { User } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { apiService, type Employee, type EmployeeData } from '@/lib/api';
 
+type ShiftType = 'general' | 'morning' | 'afternoon' | 'night' | 'rotational';
+
 interface Employee extends User {
   employeeId: string;
   photoUrl?: string;
@@ -40,7 +42,7 @@ interface Employee extends User {
   countryCode?: string;
   panCard?: string;
   aadharCard?: string;
-  shift?: 'day' | 'night' | 'rotating';
+  shift?: ShiftType;
 }
 
 const toCamelCase = (obj: any): any => {
@@ -59,6 +61,203 @@ const toCamelCase = (obj: any): any => {
     
     return acc;
   }, {} as any);
+};
+
+type BulkUploadResult = {
+  row: number;
+  employeeId: string;
+  name: string;
+  status: 'success' | 'failed';
+  message?: string;
+};
+
+const normalizeHeader = (header: string) =>
+  header.replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+const parseCSVLine = (line: string): string[] => {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current.trim());
+  return result;
+};
+
+const isValidEmail = (email: string) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+const isValidPan = (pan: string) => /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(pan);
+
+const isValidAadhar = (aadhar: string) => /^\d{4}-\d{4}-\d{4}$/.test(aadhar);
+
+const normalizeCountryCode = (value?: string) => {
+  if (!value) return '+91';
+  const trimmed = value.trim();
+  if (!trimmed) return '+91';
+  const digits = trimmed.replace(/[^0-9]/g, '');
+  if (!digits) return '+91';
+  const cleaned = digits.replace(/^0+/, '') || digits;
+  return `+${cleaned}`;
+};
+
+const sanitizePhoneDigits = (rawDigits: string, countryCode: string) => {
+  let digits = rawDigits.replace(/[^0-9]/g, '');
+  if (!digits) return '';
+
+  const countryDigits = countryCode.replace('+', '');
+  if (
+    countryDigits &&
+    digits.startsWith(countryDigits) &&
+    digits.length > countryDigits.length + 5
+  ) {
+    digits = digits.slice(countryDigits.length);
+  }
+
+  if (countryCode === '+91') {
+    if (digits.length === 11 && digits.startsWith('0')) {
+      digits = digits.slice(1);
+    }
+    if (digits.length > 10) {
+      digits = digits.slice(-10);
+    }
+  }
+
+  return digits;
+};
+
+const isValidPhone = (digits: string, countryCode: string) => {
+  if (!digits) return true;
+  if (countryCode === '+91') {
+    return digits.length === 10;
+  }
+  return digits.length >= 6 && digits.length <= 15;
+};
+
+const parsePhoneValue = (value: string, preferredCode?: string) => {
+  const fallbackCode = normalizeCountryCode(preferredCode);
+
+  if (!value) {
+    return { countryCode: fallbackCode, digits: '' };
+  }
+
+  const trimmed = value.trim();
+  let detectedCode = fallbackCode;
+
+  if (!preferredCode) {
+    const prefixMatch = trimmed.match(/^(\+\d{1,3})/);
+    if (prefixMatch) {
+      detectedCode = normalizeCountryCode(prefixMatch[1]);
+      const rest = trimmed.slice(prefixMatch[1].length);
+      const digits = sanitizePhoneDigits(rest.replace(/[^0-9]/g, ''), detectedCode);
+      return { countryCode: detectedCode, digits };
+    }
+
+    if (trimmed.includes('-')) {
+      const [code, ...rest] = trimmed.split('-');
+      if (code.startsWith('+')) {
+        detectedCode = normalizeCountryCode(code);
+        const digits = sanitizePhoneDigits(rest.join('-'), detectedCode);
+        return { countryCode: detectedCode, digits };
+      }
+    }
+  }
+
+  const digits = sanitizePhoneDigits(trimmed, detectedCode);
+  return { countryCode: detectedCode, digits };
+};
+
+const normalizeRole = (input: string) => {
+  if (!input) return 'Employee';
+  const key = input.replace(/\s+/g, '').toLowerCase();
+  switch (key) {
+    case 'admin':
+      return 'Admin';
+    case 'hr':
+      return 'HR';
+    case 'manager':
+      return 'Manager';
+    case 'teamlead':
+    case 'teamleader':
+      return 'TeamLead';
+    default:
+      return 'Employee';
+  }
+};
+
+const shiftDisplayMap: Record<string, { label: string; backend: ShiftType }> = {
+  general: { label: 'General (GS)', backend: 'general' },
+  gs: { label: 'General (GS)', backend: 'general' },
+  morning: { label: 'Morning', backend: 'morning' },
+  afternoon: { label: 'Afternoon', backend: 'afternoon' },
+  night: { label: 'Night', backend: 'night' },
+  rotational: { label: 'Rotational', backend: 'rotational' },
+  rotating: { label: 'Rotational', backend: 'rotational' },
+};
+
+const shiftOptions = [
+  { value: 'general', label: 'General (GS)' },
+  { value: 'morning', label: 'Morning' },
+  { value: 'afternoon', label: 'Afternoon' },
+  { value: 'night', label: 'Night' },
+  { value: 'rotational', label: 'Rotational' },
+];
+
+const normalizeShift = (input: string): ShiftType | '' => {
+  if (!input) return '';
+  const key = input.trim().toLowerCase();
+  if (shiftDisplayMap[key]) {
+    return shiftDisplayMap[key].backend;
+  }
+  return '';
+};
+
+const normalizeEmployeeType = (input: string) => {
+  if (!input) return '';
+  const key = input.trim().toLowerCase();
+  if (key === 'permanent') return 'permanent';
+  if (key === 'contract' || key === 'contract-based' || key === 'contractual') return 'contract';
+  return '';
+};
+
+const isDuplicateErrorMessage = (message?: string) => {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('already exists') ||
+    lower.includes('already registered') ||
+    lower.includes('duplicate') ||
+    lower.includes('integrity error')
+  );
+};
+
+const formatDuplicateErrorMessage = (message: string, employeeId?: string, email?: string) => {
+  if (isDuplicateErrorMessage(message)) {
+    const identifiers = [
+      employeeId ? `ID ${employeeId}` : null,
+      email || null,
+    ].filter(Boolean);
+    const tag = identifiers.length ? ` (${identifiers.join(' / ')})` : '';
+    return `Employee already exists${tag}.`;
+  }
+  return message || 'Failed to create employee';
 };
 
 export default function EmployeeManagement() {
@@ -95,6 +294,9 @@ export default function EmployeeManagement() {
   });
 
   const [bulkData, setBulkData] = useState('');
+  const [bulkFileName, setBulkFileName] = useState('');
+  const [bulkSummary, setBulkSummary] = useState<BulkUploadResult[]>([]);
+  const [isBulkUploading, setIsBulkUploading] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
   const [phoneError, setPhoneError] = useState<string>('');
@@ -114,6 +316,7 @@ export default function EmployeeManagement() {
 
   const createFileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
 
   const countryCodes = [
     { code: '+91', flag: '🇮🇳', name: 'India' },
@@ -162,16 +365,18 @@ export default function EmployeeManagement() {
     fetchEmployees();
   }, []);
 
-  const filteredEmployees = employees.filter(emp => {
-    const query = searchQuery.trim().toLowerCase();
-    const matchesSearch = 
-      emp.name.toLowerCase().includes(query) ||
-      emp.employeeId.toLowerCase().includes(query) ||
-      emp.email.toLowerCase().includes(query);
-    const matchesDepartment = selectedDepartment === 'all' || emp.department === selectedDepartment;
-    const matchesRole = selectedRole === 'all' || emp.role === selectedRole;
-    return matchesSearch && matchesDepartment && matchesRole;
-  });
+  const filteredEmployees = useMemo(() => {
+    return employees.filter(emp => {
+      const query = searchQuery.trim().toLowerCase();
+      const matchesSearch = 
+        emp.name.toLowerCase().includes(query) ||
+        emp.employeeId.toLowerCase().includes(query) ||
+        emp.email.toLowerCase().includes(query);
+      const matchesDepartment = selectedDepartment === 'all' || emp.department === selectedDepartment;
+      const matchesRole = selectedRole === 'all' || emp.role === selectedRole;
+      return matchesSearch && matchesDepartment && matchesRole;
+    });
+  }, [employees, searchQuery, selectedDepartment, selectedRole]);
 
   const validateEmail = (email: string) => {
     if (!email) {
@@ -242,7 +447,7 @@ export default function EmployeeManagement() {
     return true;
   };
 
-  const formatPhoneNumber = (digits: string, countryCode: string) => {
+const formatPhoneNumber = (digits: string, countryCode: string) => {
     if (!digits) return '';
     if (countryCode === '+91') {
       if (digits.length <= 3) return digits;
@@ -255,7 +460,7 @@ export default function EmployeeManagement() {
     }
   };
 
-  const handlePhoneInput = (value: string, countryCode: string) => {
+const handlePhoneInput = (value: string, countryCode: string) => {
     const digits = value.replace(/[^0-9]/g, '');
     if (countryCode === '+91' && digits.length > 10) {
       setPhoneError('Indian phone numbers must be exactly 10 digits');
@@ -267,6 +472,12 @@ export default function EmployeeManagement() {
     return formatPhoneNumber(digits, countryCode);
   };
 
+const formatAadharInput = (value: string) => {
+  const digitsOnly = value.replace(/[^0-9]/g, '').slice(0, 12);
+  const parts = digitsOnly.match(/.{1,4}/g) || [];
+  return parts.join('-');
+};
+
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -277,6 +488,44 @@ export default function EmployeeManagement() {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const resetBulkUploadState = () => {
+    setBulkData('');
+    setBulkFileName('');
+    setBulkSummary([]);
+    setIsBulkUploading(false);
+    if (bulkFileInputRef.current) {
+      bulkFileInputRef.current.value = '';
+    }
+  };
+
+  const handleBulkFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) {
+      setBulkFileName('');
+      return;
+    }
+
+    if (!file.name.endsWith('.csv')) {
+      toast({
+        title: 'Invalid File',
+        description: 'Please upload a CSV file.',
+        variant: 'destructive',
+      });
+      e.target.value = '';
+      return;
+    }
+
+    setBulkFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result;
+      if (typeof text === 'string') {
+        setBulkData(text);
+      }
+    };
+    reader.readAsText(file);
   };
 
   const handleCreateEmployee = async () => {
@@ -356,9 +605,15 @@ export default function EmployeeManagement() {
       });
     } catch (error) {
       console.error('Failed to create employee:', error);
+      const rawMessage = error instanceof Error ? error.message : 'Failed to create employee. Please try again.';
+      const friendlyMessage = formatDuplicateErrorMessage(
+        rawMessage,
+        formData.employeeId,
+        formData.email
+      );
       toast({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to create employee. Please try again.',
+        description: friendlyMessage,
         variant: 'destructive'
       });
     } finally {
@@ -554,100 +809,202 @@ export default function EmployeeManagement() {
     setIsViewDialogOpen(true);
   };
 
-  const handleBulkUpload = () => {
-    try {
-      const lines = bulkData.trim().split('\n');
-      const headers = lines[0].split(',').map(h => h.trim());
-      const newEmployees: Employee[] = [];
+  const bulkSuccessCount = bulkSummary.filter((item) => item.status === 'success').length;
+  const bulkFailedCount = bulkSummary.length - bulkSuccessCount;
 
-      for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(',').map(v => v.trim());
-        if (values.length === headers.length) {
-          const email = values[2] || '';
-          if (!validateEmail(email)) {
-            toast({
-              title: 'Error',
-              description: `Invalid email in row ${i + 1}: ${email}`,
-              variant: 'destructive'
-            });
-            return;
-          }
-          const countryCode = values[6] ? values[6].split('-')[0] : '+91';
-          let phoneNumber = values[6] ? values[6].split('-')[1] || '' : '';
-          phoneNumber = handlePhoneInput(phoneNumber, countryCode);
-          if (!validatePhoneNumber(phoneNumber.replace(/[^0-9]/g, ''), countryCode)) {
-            toast({
-              title: 'Error',
-              description: `Invalid phone number in row ${i + 1}: ${phoneNumber}`,
-              variant: 'destructive'
-            });
-            return;
-          }
-          const panCard = values[13] || '';
-          if (!validatePanCard(panCard)) {
-            toast({
-              title: 'Error',
-              description: `Invalid PAN Card in row ${i + 1}: ${panCard}`,
-              variant: 'destructive'
-            });
-            return;
-          }
-          const aadharCard = values[14] || '';
-          if (!validateAadharCard(aadharCard)) {
-            toast({
-              title: 'Error',
-              description: `Invalid Aadhar Card in row ${i + 1}: ${aadharCard}`,
-              variant: 'destructive'
-            });
-            return;
-          }
-          const shift = values[15] || '';
-          if (!['day', 'night', 'rotating'].includes(shift)) {
-            toast({
-              title: 'Error',
-              description: `Invalid shift type in row ${i + 1}: ${shift}`,
-              variant: 'destructive'
-            });
-            return;
-          }
-          newEmployees.push({
-            id: Date.now().toString() + i,
-            employeeId: values[0] || `EMP${Date.now()}${i}`,
-            name: values[1] || '',
-            email: email,
-            department: values[3] || '',
-            role: String(values[4] || 'Employee'),
-            designation: values[5] || '',
-            phone: phoneNumber ? `${countryCode}-${phoneNumber.replace(/[^0-9]/g, '')}` : '',
-            countryCode: countryCode,
-            address: values[7] || '',
-            joiningDate: values[8] || new Date().toISOString().split('T')[0],
-            status: String(values[9] || 'active'),
-            gender: values[10] ? String(values[10]) : undefined,
-            employeeType: values[11] ? String(values[11]) : undefined,
-            resignationDate: values[12] || undefined,
-            panCard: panCard,
-            aadharCard: aadharCard,
-            shift: shift as 'day' | 'night' | 'rotating',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            photoUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${values[1]}`
-          });
-        }
+  const handleBulkUpload = async () => {
+    if (!bulkData.trim()) {
+      toast({
+        title: 'No Data',
+        description: 'Please paste CSV data or upload a CSV file before importing.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const lines = bulkData
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (lines.length < 2) {
+      toast({
+        title: 'Invalid CSV',
+        description: 'CSV must include a header row and at least one data row.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const headers = parseCSVLine(lines[0]);
+    if (!headers.length) {
+      toast({
+        title: 'Invalid CSV',
+        description: 'Unable to read CSV headers. Please check the file format.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const parsedRows = lines.slice(1).map((line, index) => {
+      const values = parseCSVLine(line);
+      const rowObject: Record<string, string> = {};
+      headers.forEach((header, headerIndex) => {
+        rowObject[normalizeHeader(header)] = values[headerIndex] ?? '';
+      });
+      return {
+        rowNumber: index + 2,
+        data: rowObject,
+      };
+    });
+
+    setIsBulkUploading(true);
+    setBulkSummary([]);
+
+    const summary: BulkUploadResult[] = [];
+    const createdEmployees: Employee[] = [];
+    const existingEmployeeIds = new Set(
+      employees.map((emp) => emp.employeeId?.toLowerCase()).filter(Boolean) as string[]
+    );
+    const existingEmails = new Set(
+      employees.map((emp) => emp.email?.toLowerCase()).filter(Boolean) as string[]
+    );
+    const batchEmployeeIds = new Set<string>();
+    const batchEmails = new Set<string>();
+
+    for (const row of parsedRows) {
+      const data = row.data;
+      const employeeId = (data.employeeid || `EMP${Date.now()}${row.rowNumber}`).trim();
+      const employeeIdKey = employeeId.toLowerCase();
+      const name = (data.name || '').trim();
+      const email = (data.email || '').trim();
+      const emailKey = email.toLowerCase();
+      const department = (data.department || '').trim();
+      const role = normalizeRole(data.role);
+      const designation = (data.designation || '').trim();
+      const address = (data.address || '').trim();
+      const joiningDate = data.joiningdate || new Date().toISOString().split('T')[0];
+      const status = data.status || 'active';
+      const gender = (data.gender || '').trim();
+      const employeeType = normalizeEmployeeType(data.employeetype);
+      const resignationDate = data.resignationdate || '';
+      const panCard = (data.pancard || '').toUpperCase();
+      const aadharCard = (data.aadharcard || '').trim();
+      const shift = normalizeShift(data.shift);
+      const phoneValue = data.phone || '';
+      const csvCountryCode = data.countrycode || '';
+      const { countryCode, digits } = parsePhoneValue(phoneValue, csvCountryCode);
+      const phoneDigits = digits;
+      const phoneFormatted = phoneDigits ? `${countryCode}-${phoneDigits}` : '';
+
+      const errors: string[] = [];
+      if (existingEmployeeIds.has(employeeIdKey) || batchEmployeeIds.has(employeeIdKey)) {
+        errors.push('Duplicate employee ID found');
+      }
+      if (email && (existingEmails.has(emailKey) || batchEmails.has(emailKey))) {
+        errors.push('Duplicate email found');
+      }
+      if (!employeeId) errors.push('Employee ID is required');
+      if (!name) errors.push('Name is required');
+      if (!email || !isValidEmail(email)) errors.push('Valid email is required');
+      if (!department) errors.push('Department is required');
+      if (!panCard || !isValidPan(panCard.toUpperCase())) errors.push('Valid PAN card is required');
+      if (!aadharCard || !isValidAadhar(aadharCard)) errors.push('Valid Aadhar card is required');
+      if (!shift || !['day', 'night', 'rotating'].includes(shift.toLowerCase())) {
+        errors.push('Shift must be day, night, or rotating');
+      }
+      if (!employeeType) errors.push('Employee type is required');
+      if (!isValidPhone(phoneDigits, countryCode)) errors.push('Phone number is invalid');
+
+      if (errors.length > 0) {
+        summary.push({
+          row: row.rowNumber,
+          employeeId,
+          name: name || '-',
+          status: 'failed',
+          message: errors.join('; '),
+        });
+        continue;
       }
 
-      setEmployees([...employees, ...newEmployees]);
-      setIsBulkUploadOpen(false);
-      setBulkData('');
+      const employeePayload: EmployeeData = {
+        name,
+        email,
+        employee_id: employeeId,
+        department,
+        designation,
+        phone: phoneFormatted,
+        address,
+        role,
+        gender,
+        resignation_date: resignationDate || undefined,
+        pan_card: panCard.toUpperCase(),
+        aadhar_card: aadharCard,
+        shift_type: shift.toLowerCase(),
+        employee_type: employeeType,
+      };
+
+      try {
+        const createdEmployee = await apiService.createEmployee(employeePayload);
+        const mappedEmployee = toCamelCase(createdEmployee);
+
+        if (mappedEmployee.profilePhoto && !mappedEmployee.profilePhoto.startsWith('http')) {
+          mappedEmployee.profilePhoto = `http://localhost:8000/${mappedEmployee.profilePhoto}`;
+        }
+        if (mappedEmployee.photoUrl && !mappedEmployee.photoUrl.startsWith('http')) {
+          mappedEmployee.photoUrl = `http://localhost:8000/${mappedEmployee.photoUrl}`;
+        }
+        if (!mappedEmployee.photoUrl && mappedEmployee.profilePhoto) {
+          mappedEmployee.photoUrl = mappedEmployee.profilePhoto;
+        }
+        mappedEmployee.status = mappedEmployee.isActive ? 'active' : mappedEmployee.status || status;
+
+        createdEmployees.push(mappedEmployee);
+        summary.push({
+          row: row.rowNumber,
+          employeeId: mappedEmployee.employeeId,
+          name: mappedEmployee.name,
+          status: 'success',
+        });
+        existingEmployeeIds.add(employeeIdKey);
+        existingEmails.add(emailKey);
+        batchEmployeeIds.add(employeeIdKey);
+        batchEmails.add(emailKey);
+      } catch (error: any) {
+        const rawMessage = error?.message || 'Failed to create employee';
+        const friendly = formatDuplicateErrorMessage(rawMessage, employeeId, email);
+        summary.push({
+          row: row.rowNumber,
+          employeeId,
+          name: name || '-',
+          status: 'failed',
+          message: friendly,
+        });
+      }
+    }
+
+    if (createdEmployees.length > 0) {
+      setEmployees((prev) => [...prev, ...createdEmployees]);
+    }
+
+    setBulkSummary(summary);
+    setIsBulkUploading(false);
+
+    const successCount = summary.filter((item) => item.status === 'success').length;
+    const failedCount = summary.length - successCount;
+
+    if (successCount > 0 && failedCount === 0) {
       toast({
-        title: 'Success',
-        description: `${newEmployees.length} employees imported successfully`
+        title: 'Bulk Import Complete',
+        description: `${successCount} employees imported successfully.`,
       });
-    } catch (error) {
+      resetBulkUploadState();
+      setIsBulkUploadOpen(false);
+    } else {
       toast({
-        title: 'Error',
-        description: 'Failed to parse CSV data. Please check the format.',
-        variant: 'destructive'
+        title: failedCount > 0 ? 'Bulk Import Partial Success' : 'Bulk Import Result',
+        description: `${successCount} succeeded, ${failedCount} failed. See details below.`,
+        variant: failedCount > 0 ? 'destructive' : 'default',
       });
     }
   };
@@ -835,7 +1192,7 @@ export default function EmployeeManagement() {
       employeeType: employeeType as 'contract' | 'permanent' | undefined,
       panCard,
       aadharCard,
-      shift: shift as 'day' | 'night' | 'rotating' | undefined,
+      shift: shift as ShiftType | undefined,
       countryCode,
       phone: formatPhoneNumber(phone.replace(/[^0-9]/g, ''), countryCode),
       photoUrl
@@ -882,24 +1239,45 @@ export default function EmployeeManagement() {
               <FileText className="h-4 w-4" />
               Export PDF
             </Button>
-            <Dialog open={isBulkUploadOpen} onOpenChange={setIsBulkUploadOpen}>
+            <Dialog
+              open={isBulkUploadOpen}
+              onOpenChange={(open) => {
+                setIsBulkUploadOpen(open);
+                if (!open) {
+                  resetBulkUploadState();
+                }
+              }}
+            >
               <DialogTrigger asChild>
                 <Button variant="outline" className="gap-2 hover:bg-white dark:hover:bg-gray-800">
                   <Upload className="h-4 w-4" />
                   Bulk Upload
                 </Button>
               </DialogTrigger>
-              <DialogContent className="w-[90vw] max-w-lg sm:max-w-2xl">
+              <DialogContent className="w-[90vw] max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
                 <DialogHeader>
                   <DialogTitle className="text-xl font-semibold">Bulk Upload Employees</DialogTitle>
                   <DialogDescription>Upload multiple employees at once using CSV format</DialogDescription>
                 </DialogHeader>
-                  <div className="space-y-4">
+                  <div className="space-y-4 overflow-y-auto pr-2" style={{ maxHeight: '55vh' }}>
                     <div>
                       <Label>CSV Format</Label>
                       <p className="text-sm text-muted-foreground mt-1">
                         EmployeeID, Name, Email, Department, Role, Designation, Phone, Address, JoiningDate, Status, Gender, EmployeeType, ResignationDate, PANCard, AadharCard, Shift
                       </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="bulk-file">CSV File</Label>
+                      <Input
+                        id="bulk-file"
+                        type="file"
+                        accept=".csv"
+                        onChange={handleBulkFileChange}
+                        ref={bulkFileInputRef}
+                      />
+                      {bulkFileName && (
+                        <p className="text-sm text-muted-foreground">Selected file: {bulkFileName}</p>
+                      )}
                     </div>
                     <Textarea
                       placeholder="Paste CSV data here..."
@@ -907,14 +1285,84 @@ export default function EmployeeManagement() {
                       onChange={(e) => setBulkData(e.target.value)}
                       rows={10}
                     />
+
+                    {bulkSummary.length > 0 && (
+                      <div className="border rounded-lg p-4 space-y-3 bg-slate-50 dark:bg-slate-900">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-sm">Import Summary</p>
+                            <p className="text-xs text-muted-foreground">
+                              {bulkSuccessCount} succeeded • {bulkFailedCount} failed
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Badge variant="secondary" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100">
+                              Success: {bulkSuccessCount}
+                            </Badge>
+                            <Badge variant="secondary" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100">
+                              Failed: {bulkFailedCount}
+                            </Badge>
+                          </div>
+                        </div>
+                        <div className="max-h-60 overflow-y-auto rounded border bg-white dark:bg-slate-950">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>#</TableHead>
+                                <TableHead>Employee ID</TableHead>
+                                <TableHead>Name</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Details</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {bulkSummary.map((item) => (
+                                <TableRow key={`${item.row}-${item.employeeId}`}>
+                                  <TableCell>{item.row}</TableCell>
+                                  <TableCell className="font-medium">{item.employeeId}</TableCell>
+                                  <TableCell>{item.name || '-'}</TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      className={
+                                        item.status === 'success'
+                                          ? 'bg-green-500 text-white'
+                                          : 'bg-red-500 text-white'
+                                      }
+                                    >
+                                      {item.status === 'success' ? 'Imported' : 'Failed'}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">
+                                    {item.message || '-'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setIsBulkUploadOpen(false)}>
                     Cancel
                   </Button>
-                  <Button onClick={handleBulkUpload} className="gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700">
-                    <FileSpreadsheet className="h-4 w-4" />
-                    Import
+                  <Button
+                    onClick={handleBulkUpload}
+                    className="gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                    disabled={isBulkUploading}
+                  >
+                    {isBulkUploading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Importing...
+                      </>
+                    ) : (
+                      <>
+                        <FileSpreadsheet className="h-4 w-4" />
+                        Import
+                      </>
+                    )}
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -1155,9 +1603,9 @@ export default function EmployeeManagement() {
                         id="create-aadharCard"
                         value={formData.aadharCard || ''}
                         onChange={(e) => {
-                          const aadharCard = e.target.value;
-                          setFormData((prev) => ({ ...prev, aadharCard }));
-                          validateAadharCard(aadharCard);
+                          const formatted = formatAadharInput(e.target.value);
+                          setFormData((prev) => ({ ...prev, aadharCard: formatted }));
+                          validateAadharCard(formatted);
                         }}
                         required
                         className={`mt-1 ${aadharCardError ? 'border-red-500' : ''}`}
@@ -1171,15 +1619,19 @@ export default function EmployeeManagement() {
                       <Label htmlFor="create-shift">Shift *</Label>
                       <Select
                         value={formData.shift || ''}
-                        onValueChange={(value) => setFormData((prev) => ({ ...prev, shift: value as 'day' | 'night' | 'rotating' }))}
+                        onValueChange={(value) =>
+                          setFormData((prev) => ({ ...prev, shift: value as ShiftType }))
+                        }
                       >
                         <SelectTrigger className="mt-1">
                           <SelectValue placeholder="Select Shift" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="day">Day</SelectItem>
-                          <SelectItem value="night">Night</SelectItem>
-                          <SelectItem value="rotating">Rotating</SelectItem>
+                          {shiftOptions.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
@@ -1460,8 +1912,8 @@ export default function EmployeeManagement() {
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="w-[95vw] max-w-[450px] max-h-[80vh] overflow-y-auto p-4">
           <DialogHeader>
-            <DialogTitle>Edit Employee</DialogTitle>
-            <DialogDescription>Update the employee details below</DialogDescription>
+            <DialogTitle>Update Employee / User</DialogTitle>
+            <DialogDescription>Update the employee / user details below</DialogDescription>
           </DialogHeader>
           <div className="space-y-4" onKeyDown={handleEditKeyDown}>
             <div className="flex justify-center">
@@ -1672,11 +2124,11 @@ export default function EmployeeManagement() {
               <Input
                 id="edit-aadharCard"
                 value={formData.aadharCard || ''}
-                onChange={(e) => {
-                  const aadharCard = e.target.value;
-                  setFormData((prev) => ({ ...prev, aadharCard }));
-                  validateAadharCard(aadharCard);
-                }}
+                        onChange={(e) => {
+                          const formatted = formatAadharInput(e.target.value);
+                          setFormData((prev) => ({ ...prev, aadharCard: formatted }));
+                          validateAadharCard(formatted);
+                        }}
                 required
                 className={`mt-1 ${aadharCardError ? 'border-red-500' : ''}`}
                 placeholder="e.g., 1234-5678-9012"
@@ -1689,15 +2141,19 @@ export default function EmployeeManagement() {
               <Label htmlFor="edit-shift">Shift *</Label>
               <Select
                 value={formData.shift || ''}
-                onValueChange={(value) => setFormData((prev) => ({ ...prev, shift: value as 'day' | 'night' | 'rotating' }))}
+                onValueChange={(value) =>
+                  setFormData((prev) => ({ ...prev, shift: value as ShiftType }))
+                }
               >
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="Select Shift" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="day">Day</SelectItem>
-                  <SelectItem value="night">Night</SelectItem>
-                  <SelectItem value="rotating">Rotating</SelectItem>
+                  {shiftOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -1762,7 +2218,7 @@ export default function EmployeeManagement() {
                   Updating...
                 </>
               ) : (
-                'Update Employee'
+                'Update Employee / User'
               )}
             </Button>
           </DialogFooter>

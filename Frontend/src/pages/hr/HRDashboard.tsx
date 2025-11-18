@@ -242,7 +242,7 @@ const HRDashboard: React.FC = () => {
           <CardDescription>Frequently used HR actions</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/hr/employees')}>
               <Users className="h-5 w-5" />
               <span className="text-xs">Manage Employees</span>
@@ -254,6 +254,10 @@ const HRDashboard: React.FC = () => {
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/hr/leaves')}>
               <CalendarDays className="h-5 w-5" />
               <span className="text-xs">Process Leaves</span>
+            </Button>
+            <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/hr/hiring')}>
+              <UserPlus className="h-5 w-5" />
+              <span className="text-xs">Hiring Management</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/hr/reports')}>
               <FileText className="h-5 w-5" />
