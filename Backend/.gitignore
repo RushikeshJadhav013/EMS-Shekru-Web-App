@@ -3,6 +3,7 @@ __pycache__/
 *.so
 *.pyd
 *.pyo
+*.pyc
 
 venv/
 .env
@@ -16,3 +17,5 @@ htmlcov/
 Thumbs.db
 *.swp
 
+Backend/static/profile_photos/
+Backend/static/selfies/
