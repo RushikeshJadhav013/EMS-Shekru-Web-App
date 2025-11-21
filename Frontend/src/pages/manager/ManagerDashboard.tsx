@@ -1,6 +1,7 @@
 import React from 'react';
 import { useEffect, useState } from 'react';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -20,8 +21,17 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '@/lib/api';
 
+interface TeamMemberStatus {
+  name: string;
+  status: 'present' | 'on-leave' | 'absent';
+  task: string;
+  progress: number;
+  userId: string;
+}
+
 const ManagerDashboard: React.FC = () => {
   const { t } = useLanguage();
+  const { user } = useAuth();
   const navigate = useNavigate();
 
   const [stats, setStats] = useState({
@@ -37,6 +47,8 @@ const ManagerDashboard: React.FC = () => {
 
   const [teamActivities, setTeamActivities] = useState<{id: string; type: string; user: string; time: string; description: string; status: string;}[]>([]);
   const [teamPerformance, setTeamPerformance] = useState<{team: string; lead: string; members: number; completion: number;}[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMemberStatus[]>([]);
+  const [isLoadingTeamMembers, setIsLoadingTeamMembers] = useState(false);
 
   useEffect(() => {
     apiService.getManagerDashboard()
@@ -56,6 +68,81 @@ const ManagerDashboard: React.FC = () => {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const fetchTeamMembersWithStatus = async () => {
+      if (!user?.department) return;
+      
+      setIsLoadingTeamMembers(true);
+      try {
+        // Fetch all employees
+        const employees = await apiService.getEmployees();
+        
+        // Filter by department and exclude managers/admins
+        const departmentEmployees = employees.filter((emp: any) => 
+          emp.department === user.department && 
+          emp.role?.toLowerCase() !== 'manager' && 
+          emp.role?.toLowerCase() !== 'admin' &&
+          emp.is_active !== false
+        );
+
+        // Fetch all tasks
+        const tasks = await apiService.getMyTasks();
+        
+        // Process team members with their status and tasks
+        const teamMembersData: TeamMemberStatus[] = await Promise.all(
+          departmentEmployees.map(async (emp: any) => {
+            const userId = String(emp.id || emp.user_id || '');
+            
+            // Get tasks assigned to this employee
+            const employeeTasks = tasks.filter((task: any) => {
+              const assignedTo = Array.isArray(task.assignedTo) ? task.assignedTo : [task.assignedTo];
+              return assignedTo.includes(userId);
+            });
+
+            // Get active tasks (not completed)
+            const activeTasks = employeeTasks.filter((task: any) => 
+              task.status !== 'completed' && task.status !== 'cancelled'
+            );
+
+            // Calculate progress based on completed vs total tasks
+            const totalTasks = employeeTasks.length;
+            const completedTasks = employeeTasks.filter((task: any) => task.status === 'completed').length;
+            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+            // Get the most recent active task title
+            const currentTask = activeTasks.length > 0 
+              ? activeTasks[0].title || 'No active task'
+              : completedTasks > 0 
+                ? 'All tasks completed'
+                : 'No tasks assigned';
+
+            // Determine status (simplified - we'll assume present if they have tasks)
+            let status: 'present' | 'on-leave' | 'absent' = 'present';
+            if (activeTasks.length === 0 && completedTasks === 0) {
+              status = 'absent';
+            }
+
+            return {
+              name: emp.name || 'Unknown',
+              status,
+              task: currentTask,
+              progress,
+              userId,
+            };
+          })
+        );
+
+        setTeamMembers(teamMembersData);
+      } catch (error) {
+        console.error('Failed to fetch team members:', error);
+      } finally {
+        setIsLoadingTeamMembers(false);
+      }
+    };
+
+    fetchTeamMembersWithStatus();
+  }, [user?.department]);
 
   return (
     <div className="space-y-6">
@@ -231,6 +318,62 @@ const ManagerDashboard: React.FC = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Team Members Current Status */}
+      <Card className="border-0 shadow-lg bg-gradient-to-br from-slate-50 to-gray-100 dark:from-slate-900 dark:to-gray-800">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl">
+            <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center">
+              <Users className="h-5 w-5 text-white" />
+            </div>
+            Team Members Current Status
+          </CardTitle>
+          <CardDescription className="text-base">Current status and task progress</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {isLoadingTeamMembers ? (
+            <p className="text-sm text-muted-foreground text-center py-4">Loading team members...</p>
+          ) : teamMembers.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No team members found</p>
+          ) : (
+            teamMembers.map((member) => (
+              <div key={member.userId} className="p-3 rounded-lg border space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-2 w-2 rounded-full ${
+                      member.status === 'present' ? 'bg-green-500' : 
+                      member.status === 'on-leave' ? 'bg-amber-500' : 
+                      'bg-gray-400'
+                    }`} />
+                    <div>
+                      <p className="font-medium text-sm">{member.name}</p>
+                      <p className="text-xs text-muted-foreground">{member.task}</p>
+                    </div>
+                  </div>
+                  <Badge variant={
+                    member.status === 'present' ? 'default' : 
+                    member.status === 'on-leave' ? 'secondary' : 
+                    'outline'
+                  }>
+                    {member.status === 'present' ? 'Active' : 
+                     member.status === 'on-leave' ? 'On Leave' : 
+                     'Absent'}
+                  </Badge>
+                </div>
+                {member.status === 'present' && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-muted-foreground">Progress</span>
+                      <span className="font-medium">{member.progress}%</span>
+                    </div>
+                    <Progress value={member.progress} className="h-1" />
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
 
       {/* Quick Actions */}
       <Card>

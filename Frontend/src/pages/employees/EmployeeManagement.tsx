@@ -334,10 +334,10 @@ export default function EmployeeManagement() {
         const mappedData = data.map(toCamelCase).map((emp: any) => {
           // ✅ Fix photo URLs to include backend base URL
           if (emp.profilePhoto && !emp.profilePhoto.startsWith('http')) {
-            emp.profilePhoto = `http://localhost:8000/${emp.profilePhoto}`;
+            emp.profilePhoto = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${emp.profilePhoto}`;
           }
           if (emp.photoUrl && !emp.photoUrl.startsWith('http')) {
-            emp.photoUrl = `http://localhost:8000/${emp.photoUrl}`;
+            emp.photoUrl = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${emp.photoUrl}`;
           }
           // Also set photoUrl from profilePhoto if not set
           if (!emp.photoUrl && emp.profilePhoto) {
@@ -367,15 +367,15 @@ export default function EmployeeManagement() {
 
   const filteredEmployees = useMemo(() => {
     return employees.filter(emp => {
-      const query = searchQuery.trim().toLowerCase();
-      const matchesSearch = 
-        emp.name.toLowerCase().includes(query) ||
-        emp.employeeId.toLowerCase().includes(query) ||
-        emp.email.toLowerCase().includes(query);
-      const matchesDepartment = selectedDepartment === 'all' || emp.department === selectedDepartment;
-      const matchesRole = selectedRole === 'all' || emp.role === selectedRole;
-      return matchesSearch && matchesDepartment && matchesRole;
-    });
+    const query = searchQuery.trim().toLowerCase();
+    const matchesSearch = 
+      emp.name.toLowerCase().includes(query) ||
+      emp.employeeId.toLowerCase().includes(query) ||
+      emp.email.toLowerCase().includes(query);
+    const matchesDepartment = selectedDepartment === 'all' || emp.department === selectedDepartment;
+    const matchesRole = selectedRole === 'all' || emp.role === selectedRole;
+    return matchesSearch && matchesDepartment && matchesRole;
+  });
   }, [employees, searchQuery, selectedDepartment, selectedRole]);
 
   const validateEmail = (email: string) => {
@@ -447,7 +447,7 @@ export default function EmployeeManagement() {
     return true;
   };
 
-const formatPhoneNumber = (digits: string, countryCode: string) => {
+  const formatPhoneNumber = (digits: string, countryCode: string) => {
     if (!digits) return '';
     if (countryCode === '+91') {
       if (digits.length <= 3) return digits;
@@ -460,7 +460,7 @@ const formatPhoneNumber = (digits: string, countryCode: string) => {
     }
   };
 
-const handlePhoneInput = (value: string, countryCode: string) => {
+  const handlePhoneInput = (value: string, countryCode: string) => {
     const digits = value.replace(/[^0-9]/g, '');
     if (countryCode === '+91' && digits.length > 10) {
       setPhoneError('Indian phone numbers must be exactly 10 digits');
@@ -476,7 +476,7 @@ const formatAadharInput = (value: string) => {
   const digitsOnly = value.replace(/[^0-9]/g, '').slice(0, 12);
   const parts = digitsOnly.match(/.{1,4}/g) || [];
   return parts.join('-');
-};
+  };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1231,12 +1231,20 @@ const formatAadharInput = (value: string) => {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={exportEmployeesCSV} variant="outline" className="gap-2 hover:bg-white dark:hover:bg-gray-800">
-              <FileSpreadsheet className="h-4 w-4" />
+            <Button
+              onClick={exportEmployeesCSV}
+              variant="outline"
+              className="group gap-2 border-blue-200 text-slate-700 bg-white/70 hover:bg-gradient-to-r hover:from-blue-500 hover:to-indigo-500 hover:text-white hover:border-transparent shadow-sm hover:shadow-lg transition-all dark:text-slate-100 dark:bg-slate-900/60 dark:border-slate-700"
+            >
+              <FileSpreadsheet className="h-4 w-4 text-blue-600 transition-colors group-hover:text-white" />
               Export CSV
             </Button>
-            <Button onClick={exportEmployeesPDF} variant="outline" className="gap-2 hover:bg-white dark:hover:bg-gray-800">
-              <FileText className="h-4 w-4" />
+            <Button
+              onClick={exportEmployeesPDF}
+              variant="outline"
+              className="group gap-2 border-blue-200 text-slate-700 bg-white/70 hover:bg-gradient-to-r hover:from-purple-500 hover:to-pink-500 hover:text-white hover:border-transparent shadow-sm hover:shadow-lg transition-all dark:text-slate-100 dark:bg-slate-900/60 dark:border-slate-700"
+            >
+              <FileText className="h-4 w-4 text-purple-600 transition-colors group-hover:text-white" />
               Export PDF
             </Button>
             <Dialog
@@ -1249,8 +1257,11 @@ const formatAadharInput = (value: string) => {
               }}
             >
               <DialogTrigger asChild>
-                <Button variant="outline" className="gap-2 hover:bg-white dark:hover:bg-gray-800">
-                  <Upload className="h-4 w-4" />
+                <Button
+                  variant="outline"
+                  className="group gap-2 border-blue-200 text-slate-700 bg-white/70 hover:bg-gradient-to-r hover:from-emerald-500 hover:to-teal-500 hover:text-white hover:border-transparent shadow-sm hover:shadow-lg transition-all dark:text-slate-100 dark:bg-slate-900/60 dark:border-slate-700"
+                >
+                  <Upload className="h-4 w-4 text-emerald-600 transition-colors group-hover:text-white" />
                   Bulk Upload
                 </Button>
               </DialogTrigger>
@@ -2124,11 +2135,11 @@ const formatAadharInput = (value: string) => {
               <Input
                 id="edit-aadharCard"
                 value={formData.aadharCard || ''}
-                        onChange={(e) => {
+                onChange={(e) => {
                           const formatted = formatAadharInput(e.target.value);
                           setFormData((prev) => ({ ...prev, aadharCard: formatted }));
                           validateAadharCard(formatted);
-                        }}
+                }}
                 required
                 className={`mt-1 ${aadharCardError ? 'border-red-500' : ''}`}
                 placeholder="e.g., 1234-5678-9012"

@@ -2,16 +2,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
+from zoneinfo import ZoneInfo
 
 from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
 from app.db.models.office_timing import OfficeTiming
-import csv 
-import io 
+import csv
+import io
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet 
+from reportlab.lib.styles import getSampleStyleSheet
+
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
+UTC_TZ = ZoneInfo("UTC")
 
 
 def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
@@ -154,15 +158,27 @@ def _resolve_office_timing(
     return global_entry
 
 
+def _to_local_timezone(dt: Optional[datetime]) -> Optional[datetime]:
+    if not dt:
+        return None
+    value = dt
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC_TZ)
+    return value.astimezone(INDIA_TZ)
+
+
 def _evaluate_attendance_status(
     check_in: Optional[datetime],
     check_out: Optional[datetime],
     timing: Optional[OfficeTiming],
 ) -> Dict[str, str | None]:
+    local_check_in = _to_local_timezone(check_in)
+    local_check_out = _to_local_timezone(check_out)
+
     scheduled_start = timing.start_time.strftime("%H:%M") if timing else None
     scheduled_end = timing.end_time.strftime("%H:%M") if timing else None
 
-    if not check_in:
+    if not local_check_in:
         return {
             "status": "absent",
             "check_in_status": "absent",
@@ -177,21 +193,21 @@ def _evaluate_attendance_status(
     check_out_status = "pending"
 
     if timing:
-        start_dt = datetime.combine(check_in.date(), timing.start_time)
+        start_dt = datetime.combine(local_check_in.date(), timing.start_time, tzinfo=INDIA_TZ)
         if timing.check_in_grace_minutes:
             start_dt += timedelta(minutes=timing.check_in_grace_minutes)
-        if check_in > start_dt:
+        if local_check_in > start_dt:
             late = True
             check_in_status = "late"
 
-    if check_out:
+    if local_check_out:
         check_out_status = "on_time"
         if timing:
-            ref_date = check_out.date() if check_out else check_in.date()
-            end_dt = datetime.combine(ref_date, timing.end_time)
+            ref_date = local_check_out.date() if local_check_out else local_check_in.date()
+            end_dt = datetime.combine(ref_date, timing.end_time, tzinfo=INDIA_TZ)
             if timing.check_out_grace_minutes:
                 end_dt -= timedelta(minutes=timing.check_out_grace_minutes)
-            if check_out < end_dt:
+            if local_check_out < end_dt:
                 early = True
                 check_out_status = "early"
     else:
@@ -199,7 +215,7 @@ def _evaluate_attendance_status(
 
     if not timing:
         check_in_status = "on_time"
-        check_out_status = "on_time" if check_out else "pending"
+        check_out_status = "on_time" if local_check_out else "pending"
 
     status = "present"
     if late:
@@ -346,10 +362,29 @@ def get_attendance_summary(db: Session):
     return summary
 
 # ✅ Export Attendance to CSV
-def export_attendance_csv(db: Session, user_id: int = None, start_date: datetime = None, end_date: datetime = None, employee_id: str = None):
+def export_attendance_csv(
+    db: Session,
+    user_id: int = None,
+    start_date: datetime = None,
+    end_date: datetime = None,
+    employee_id: str = None,
+    department: Optional[str] = None,
+):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Attendance ID", "Employee ID", "Name", "Department", "Check In", "Check Out", "Total Hours (hrs)", "GPS", "Selfie"])
+    writer.writerow([
+        "Attendance ID",
+        "Employee ID",
+        "Name",
+        "Department",
+        "Check In",
+        "Check Out",
+        "Total Hours (hrs)",
+        "GPS",
+        "Selfie",
+        "Work Summary",
+        "Work Report",
+    ])
 
     # Modify the query to join with User and fetch name, department, and employee_id
     query = db.query(Attendance, User.name, User.department, User.employee_id).join(User, Attendance.user_id == User.user_id)
@@ -360,6 +395,9 @@ def export_attendance_csv(db: Session, user_id: int = None, start_date: datetime
     
     if employee_id:
         query = query.filter(User.employee_id == employee_id)
+    
+    if department:
+        query = query.filter(func.lower(User.department) == department.strip().lower())
     
     if start_date:
         query = query.filter(Attendance.check_in >= start_date)
@@ -379,7 +417,9 @@ def export_attendance_csv(db: Session, user_id: int = None, start_date: datetime
             a.check_out.strftime("%Y-%m-%d %H:%M:%S") if a.check_out else "",
             round(a.total_hours or 0, 2),
             a.gps_location or "",
-            a.selfie or ""
+            a.selfie or "",
+            (a.work_summary or "").replace("\n", " ").strip(),
+            a.work_report or "",
         ])
 
     output.seek(0)
@@ -387,13 +427,32 @@ def export_attendance_csv(db: Session, user_id: int = None, start_date: datetime
 
 
 # ✅ Export Attendance to PDF
-def export_attendance_pdf(db: Session, user_id: int = None, start_date: datetime = None, end_date: datetime = None, employee_id: str = None):
+def export_attendance_pdf(
+    db: Session,
+    user_id: int = None,
+    start_date: datetime = None,
+    end_date: datetime = None,
+    employee_id: str = None,
+    department: Optional[str] = None,
+):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
     elements = []
 
-    data = [["Attendance ID", "Employee ID", "Name", "Department", "Check In", "Check Out", "Total Hours"]]
+    data = [
+        [
+            "Attendance ID",
+            "Employee ID",
+            "Name",
+            "Department",
+            "Check In",
+            "Check Out",
+            "Total Hours",
+            "Work Summary",
+            "Work Report",
+        ]
+    ]
     # Modify the query to join with User and fetch name, department, and employee_id
     query = db.query(Attendance, User.name, User.department, User.employee_id).join(User, Attendance.user_id == User.user_id)
     
@@ -403,6 +462,9 @@ def export_attendance_pdf(db: Session, user_id: int = None, start_date: datetime
     
     if employee_id:
         query = query.filter(User.employee_id == employee_id)
+    
+    if department:
+        query = query.filter(func.lower(User.department) == department.strip().lower())
     
     if start_date:
         query = query.filter(Attendance.check_in >= start_date)
@@ -420,7 +482,9 @@ def export_attendance_pdf(db: Session, user_id: int = None, start_date: datetime
             department or "",
             a.check_in.strftime("%Y-%m-%d %H:%M:%S") if a.check_in else "",
             a.check_out.strftime("%Y-%m-%d %H:%M:%S") if a.check_out else "",
-            f"{round(a.total_hours or 0, 2)} hrs"
+            f"{round(a.total_hours or 0, 2)} hrs",
+            (a.work_summary or "").strip(),
+            a.work_report or "",
         ])
 
     table = Table(data, repeatRows=1)

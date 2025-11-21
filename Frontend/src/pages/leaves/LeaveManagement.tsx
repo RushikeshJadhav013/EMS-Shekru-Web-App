@@ -1096,38 +1096,38 @@ export default function LeaveManagement() {
               {user?.role === 'admin' && (
                 <div className="mb-6 space-y-6">
                   <div className="p-4 border rounded-lg bg-gradient-to-r from-amber-50 to-yellow-50 dark:from-amber-950 dark:to-yellow-950">
-                    <h3 className="font-semibold mb-3 flex items-center gap-2">
-                      <CalendarIcon className="h-5 w-5 text-amber-600" />
-                      Set Company Holidays
-                    </h3>
-                    <div className="flex gap-2 items-center mb-2">
-                      <DatePicker
-                        date={holidayForm.date}
-                        onDateChange={(date) => date && setHolidayForm({ ...holidayForm, date })}
-                        placeholder="Select holiday date"
-                        className="flex-1"
-                      />
-                      <Input
-                        type="text"
-                        placeholder="Holiday name"
-                        value={holidayForm.name}
-                        onChange={e => setHolidayForm({ ...holidayForm, name: e.target.value })}
-                      />
-                      <Button onClick={handleAddHoliday} className="gap-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-700 hover:to-yellow-700">
-                        <CalendarIcon className="h-4 w-4" />
-                        Add Holiday
-                      </Button>
-                    </div>
-                    <div>
-                      <h4 className="font-medium mb-1">Current Holidays:</h4>
-                      <ul>
-                        {holidays.map(h => (
-                          <li key={h.date.toISOString()} className="flex items-center gap-2 mb-1">
-                            <span>{h.name} ({h.date.toDateString()})</span>
-                            <Button size="sm" variant="destructive" onClick={() => handleRemoveHoliday(h.date)}>Remove</Button>
-                          </li>
-                        ))}
-                      </ul>
+                  <h3 className="font-semibold mb-3 flex items-center gap-2">
+                    <CalendarIcon className="h-5 w-5 text-amber-600" />
+                    Set Company Holidays
+                  </h3>
+                  <div className="flex gap-2 items-center mb-2">
+                    <DatePicker
+                      date={holidayForm.date}
+                      onDateChange={(date) => date && setHolidayForm({ ...holidayForm, date })}
+                      placeholder="Select holiday date"
+                      className="flex-1"
+                    />
+                    <Input
+                      type="text"
+                      placeholder="Holiday name"
+                      value={holidayForm.name}
+                      onChange={e => setHolidayForm({ ...holidayForm, name: e.target.value })}
+                    />
+                    <Button onClick={handleAddHoliday} className="gap-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-700 hover:to-yellow-700">
+                      <CalendarIcon className="h-4 w-4" />
+                      Add Holiday
+                    </Button>
+                  </div>
+                  <div>
+                    <h4 className="font-medium mb-1">Current Holidays:</h4>
+                    <ul>
+                      {holidays.map(h => (
+                        <li key={h.date.toISOString()} className="flex items-center gap-2 mb-1">
+                          <span>{h.name} ({h.date.toDateString()})</span>
+                          <Button size="sm" variant="destructive" onClick={() => handleRemoveHoliday(h.date)}>Remove</Button>
+                        </li>
+                      ))}
+                    </ul>
                     </div>
                   </div>
 
@@ -1268,20 +1268,20 @@ export default function LeaveManagement() {
                   selected={selectedDate}
                   onSelect={setSelectedDate}
                   className="rounded-xl border-2 shadow-lg p-4 bg-white dark:bg-gray-950"
-                  modifiers={{
+                modifiers={{
                     holiday: holidays.map(h => h.date),
                     weekOff: (date) =>
                       userWeekOffDays.some(
                         (day) => weekDayIndexMap[day] === date.getDay(),
                       ),
-                  }}
-                  modifiersClassNames={{
+                }}
+                modifiersClassNames={{
                     holiday:
                       'bg-gradient-to-br from-amber-400 to-yellow-500 text-white font-bold hover:from-amber-500 hover:to-yellow-600 transition-all duration-300 shadow-md',
                     weekOff:
                       'border border-sky-400 text-sky-600 font-semibold bg-sky-50 hover:bg-sky-100',
-                  }}
-                  footer={
+                }}
+                footer={
                   <div className="mt-4 p-4 bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 rounded-lg">
                     <h4 className="font-semibold mb-2 flex items-center gap-2">
                       <CalendarIcon className="h-4 w-4 text-amber-600" />
@@ -1310,9 +1310,9 @@ export default function LeaveManagement() {
                               <span className="text-muted-foreground">
                                 {days.map((day) => weekDayLabels[day] || day).join(', ')}
                               </span>
-                            </li>
-                          ))}
-                        </ul>
+                        </li>
+                      ))}
+                    </ul>
                       </div>
                     )}
                   </div>

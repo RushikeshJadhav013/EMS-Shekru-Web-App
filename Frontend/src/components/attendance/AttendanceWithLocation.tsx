@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/components/ui/use-toast';
 import { CheckCircle, Clock, MapPin, AlertCircle, Loader2 } from 'lucide-react';
-import { getCurrentLocation, isWithinAllowedLocation } from '@/utils/geolocation';
+import { getCurrentLocation as requestCurrentLocation } from '@/utils/geolocation';
 
 interface AttendanceWithLocationProps {
   userId: number;
@@ -11,13 +11,6 @@ interface AttendanceWithLocationProps {
   onCheckOut: (locationData: any) => Promise<{ success: boolean; error?: string }>;
   currentStatus: 'checked-in' | 'checked-out' | 'loading';
 }
-
-const PVG_COLLEGE_COORDS = {
-  latitude: 18.4649,
-  longitude: 73.8678,
-  address: "PVG College, Parvati, Pune, Maharashtra 411009",
-  radius: 100 // meters
-};
 
 const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
   userId,
@@ -38,53 +31,17 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isCheckingLocation, setIsCheckingLocation] = useState(false);
 
-  const getCurrentLocation = async () => {
+  const fetchLocation = useCallback(async () => {
     try {
       setIsCheckingLocation(true);
       setLocationError(null);
       
-      // Get current position
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
-        });
-      });
-
-      const { latitude, longitude, accuracy } = position.coords;
-      
-      // Check if within allowed location
-      const isAllowed = isWithinAllowedLocation(
-        latitude, 
-        longitude, 
-        PVG_COLLEGE_COORDS.latitude, 
-        PVG_COLLEGE_COORDS.longitude, 
-        PVG_COLLEGE_COORDS.radius
-      );
-      
-      if (!isAllowed) {
-        throw new Error('You must be within the PVG College premises to check in/out');
-      }
-      
-      // Get address details (you can use a reverse geocoding service here)
-      const address = await getAddressFromCoords(latitude, longitude);
-      
-      const locationData = {
-        latitude,
-        longitude,
-        accuracy,
-        address: address.address,
-        placeName: address.placeName,
-        timestamp: Date.now()
-      };
-      
+      const locationData = await requestCurrentLocation();
       setLocation(locationData);
       return locationData;
-      
     } catch (error: any) {
       console.error('Error getting location:', error);
-      const errorMessage = error.message || 'Failed to get your location';
+      const errorMessage = error?.message || 'Failed to get your location';
       setLocationError(errorMessage);
       toast({
         title: 'Location Error',
@@ -95,37 +52,21 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
     } finally {
       setIsCheckingLocation(false);
     }
-  };
+  }, [toast]);
 
-  const getAddressFromCoords = async (lat: number, lon: number) => {
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`
-      );
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch address');
-      }
-      
-      const data = await response.json();
-      
-      return {
-        address: data.display_name || 'PVG College, Parvati, Pune',
-        placeName: data.address?.building || data.address?.road || 'PVG College'
-      };
-    } catch (error) {
-      console.error('Error getting address:', error);
-      return {
-        address: 'PVG College, Parvati, Pune, Maharashtra 411009',
-        placeName: 'PVG College'
-      };
-    }
-  };
+  useEffect(() => {
+    fetchLocation().catch(() => {
+      // errors already surfaced via toast
+    });
+  }, [fetchLocation]);
 
   const handleCheckIn = async () => {
     try {
       setIsLoading(true);
-      const locationData = await getCurrentLocation();
+      const locationData = await fetchLocation();
+      if (!locationData) {
+        throw new Error('Unable to read your current location');
+      }
       
       const result = await onCheckIn({
         userId,
@@ -161,7 +102,10 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
   const handleCheckOut = async () => {
     try {
       setIsLoading(true);
-      const locationData = await getCurrentLocation();
+      const locationData = await fetchLocation();
+      if (!locationData) {
+        throw new Error('Unable to read your current location');
+      }
       
       const result = await onCheckOut({
         userId,
@@ -180,7 +124,9 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
           title: 'Checked Out',
           description: 'You have been successfully checked out!',
         });
-        setLocation(null);
+        fetchLocation().catch(() => {
+          // ignore refresh errors
+        });
       } else {
         throw new Error(result.error || 'Failed to check out');
       }
@@ -219,11 +165,11 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
         <div className="space-y-2">
           <div className="flex items-center text-green-600">
             <CheckCircle className="mr-2 h-4 w-4" />
-            <span>Location verified: {location.placeName || 'PVG College'}</span>
+            <span>Location detected: {location.placeName || 'Current location'}</span>
           </div>
           <div className="flex items-center text-sm text-muted-foreground">
             <MapPin className="mr-2 h-3.5 w-3.5" />
-            <span className="truncate">{location.address || 'PVG College, Parvati, Pune, Maharashtra 411009'}</span>
+            <span className="truncate">{location.address || 'Address not available'}</span>
           </div>
           <div className="flex items-center text-xs text-muted-foreground">
             <Clock className="mr-2 h-3 w-3" />
@@ -235,8 +181,8 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
 
     return (
       <div className="text-muted-foreground">
-        <p>Your location will be verified when you check in/out.</p>
-        <p className="text-xs mt-1">You must be within 100m of PVG College.</p>
+        <p>Your current location will be captured when you check in/out.</p>
+        <p className="text-xs mt-1">Make sure location services are enabled.</p>
       </div>
     );
   };
@@ -300,8 +246,8 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
         </div>
         
         <div className="text-xs text-muted-foreground text-center">
-          <p>You must be within the PVG College premises to check in/out.</p>
-          <p>Address: PVG College, Parvati, Pune, Maharashtra 411009</p>
+          <p>Your exact GPS location is required each time you check in or out.</p>
+          <p>Enable precise location services on your device for best accuracy.</p>
         </div>
       </CardContent>
     </Card>

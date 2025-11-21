@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,15 +9,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from '@/hooks/use-toast';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
-import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle } from 'lucide-react';
+import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
+import { getCurrentLocation as fetchPreciseLocation } from '@/utils/geolocation';
 
 type GeoLocation = {
   latitude: number;
   longitude: number;
   accuracy?: number | null;
   address?: string;
+  updatedAt?: number;
 };
 
 const AttendancePage: React.FC = () => {
@@ -32,6 +34,7 @@ const AttendancePage: React.FC = () => {
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
   const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
 
   // Helper to fetch today's attendance for current user
   const fetchTodayAttendance = async () => {
@@ -89,9 +92,35 @@ const AttendancePage: React.FC = () => {
     }
   };
 
+  const refreshLocation = useCallback(async (): Promise<GeoLocation> => {
+    try {
+      const preciseLocation = await fetchPreciseLocation();
+      const refreshed: GeoLocation = {
+        latitude: preciseLocation.latitude,
+        longitude: preciseLocation.longitude,
+        accuracy: preciseLocation.accuracy ?? null,
+        address:
+          preciseLocation.address ||
+          `${preciseLocation.latitude.toFixed(6)}, ${preciseLocation.longitude.toFixed(6)}`,
+        updatedAt: Date.now(),
+      };
+      setLocation(refreshed);
+      return refreshed;
+    } catch (error: any) {
+      const errorMessage =
+        error?.message || t.attendance.locationRequired || 'Unable to fetch your location';
+      toast({
+        title: 'Location Error',
+        description: errorMessage,
+        variant: 'destructive',
+      });
+      throw new Error(errorMessage);
+    }
+  }, [toast, t.attendance.locationRequired]);
+
   useEffect(() => {
     fetchTodayAttendance();
-    getCurrentLocation();
+    refreshLocation().catch(() => {});
     
     // Auto-refresh at midnight to reset for new day
     const checkMidnight = setInterval(() => {
@@ -103,96 +132,18 @@ const AttendancePage: React.FC = () => {
     }, 60000); // Check every minute
     
     return () => clearInterval(checkMidnight);
-  }, [user?.id]);
-
-  const getCurrentLocation = (): Promise<void> => {
-    if (navigator.geolocation) {
-      // Request high accuracy GPS location and refine until accuracy <= 10m or timeout
-      return new Promise((resolve) => {
-        const MIN_ACCURACY = 10; // meters
-        const TIMEOUT_MS = 15000;
-        let watchId: number | null = null;
-        const clear = () => { if (watchId !== null) navigator.geolocation.clearWatch(watchId); };
-        const onSuccess = async (position: GeolocationPosition) => {
-          const loc: GeoLocation = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            accuracy: position.coords.accuracy ?? null,
-            address: ''
-          };
-          try {
-            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${loc.latitude}&lon=${loc.longitude}&format=json&addressdetails=1&zoom=18`);
-            const data = await response.json();
-            if (data.address) {
-              const addressParts: string[] = [];
-              if (data.address.house_number) addressParts.push(data.address.house_number);
-              if (data.address.road) addressParts.push(data.address.road);
-              if (data.address.suburb) addressParts.push(data.address.suburb);
-              if (data.address.village) addressParts.push(data.address.village);
-              if (data.address.town) addressParts.push(data.address.town);
-              if (data.address.city) addressParts.push(data.address.city);
-              if (data.address.state_district) addressParts.push(data.address.state_district);
-              if (data.address.state) addressParts.push(data.address.state);
-              if (data.address.postcode) addressParts.push(data.address.postcode);
-              loc.address = addressParts.join(', ') || data.display_name;
-            } else {
-              loc.address = data.display_name || `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`;
-            }
-          } catch {
-            loc.address = `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`;
-          }
-          setLocation(loc);
-          if (loc.accuracy <= MIN_ACCURACY) {
-            clear();
-            resolve();
-          }
-        };
-        const onError = (error: GeolocationPositionError) => {
-          clear();
-          let errorMessage = t.attendance.locationRequired;
-          switch(error.code) {
-            case error.PERMISSION_DENIED:
-              errorMessage = "Location permission denied. Please enable location access in your browser settings.";
-              break;
-            case error.POSITION_UNAVAILABLE:
-              errorMessage = "Location information is unavailable. Please check your GPS settings.";
-              break;
-            case error.TIMEOUT:
-              errorMessage = "Location request timed out. Please try again.";
-              break;
-          }
-          toast({ title: 'Location Error', description: errorMessage, variant: 'destructive' });
-          resolve();
-        };
-        watchId = navigator.geolocation.watchPosition(onSuccess, onError, {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: TIMEOUT_MS,
-        });
-        // Safety timeout
-        setTimeout(() => { clear(); resolve(); }, TIMEOUT_MS);
-      });
-    } else {
-      toast({
-        title: 'Location Not Supported',
-        description: 'Your browser does not support geolocation. Please use a modern browser.',
-        variant: 'destructive',
-      });
-      return Promise.resolve();
-    }
-  };
+  }, [user?.id, refreshLocation]);
 
   const handleCheckIn = async () => {
-    if (!location) {
-      await getCurrentLocation();
-      if (!location) {
-        toast({
+    try {
+      await refreshLocation();
+    } catch (error: any) {
+      toast({
           title: 'Location Required',
-          description: 'Please enable location services and try again.',
+        description: error?.message || 'Please enable location services and try again.',
           variant: 'destructive',
         });
         return;
-      }
     }
 
     setIsLoading(true);
@@ -212,11 +163,13 @@ const AttendancePage: React.FC = () => {
     }
   };
 
-  const handleCheckOut = () => {
-    if (!location) {
+  const handleCheckOut = async () => {
+    try {
+      await refreshLocation();
+    } catch (error: any) {
       toast({
-        title: 'Error',
-        description: t.attendance.locationRequired,
+        title: 'Location Required',
+        description: error?.message || t.attendance.locationRequired,
         variant: 'destructive',
       });
       return;
@@ -225,6 +178,14 @@ const AttendancePage: React.FC = () => {
   };
 
   const confirmCheckOut = () => {
+    if (!todaysWork.trim()) {
+      toast({
+        title: 'Work Summary Required',
+        description: 'Please provide today\'s work summary before checking out.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setIsCheckingIn(false);
     setShowCamera(true);
     setShowCheckoutDialog(false);
@@ -233,21 +194,32 @@ const AttendancePage: React.FC = () => {
   const handleCameraCapture = async (imageData: string) => {
     setIsLoading(true);
     try {
-      if (!location || !user?.id) throw new Error('Location or user missing');
+      const activeLocation = await refreshLocation().catch(() => location);
+      if (!activeLocation || !user?.id) throw new Error('Location or user missing');
       
       const formData = new FormData();
       formData.append('user_id', String(user.id));
 
       const locationPayload = {
-        latitude: location.latitude,
-        longitude: location.longitude,
-        accuracy: location.accuracy ?? null,
-        address: location.address ?? '',
+        latitude: activeLocation.latitude,
+        longitude: activeLocation.longitude,
+        accuracy: activeLocation.accuracy ?? null,
+        address: activeLocation.address ?? '',
         timestamp: new Date().toISOString(),
       };
       const locationJson = JSON.stringify(locationPayload);
       formData.append('gps_location', locationJson);
       formData.append('location_data', locationJson);
+
+      if (!isCheckingIn) {
+        if (!todaysWork.trim()) {
+          throw new Error('Work summary is required to check out.');
+        }
+        formData.append('work_summary', todaysWork.trim());
+        if (workPdf) {
+          formData.append('work_report', workPdf, workPdf.name);
+        }
+      }
 
       
       // Convert base64 image to blob and append
@@ -272,6 +244,10 @@ const AttendancePage: React.FC = () => {
         description: isCheckingIn ? 'Successfully checked in!' : 'Successfully checked out!',
         variant: 'default'
       });
+      if (!isCheckingIn) {
+        setTodaysWork('');
+        setWorkPdf(null);
+      }
     } catch (error) {
       console.error('Attendance error:', error);
       toast({ 
@@ -287,14 +263,8 @@ const AttendancePage: React.FC = () => {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type === 'application/pdf') {
+    if (file) {
       setWorkPdf(file);
-    } else {
-      toast({
-        title: 'Error',
-        description: 'Please upload a PDF file',
-        variant: 'destructive',
-      });
     }
   };
 
@@ -390,11 +360,58 @@ const AttendancePage: React.FC = () => {
         <CardContent>
           <div className="space-y-4">
             {location && (
+              <div className="space-y-2">
               <div className="flex items-start gap-2 text-sm text-muted-foreground">
                 <MapPin className="h-4 w-4 mt-0.5" />
                 <span className="flex-1">{location.address}</span>
+                </div>
+                <div className="flex flex-wrap items-center justify-between text-xs text-muted-foreground gap-2">
+                  <span>
+                    Accuracy:&nbsp;
+                    {location.accuracy ? `±${Math.round(location.accuracy)} m` : 'Unknown'}
+                  </span>
+                  {location.updatedAt && (
+                    <span>
+                      Updated at{' '}
+                      {new Date(location.updatedAt).toLocaleTimeString('en-IN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  setIsRefreshingLocation(true);
+                  try {
+                    await refreshLocation();
+                  } catch (error: any) {
+                    toast({
+                      title: 'Location Error',
+                      description: error?.message || 'Unable to refresh location',
+                      variant: 'destructive',
+                    });
+                  } finally {
+                    setIsRefreshingLocation(false);
+                  }
+                }}
+                disabled={isRefreshingLocation}
+              >
+                {isRefreshingLocation ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Refreshing...
+                  </>
+                ) : (
+                  'Refresh Location'
+                )}
+              </Button>
+            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {currentAttendance ? (
@@ -508,18 +525,19 @@ const AttendancePage: React.FC = () => {
           <DialogHeader>
             <DialogTitle className="text-xl font-semibold">Confirm Check-out</DialogTitle>
             <DialogDescription>
-              You can optionally add today's work report before checking out.
+              Please provide today's work summary before checking out. You can optionally upload a work report PDF.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <Label htmlFor="work-summary">Today's Work Summary (Optional)</Label>
+              <Label htmlFor="work-summary">Today's Work Summary <span className="text-red-500">*</span></Label>
               <Input
                 id="work-summary"
                 placeholder="Brief description of today's work..."
                 value={todaysWork}
                 onChange={(e) => setTodaysWork(e.target.value)}
                 className="mt-2"
+                required
               />
             </div>
             <div>
@@ -528,7 +546,7 @@ const AttendancePage: React.FC = () => {
                 <Input
                   id="work-pdf"
                   type="file"
-                  accept="application/pdf"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
                   onChange={handleFileUpload}
                 />
                 {workPdf && (

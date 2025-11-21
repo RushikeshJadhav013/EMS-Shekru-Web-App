@@ -24,6 +24,8 @@ interface EmployeeAttendance extends AttendanceRecord {
   checkOutStatus?: string;
   scheduledStart?: string | null;
   scheduledEnd?: string | null;
+  workSummary?: string | null;
+  workReport?: string | null;
 }
 
 interface OfficeTiming {
@@ -35,6 +37,19 @@ interface OfficeTiming {
   check_out_grace_minutes: number;
 }
 
+type TimingFormState = {
+  startTime: string;
+  endTime: string;
+  checkInGrace: number | '';
+  checkOutGrace: number | '';
+};
+
+type DepartmentTimingFormState = TimingFormState & {
+  department: string;
+};
+
+const resolveGraceValue = (value: number | '') => (value === '' ? 0 : value);
+
 const AttendanceManager: React.FC = () => {
   const { user } = useAuth();
   const { t } = useLanguage();
@@ -43,6 +58,7 @@ const AttendanceManager: React.FC = () => {
   const [filteredRecords, setFilteredRecords] = useState<EmployeeAttendance[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendance | null>(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
+const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: string | null }>({ open: false, summary: null });
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -60,17 +76,19 @@ const AttendanceManager: React.FC = () => {
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [employees, setEmployees] = useState<Array<{ user_id: number; employee_id: string; name: string; department?: string | null }>>([]);
   const [filteredEmployees, setFilteredEmployees] = useState<Array<{ user_id: number; employee_id: string; name: string; department?: string | null }>>([]);
+  const [selectedEmployee, setSelectedEmployee] = useState<{ user_id: number; employee_id: string; name: string; department?: string | null } | null>(null);
+  const [selectedDepartmentFilter, setSelectedDepartmentFilter] = useState<string>('');
   const [departments, setDepartments] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'attendance' | 'office-hours'>('attendance');
   const [officeTimings, setOfficeTimings] = useState<OfficeTiming[]>([]);
   const [officeFormLoading, setOfficeFormLoading] = useState(false);
-  const [globalTimingForm, setGlobalTimingForm] = useState({
+  const [globalTimingForm, setGlobalTimingForm] = useState<TimingFormState>({
     startTime: '09:30',
     endTime: '18:00',
     checkInGrace: 15,
     checkOutGrace: 0,
   });
-  const [departmentTimingForm, setDepartmentTimingForm] = useState({
+  const [departmentTimingForm, setDepartmentTimingForm] = useState<DepartmentTimingFormState>({
     department: '',
     startTime: '09:30',
     endTime: '18:00',
@@ -103,16 +121,41 @@ const AttendanceManager: React.FC = () => {
   }, [isAdmin]);
 
   useEffect(() => {
-    if (employeeSearch) {
-      const filtered = employees.filter(emp => 
-        emp.name.toLowerCase().includes(employeeSearch.toLowerCase()) ||
-        emp.employee_id?.toLowerCase().includes(employeeSearch.toLowerCase())
-      );
-      setFilteredEmployees(filtered);
-    } else {
+    if (employeeFilter !== 'specific') {
       setFilteredEmployees([]);
+      return;
     }
-  }, [employeeSearch, employees]);
+
+    let subset = employees;
+    const normalizedDept = selectedDepartmentFilter.trim().toLowerCase();
+    if (normalizedDept) {
+      subset = subset.filter(
+        (emp) => (emp.department || '').trim().toLowerCase() === normalizedDept,
+      );
+    }
+
+    const searchValue = employeeSearch.trim().toLowerCase();
+    if (searchValue) {
+      subset = subset.filter(
+        (emp) =>
+          emp.name.toLowerCase().includes(searchValue) ||
+          emp.employee_id?.toLowerCase().includes(searchValue),
+      );
+    }
+
+    setFilteredEmployees(subset);
+  }, [employeeFilter, selectedDepartmentFilter, employeeSearch, employees]);
+
+  useEffect(() => {
+    if (employeeFilter === 'specific') {
+      if (!selectedDepartmentFilter && departments.length === 1) {
+        setSelectedDepartmentFilter(departments[0]);
+      }
+    } else {
+      setSelectedDepartmentFilter('');
+      setSelectedEmployee(null);
+    }
+  }, [employeeFilter, departments, selectedDepartmentFilter]);
 
   const loadEmployees = async () => {
     try {
@@ -192,8 +235,8 @@ const AttendanceManager: React.FC = () => {
         department: null,
         start_time: globalTimingForm.startTime,
         end_time: globalTimingForm.endTime,
-        check_in_grace_minutes: globalTimingForm.checkInGrace,
-        check_out_grace_minutes: globalTimingForm.checkOutGrace,
+        check_in_grace_minutes: resolveGraceValue(globalTimingForm.checkInGrace),
+        check_out_grace_minutes: resolveGraceValue(globalTimingForm.checkOutGrace),
       };
       const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
         method: 'PUT',
@@ -234,8 +277,8 @@ const AttendanceManager: React.FC = () => {
         department: departmentTimingForm.department.trim(),
         start_time: departmentTimingForm.startTime,
         end_time: departmentTimingForm.endTime,
-        check_in_grace_minutes: departmentTimingForm.checkInGrace,
-        check_out_grace_minutes: departmentTimingForm.checkOutGrace,
+        check_in_grace_minutes: resolveGraceValue(departmentTimingForm.checkInGrace),
+        check_out_grace_minutes: resolveGraceValue(departmentTimingForm.checkOutGrace),
       };
       const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
         method: 'PUT',
@@ -328,12 +371,13 @@ const AttendanceManager: React.FC = () => {
     filterRecords();
   }, [searchTerm, filterStatus, filterDate, attendanceRecords]);
 
-  const loadAllAttendance = () => {
+  const loadAllAttendance = (targetDate?: string) => {
     // Fetch today's attendance from backend
     // For Admin/HR/Manager: Load today's attendance records
     (async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/attendance/today');
+        const query = targetDate ? `?date=${encodeURIComponent(targetDate)}` : '';
+        const res = await fetch(`http://127.0.0.1:8000/attendance/today${query}`);
         
         if (!res.ok) {
           const errorText = await res.text();
@@ -379,6 +423,8 @@ const AttendanceManager: React.FC = () => {
             checkOutStatus: checkOutStatus || undefined,
             scheduledStart: scheduledStart || undefined,
             scheduledEnd: scheduledEnd || undefined,
+            workSummary: rec.workSummary || rec.work_summary || null,
+            workReport: resolveMediaUrl(rec.workReport || rec.work_report),
           };
         });
         
@@ -538,6 +584,8 @@ const AttendanceManager: React.FC = () => {
     setEmployeeFilter('all');
     setEmployeeSearch('');
     setSelectedEmployee(null);
+    setSelectedDepartmentFilter('');
+    setFilteredEmployees([]);
   };
 
   const performExport = async () => {
@@ -567,6 +615,9 @@ const AttendanceManager: React.FC = () => {
       
       if (employeeFilter === 'specific' && selectedEmployee) {
         params.append('employee_id', selectedEmployee.employee_id || selectedEmployee.user_id.toString());
+        if (selectedDepartmentFilter) {
+          params.append('department', selectedDepartmentFilter);
+        }
       }
       
       if (startDate) {
@@ -643,6 +694,80 @@ const AttendanceManager: React.FC = () => {
     present: summary.present_today,
     late: summary.late_arrivals,
     early: summary.early_departures,
+  };
+
+  const formatTimeDisplay = (timeValue?: string | null) => {
+    if (!timeValue) return '--:--';
+    const normalized = timeValue.includes(':') ? timeValue.slice(0, 5) : timeValue;
+    const [hour, minute] = normalized.split(':');
+    if (hour === undefined || minute === undefined) return normalized;
+    try {
+      const date = new Date();
+      date.setHours(Number(hour), Number(minute));
+      return date.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return normalized;
+    }
+  };
+
+  const globalTimingEntry = officeTimings.find(
+    (entry) => !entry.department || entry.department === '',
+  );
+  const configuredDepartmentCount = officeTimings.filter(
+    (entry) => entry.department && entry.department.trim(),
+  ).length;
+  const officeQuickStats = [
+    {
+      label: 'Default Start',
+      value: formatTimeDisplay(globalTimingEntry?.start_time || globalTimingForm.startTime),
+      accent: 'from-blue-500 to-indigo-500',
+    },
+    {
+      label: 'Default End',
+      value: formatTimeDisplay(globalTimingEntry?.end_time || globalTimingForm.endTime),
+      accent: 'from-emerald-500 to-teal-500',
+    },
+    {
+      label: 'Check-in Grace',
+      value: `${globalTimingEntry?.check_in_grace_minutes ?? resolveGraceValue(globalTimingForm.checkInGrace)} mins`,
+      accent: 'from-orange-500 to-amber-500',
+    },
+    {
+      label: 'Overrides',
+      value: configuredDepartmentCount,
+      accent: 'from-purple-500 to-pink-500',
+    },
+  ];
+
+  const handleDepartmentSelect = (value: string) => {
+    if (value === '__clear__') {
+      setDepartmentTimingForm({
+        department: '',
+        startTime: globalTimingForm.startTime,
+        endTime: globalTimingForm.endTime,
+        checkInGrace: globalTimingForm.checkInGrace,
+        checkOutGrace: globalTimingForm.checkOutGrace,
+      });
+      return;
+    }
+
+    const target = officeTimings.find(
+      (entry) =>
+        entry.department &&
+        entry.department.trim().toLowerCase() === value.trim().toLowerCase(),
+    );
+
+    if (target) {
+      handleDepartmentTimingEdit(target);
+    } else {
+      setDepartmentTimingForm((prev) => ({
+        ...prev,
+        department: value,
+      }));
+    }
   };
 
   const attendanceContent = (
@@ -751,7 +876,9 @@ const AttendanceManager: React.FC = () => {
               onDateChange={(date) => {
                 if (date) {
                   setSelectedDate(date);
-                  setFilterDate(format(date, 'yyyy-MM-dd'));
+                  const formatted = format(date, 'yyyy-MM-dd');
+                  setFilterDate(formatted);
+                  loadAllAttendance(formatted);
                 }
               }}
               placeholder="Select date"
@@ -773,6 +900,8 @@ const AttendanceManager: React.FC = () => {
                     <th className="text-left p-3 font-medium">Location</th>
                     <th className="text-left p-3 font-medium">Selfie</th>
                     <th className="text-left p-3 font-medium">Status</th>
+                    <th className="text-left p-3 font-medium">Work Summary</th>
+                    <th className="text-left p-3 font-medium">Work Report</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -841,7 +970,13 @@ const AttendanceManager: React.FC = () => {
                                 alt={`${record.userName}'s selfie`} 
                                 className="w-full h-full object-cover"
                                 onError={(e) => {
-                                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                  const target = e.currentTarget as HTMLImageElement;
+                                  target.style.display = 'none';
+                                  // Create fallback div
+                                  const fallback = document.createElement('div');
+                                  fallback.className = 'w-full h-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center';
+                                  fallback.innerHTML = '<svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>';
+                                  target.parentNode?.appendChild(fallback);
                                 }}
                               />
                             ) : null}
@@ -856,6 +991,35 @@ const AttendanceManager: React.FC = () => {
                           <div className="flex flex-wrap gap-1">
                             {getStatusBadge(record)}
                           </div>
+                        </td>
+                        <td className="p-3 text-sm text-muted-foreground max-w-[200px]">
+                          {record.workSummary ? (
+                            <button
+                              type="button"
+                              className="text-left truncate max-w-[180px] hover:text-blue-600"
+                              onClick={() => setSummaryModal({ open: true, summary: record.workSummary || '' })}
+                            >
+                              {record.workSummary.length > 40
+                                ? `${record.workSummary.slice(0, 40)}…`
+                                : record.workSummary}
+                            </button>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="p-3">
+                          {record.workReport ? (
+                            <a
+                              href={record.workReport}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-blue-600 hover:underline"
+                            >
+                              View Report
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">—</span>
+                          )}
                         </td>
                       </tr>
                     ))
@@ -896,6 +1060,15 @@ const AttendanceManager: React.FC = () => {
                     src={selectedRecord.checkInSelfie} 
                     alt="Check-in selfie" 
                     className="w-full h-full object-cover"
+                    onError={(e) => {
+                      const target = e.currentTarget as HTMLImageElement;
+                      target.style.display = 'none';
+                      // Create fallback div
+                      const fallback = document.createElement('div');
+                      fallback.className = 'w-full h-full flex flex-col items-center justify-center text-gray-400';
+                      fallback.innerHTML = '<svg class="h-12 w-12 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg><p>No selfie available</p>';
+                      target.parentNode?.appendChild(fallback);
+                    }}
                   />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
@@ -922,6 +1095,15 @@ const AttendanceManager: React.FC = () => {
                     src={selectedRecord.checkOutSelfie} 
                     alt="Check-out selfie" 
                     className="w-full h-full object-cover"
+                    onError={(e) => {
+                      const target = e.currentTarget as HTMLImageElement;
+                      target.style.display = 'none';
+                      // Create fallback div
+                      const fallback = document.createElement('div');
+                      fallback.className = 'w-full h-full flex flex-col items-center justify-center text-gray-400';
+                      fallback.innerHTML = '<svg class="h-12 w-12 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg><p>No check-out selfie</p><p class="text-sm">Not checked out yet</p>';
+                      target.parentNode?.appendChild(fallback);
+                    }}
                   />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
@@ -953,9 +1135,29 @@ const AttendanceManager: React.FC = () => {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={summaryModal.open}
+        onOpenChange={(open) => setSummaryModal({ open, summary: open ? summaryModal.summary : null })}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Work Summary</DialogTitle>
+            <DialogDescription>Detail submitted during check-out.</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 text-sm text-muted-foreground whitespace-pre-wrap">
+            {summaryModal.summary || 'No summary provided.'}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSummaryModal({ open: false, summary: null })}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Export Modal */}
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>Export Attendance Report ({exportType?.toUpperCase()})</DialogTitle>
             <DialogDescription>
@@ -963,7 +1165,7 @@ const AttendanceManager: React.FC = () => {
             </DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-6 py-4">
+          <div className="space-y-6 py-4 flex-1 overflow-y-auto pr-1">
             {/* Quick Filter Dropdown */}
             <div className="space-y-2">
               <Label htmlFor="quick-filter">Quick Filter</Label>
@@ -1014,6 +1216,8 @@ const AttendanceManager: React.FC = () => {
                       setEmployeeFilter('all');
                       setSelectedEmployee(null);
                       setEmployeeSearch('');
+                    setSelectedDepartmentFilter('');
+                    setFilteredEmployees([]);
                     }}
                     className="h-4 w-4 text-blue-600"
                   />
@@ -1025,7 +1229,13 @@ const AttendanceManager: React.FC = () => {
                     id="specific-employee"
                     name="employee-filter"
                     checked={employeeFilter === 'specific'}
-                    onChange={() => setEmployeeFilter('specific')}
+                    onChange={() => {
+                      setEmployeeFilter('specific');
+                      setSelectedEmployee(null);
+                      setSelectedDepartmentFilter('');
+                      setEmployeeSearch('');
+                      setFilteredEmployees([]);
+                    }}
                     className="h-4 w-4 text-blue-600"
                   />
                   <Label htmlFor="specific-employee" className="cursor-pointer">Specific Employee</Label>
@@ -1033,64 +1243,104 @@ const AttendanceManager: React.FC = () => {
               </div>
             </div>
 
-            {/* Employee Search */}
+            {/* Employee Selection */}
             {employeeFilter === 'specific' && (
-              <div className="space-y-2">
-                <Label htmlFor="employee-search">Search Employee</Label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="employee-search"
-                    placeholder="Search by name or employee ID..."
-                    value={employeeSearch}
-                    onChange={(e) => setEmployeeSearch(e.target.value)}
-                    className="pl-10"
-                  />
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="department-select">Department</Label>
+                  <Select
+                    value={selectedDepartmentFilter}
+                    onValueChange={(value) => {
+                      setSelectedDepartmentFilter(value);
+                      setSelectedEmployee(null);
+                      setEmployeeSearch('');
+                    }}
+                  >
+                    <SelectTrigger id="department-select">
+                      <SelectValue placeholder="Select department" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {departments.length ? (
+                        departments.map((dept) => (
+                          <SelectItem key={dept} value={dept}>
+                            {dept}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="__empty" disabled>
+                          No departments available
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
                 </div>
-                
-                {/* Employee Results Dropdown */}
-                {employeeSearch && filteredEmployees.length > 0 && (
-                  <div className="border rounded-md max-h-48 overflow-y-auto mt-2">
-                    {filteredEmployees.map((emp) => (
-                      <div
-                        key={emp.user_id}
-                        onClick={() => {
-                          setSelectedEmployee(emp);
-                          setEmployeeSearch(emp.name);
-                          setFilteredEmployees([]);
-                        }}
-                        className={`p-3 hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer border-b last:border-b-0 ${
-                          selectedEmployee?.user_id === emp.user_id ? 'bg-blue-50 dark:bg-blue-900' : ''
-                        }`}
-                      >
-                        <div className="font-medium">{emp.name}</div>
-                        {emp.employee_id && (
-                          <div className="text-sm text-muted-foreground">ID: {emp.employee_id}</div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                
-                {selectedEmployee && (
-                  <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900 rounded-md flex items-center justify-between">
-                    <div>
-                      <div className="font-medium">{selectedEmployee.name}</div>
-                      {selectedEmployee.employee_id && (
-                        <div className="text-sm text-muted-foreground">ID: {selectedEmployee.employee_id}</div>
+
+                {selectedDepartmentFilter ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="employee-search">Select Employee</Label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        id="employee-search"
+                        placeholder="Search by name or employee ID..."
+                        value={employeeSearch}
+                        onChange={(e) => setEmployeeSearch(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+                    <div className="border rounded-md max-h-40 overflow-y-auto mt-2">
+                      {filteredEmployees.length ? (
+                        filteredEmployees.map((emp) => {
+                          const isSelected = selectedEmployee?.user_id === emp.user_id;
+                          return (
+                            <button
+                              type="button"
+                              key={emp.user_id}
+                              onClick={() => setSelectedEmployee(emp)}
+                              className={`w-full text-left p-3 border-b last:border-b-0 transition-colors ${
+                                isSelected
+                                  ? 'bg-blue-50 dark:bg-blue-900'
+                                  : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                              }`}
+                            >
+                              <div className="font-medium">{emp.name}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {emp.employee_id ? `ID: ${emp.employee_id}` : 'User ID: ' + emp.user_id}
+                              </div>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="p-3 text-sm text-muted-foreground">
+                          No employees found for this department.
+                        </div>
                       )}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setSelectedEmployee(null);
-                        setEmployeeSearch('');
-                      }}
-                    >
-                      Clear
-                    </Button>
+                    {selectedEmployee && (
+                      <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900 rounded-md flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">{selectedEmployee.name}</div>
+                          {selectedEmployee.employee_id && (
+                            <div className="text-sm text-muted-foreground">ID: {selectedEmployee.employee_id}</div>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSelectedEmployee(null);
+                            setEmployeeSearch('');
+                          }}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    )}
                   </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Select a department to view its employees.
+                  </p>
                 )}
               </div>
             )}
@@ -1121,144 +1371,286 @@ const AttendanceManager: React.FC = () => {
 
   const officeHoursContent = (
     <div className="space-y-6">
-      <Card className="shadow-lg">
-        <CardHeader>
-          <CardTitle>Global Office Hours</CardTitle>
-          <CardDescription>Default schedule applied to every department unless specifically overridden.</CardDescription>
+      <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white rounded-3xl p-6 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="h-16 w-16 rounded-2xl bg-white/15 flex items-center justify-center shadow-lg">
+              <Clock className="h-8 w-8" />
+            </div>
+            <div>
+              <p className="text-sm uppercase tracking-widest text-white/70">Scheduling Hub</p>
+              <h2 className="text-3xl font-bold">Office Hours Control Center</h2>
+              <p className="text-white/80 mt-1">
+                Define global timings, override specific departments, and keep every team aligned.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Badge variant="secondary" className="bg-white/20 text-white border-white/30">
+              {configuredDepartmentCount} Department Override{configuredDepartmentCount === 1 ? '' : 's'}
+            </Badge>
+            <Badge variant="secondary" className="bg-white/20 text-white border-white/30">
+              {officeTimings.length} Total Rule{officeTimings.length === 1 ? '' : 's'}
+            </Badge>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mt-6">
+          {officeQuickStats.map((stat) => (
+            <div
+              key={stat.label}
+              className={`rounded-2xl bg-gradient-to-br ${stat.accent} p-4 shadow-lg`}
+            >
+              <p className="text-sm text-white/70">{stat.label}</p>
+              <p className="text-2xl font-semibold mt-1">{stat.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="shadow-xl border border-blue-100 dark:border-slate-800">
+          <CardHeader className="space-y-1 pb-4">
+            <CardTitle className="text-xl font-semibold">Global Office Hours</CardTitle>
+            <CardDescription>
+              Default schedule applied to every department unless specifically overridden.
+            </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="global-start">Start Time</Label>
+                <Label htmlFor="global-start" className="text-sm font-medium text-blue-600">
+                  Start Time
+                </Label>
               <Input
                 id="global-start"
                 type="time"
                 value={globalTimingForm.startTime}
-                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, startTime: e.target.value }))}
+                  onChange={(e) =>
+                    setGlobalTimingForm((prev) => ({ ...prev, startTime: e.target.value }))
+                  }
+                  className="h-12 border-2 border-blue-100 focus:border-blue-400"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="global-end">End Time</Label>
+                <Label htmlFor="global-end" className="text-sm font-medium text-blue-600">
+                  End Time
+                </Label>
               <Input
                 id="global-end"
                 type="time"
                 value={globalTimingForm.endTime}
-                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, endTime: e.target.value }))}
+                  onChange={(e) =>
+                    setGlobalTimingForm((prev) => ({ ...prev, endTime: e.target.value }))
+                  }
+                  className="h-12 border-2 border-blue-100 focus:border-blue-400"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="global-grace-in">Check-in Grace (minutes)</Label>
+                <Label htmlFor="global-grace-in" className="text-sm font-medium text-blue-600">
+                  Check-in Grace (minutes)
+                </Label>
               <Input
                 id="global-grace-in"
                 type="number"
                 min={0}
                 max={180}
                 value={globalTimingForm.checkInGrace}
-                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, checkInGrace: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setGlobalTimingForm((prev) => ({
+                    ...prev,
+                    checkInGrace: e.target.value === '' ? '' : Number(e.target.value),
+                  }))
+                }
+                className="h-12 border-2 border-blue-100 focus:border-blue-400"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="global-grace-out">Check-out Grace (minutes)</Label>
+                <Label htmlFor="global-grace-out" className="text-sm font-medium text-blue-600">
+                  Check-out Grace (minutes)
+                </Label>
               <Input
                 id="global-grace-out"
                 type="number"
                 min={0}
                 max={180}
                 value={globalTimingForm.checkOutGrace}
-                onChange={(e) => setGlobalTimingForm((prev) => ({ ...prev, checkOutGrace: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setGlobalTimingForm((prev) => ({
+                    ...prev,
+                    checkOutGrace: e.target.value === '' ? '' : Number(e.target.value),
+                  }))
+                }
+                className="h-12 border-2 border-blue-100 focus:border-blue-400"
               />
             </div>
           </div>
-          <div className="flex justify-end">
-            <Button onClick={handleGlobalTimingSave} disabled={officeFormLoading} className="gap-2">
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button
+                variant="outline"
+                className="border-2 border-blue-200 text-blue-600 hover:bg-blue-50 dark:text-blue-300"
+                onClick={() => loadOfficeTimings()}
+                disabled={officeFormLoading}
+              >
+                Refresh
+              </Button>
+              <Button
+                onClick={handleGlobalTimingSave}
+                disabled={officeFormLoading}
+                className="gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-md"
+              >
               {officeFormLoading ? 'Saving...' : 'Save Global Settings'}
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      <Card className="shadow-lg">
-        <CardHeader>
-          <CardTitle>Department-specific Office Hours</CardTitle>
-          <CardDescription>Override the global schedule for particular departments.</CardDescription>
+        <Card className="shadow-xl border border-purple-100 dark:border-slate-800">
+          <CardHeader className="space-y-1 pb-4">
+            <CardTitle className="text-xl font-semibold">Department Overrides</CardTitle>
+            <CardDescription>
+              Override the global schedule for particular departments or create new ones.
+            </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="space-y-3">
-            <Label htmlFor="department-name">Department</Label>
+            <div className="space-y-2">
+              <Label className="text-sm font-medium text-purple-600">Department</Label>
+              {departments.length > 0 && (
+                <Select
+                  value={
+                    departmentTimingForm.department &&
+                    departments.some(
+                      (dept) =>
+                        dept.trim().toLowerCase() ===
+                        departmentTimingForm.department?.trim().toLowerCase(),
+                    )
+                      ? departmentTimingForm.department
+                      : '__custom__'
+                  }
+                  onValueChange={(value) => {
+                    if (value === '__custom__') return;
+                    handleDepartmentSelect(value);
+                  }}
+                >
+                  <SelectTrigger className="h-12 border-2 border-purple-100 focus:border-purple-400">
+                    <SelectValue placeholder="Select department to edit" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__custom__">Custom / New Department</SelectItem>
+                    {departments.map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="__clear__" className="text-red-500">
+                      Clear Selection
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
             <Input
               id="department-name"
               placeholder="e.g., Engineering"
               value={departmentTimingForm.department}
-              onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, department: e.target.value }))}
+                onChange={(e) =>
+                  setDepartmentTimingForm((prev) => ({ ...prev, department: e.target.value }))
+                }
+                className="h-12 border-2 border-purple-100 focus:border-purple-400"
             />
             {departments.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {departments.map((dept) => (
-                  <Button
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {departments.map((dept) => {
+                    const isSelected =
+                      dept.trim().toLowerCase() ===
+                      departmentTimingForm.department?.trim().toLowerCase();
+                    return (
+                      <button
                     key={dept}
                     type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      const existing = officeTimings.find((entry) => (entry.department || '').toLowerCase() === dept.toLowerCase());
-                      if (existing) {
-                        handleDepartmentTimingEdit(existing);
-                      } else {
-                        setDepartmentTimingForm((prev) => ({ ...prev, department: dept }));
-                      }
-                    }}
+                        onClick={() => handleDepartmentSelect(dept)}
+                        className={`px-3 py-1.5 rounded-full text-sm transition-all ${
+                          isSelected
+                            ? 'bg-purple-600 text-white shadow-lg'
+                            : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+                        }`}
                   >
                     {dept}
-                  </Button>
-                ))}
+                      </button>
+                    );
+                  })}
               </div>
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="dept-start">Start Time</Label>
+                <Label htmlFor="dept-start" className="text-sm font-medium text-purple-600">
+                  Start Time
+                </Label>
               <Input
                 id="dept-start"
                 type="time"
                 value={departmentTimingForm.startTime}
-                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, startTime: e.target.value }))}
+                  onChange={(e) =>
+                    setDepartmentTimingForm((prev) => ({ ...prev, startTime: e.target.value }))
+                  }
+                  className="h-12 border-2 border-purple-100 focus:border-purple-400"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dept-end">End Time</Label>
+                <Label htmlFor="dept-end" className="text-sm font-medium text-purple-600">
+                  End Time
+                </Label>
               <Input
                 id="dept-end"
                 type="time"
                 value={departmentTimingForm.endTime}
-                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, endTime: e.target.value }))}
+                  onChange={(e) =>
+                    setDepartmentTimingForm((prev) => ({ ...prev, endTime: e.target.value }))
+                  }
+                  className="h-12 border-2 border-purple-100 focus:border-purple-400"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dept-grace-in">Check-in Grace (minutes)</Label>
+                <Label htmlFor="dept-grace-in" className="text-sm font-medium text-purple-600">
+                  Check-in Grace (minutes)
+                </Label>
               <Input
                 id="dept-grace-in"
                 type="number"
                 min={0}
                 max={180}
                 value={departmentTimingForm.checkInGrace}
-                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, checkInGrace: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setDepartmentTimingForm((prev) => ({
+                    ...prev,
+                    checkInGrace: e.target.value === '' ? '' : Number(e.target.value),
+                  }))
+                }
+                className="h-12 border-2 border-purple-100 focus:border-purple-400"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dept-grace-out">Check-out Grace (minutes)</Label>
+                <Label htmlFor="dept-grace-out" className="text-sm font-medium text-purple-600">
+                  Check-out Grace (minutes)
+                </Label>
               <Input
                 id="dept-grace-out"
                 type="number"
                 min={0}
                 max={180}
                 value={departmentTimingForm.checkOutGrace}
-                onChange={(e) => setDepartmentTimingForm((prev) => ({ ...prev, checkOutGrace: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setDepartmentTimingForm((prev) => ({
+                    ...prev,
+                    checkOutGrace: e.target.value === '' ? '' : Number(e.target.value),
+                  }))
+                }
+                className="h-12 border-2 border-purple-100 focus:border-purple-400"
               />
             </div>
           </div>
 
-          <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-3">
             <Button
               type="button"
               variant="outline"
@@ -1271,51 +1663,66 @@ const AttendanceManager: React.FC = () => {
                   checkOutGrace: globalTimingForm.checkOutGrace,
                 })
               }
+                className="border-2 border-purple-200 text-purple-600 hover:bg-purple-50 dark:text-purple-300"
             >
               Reset
             </Button>
-            <Button onClick={handleDepartmentTimingSave} disabled={officeFormLoading || !departmentTimingForm.department.trim()} className="gap-2">
+              <Button
+                onClick={handleDepartmentTimingSave}
+                disabled={officeFormLoading || !departmentTimingForm.department.trim()}
+                className="gap-2 bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 shadow-md"
+              >
               {officeFormLoading ? 'Saving...' : 'Save Department Timing'}
             </Button>
           </div>
         </CardContent>
       </Card>
+      </div>
 
-      <Card className="shadow-lg">
-        <CardHeader>
-          <CardTitle>Configured Schedules</CardTitle>
-          <CardDescription>Overview of current global and department-specific office timings.</CardDescription>
+      <Card className="shadow-xl border border-slate-100 dark:border-slate-800">
+        <CardHeader className="space-y-1 pb-4">
+          <CardTitle className="text-xl font-semibold">Configured Schedules</CardTitle>
+          <CardDescription>
+            Overview of current global and department-specific office timings.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {officeTimings.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="text-left">
-                    <th className="p-3">Target</th>
-                    <th className="p-3">Start</th>
-                    <th className="p-3">End</th>
-                    <th className="p-3">Check-in Grace</th>
-                    <th className="p-3">Check-out Grace</th>
-                    <th className="p-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
+            <div className="grid gap-4">
                   {officeTimings.map((timing) => {
                     const isGlobalTiming = !timing.department;
                     return (
-                      <tr key={timing.id} className="border-t">
-                        <td className="p-3 font-medium">
+                  <div
+                    key={timing.id}
+                    className="group border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-gradient-to-r from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-sm hover:shadow-lg transition-shadow"
+                  >
+                    <div>
+                      <p className="text-sm uppercase tracking-wider text-slate-500">
+                        {isGlobalTiming ? 'Global Schedule' : 'Department'}
+                      </p>
+                      <h3 className="text-xl font-semibold">
                           {isGlobalTiming ? 'All Departments' : timing.department}
-                        </td>
-                        <td className="p-3">{(timing.start_time || '').slice(0, 5)}</td>
-                        <td className="p-3">{(timing.end_time || '').slice(0, 5)}</td>
-                        <td className="p-3">{timing.check_in_grace_minutes} mins</td>
-                        <td className="p-3">{timing.check_out_grace_minutes} mins</td>
-                        <td className="p-3 flex flex-wrap gap-2">
+                      </h3>
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        <Badge variant="secondary" className="bg-blue-50 text-blue-700">
+                          Start: {formatTimeDisplay(timing.start_time)}
+                        </Badge>
+                        <Badge variant="secondary" className="bg-green-50 text-green-700">
+                          End: {formatTimeDisplay(timing.end_time)}
+                        </Badge>
+                        <Badge variant="secondary" className="bg-amber-50 text-amber-700">
+                          Grace In: {timing.check_in_grace_minutes}m
+                        </Badge>
+                        <Badge variant="secondary" className="bg-rose-50 text-rose-700">
+                          Grace Out: {timing.check_out_grace_minutes}m
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
                           <Button
                             size="sm"
                             variant="outline"
+                        className="border-2 border-blue-200 text-blue-600 hover:bg-blue-50 dark:text-blue-300"
                             onClick={() => handleDepartmentTimingEdit(timing)}
                           >
                             Edit
@@ -1324,23 +1731,25 @@ const AttendanceManager: React.FC = () => {
                             <Button
                               size="sm"
                               variant="ghost"
-                              className="text-destructive"
+                          className="text-destructive hover:bg-red-50"
                               onClick={() => handleDepartmentTimingDelete(timing)}
                               disabled={officeFormLoading}
                             >
                               Remove
                             </Button>
                           )}
-                        </td>
-                      </tr>
+                    </div>
+                  </div>
                     );
                   })}
-                </tbody>
-              </table>
             </div>
           ) : (
-            <div className="p-6 text-center text-muted-foreground">
-              No office timings configured yet.
+            <div className="p-10 text-center">
+              <Clock className="h-12 w-12 mx-auto text-slate-300 mb-3" />
+              <p className="text-lg font-medium">No office timings configured yet</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Start by adding a global schedule, then override specific departments as needed.
+              </p>
             </div>
           )}
         </CardContent>
