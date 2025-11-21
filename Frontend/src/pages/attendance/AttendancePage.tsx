@@ -12,7 +12,7 @@ import AttendanceCamera from '@/components/attendance/AttendanceCamera';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
-import { getCurrentLocation as fetchPreciseLocation } from '@/utils/geolocation';
+import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast } from '@/utils/geolocation';
 
 type GeoLocation = {
   latitude: number;
@@ -35,6 +35,7 @@ const AttendancePage: React.FC = () => {
   const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
+  const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
 
   // Helper to fetch today's attendance for current user
   const fetchTodayAttendance = async () => {
@@ -118,9 +119,37 @@ const AttendancePage: React.FC = () => {
     }
   }, [toast, t.attendance.locationRequired]);
 
+  const refreshLocationFast = useCallback(async (): Promise<GeoLocation> => {
+    try {
+      setIsGettingFastLocation(true);
+      const fastLocation = await getCurrentLocationFast();
+      const refreshed: GeoLocation = {
+        latitude: fastLocation.latitude,
+        longitude: fastLocation.longitude,
+        accuracy: fastLocation.accuracy ?? null,
+        address: fastLocation.address || `${fastLocation.latitude.toFixed(6)}, ${fastLocation.longitude.toFixed(6)}`,
+        updatedAt: Date.now(),
+      };
+      setLocation(refreshed);
+      return refreshed;
+    } catch (error: any) {
+      const errorMessage =
+        error?.message || t.attendance.locationRequired || 'Unable to fetch your location';
+      toast({
+        title: 'Location Error',
+        description: errorMessage,
+        variant: 'destructive',
+      });
+      throw new Error(errorMessage);
+    } finally {
+      setIsGettingFastLocation(false);
+    }
+  }, [toast, t.attendance.locationRequired]);
+
   useEffect(() => {
     fetchTodayAttendance();
-    refreshLocation().catch(() => {});
+    // Use fast location for immediate access when page loads
+    refreshLocationFast().catch(() => {});
     
     // Auto-refresh at midnight to reset for new day
     const checkMidnight = setInterval(() => {
@@ -132,7 +161,7 @@ const AttendancePage: React.FC = () => {
     }, 60000); // Check every minute
     
     return () => clearInterval(checkMidnight);
-  }, [user?.id, refreshLocation]);
+  }, [user?.id, refreshLocationFast]);
 
   const handleCheckIn = async () => {
     try {
@@ -359,7 +388,12 @@ const AttendancePage: React.FC = () => {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {location && (
+            {isGettingFastLocation ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Getting location...</span>
+              </div>
+            ) : location ? (
               <div className="space-y-2">
               <div className="flex items-start gap-2 text-sm text-muted-foreground">
                 <MapPin className="h-4 w-4 mt-0.5" />
@@ -380,6 +414,11 @@ const AttendancePage: React.FC = () => {
                     </span>
                   )}
                 </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <MapPin className="h-4 w-4" />
+                <span>Location not available</span>
               </div>
             )}
             <div className="flex justify-end">

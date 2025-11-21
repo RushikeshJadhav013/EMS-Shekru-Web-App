@@ -12,10 +12,10 @@ import { toast } from '@/hooks/use-toast';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
-import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X, Download, Search } from 'lucide-react';
+import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X, Download, Search, Loader2 } from 'lucide-react';
 import { AttendanceRecord, UserRole } from '@/types';
 import { format, subMonths } from 'date-fns';
-import { getCurrentLocation as fetchPreciseLocation } from '@/utils/geolocation';
+import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast } from '@/utils/geolocation';
 import { DatePicker } from '@/components/ui/date-picker';
 
 type GeoLocation = {
@@ -58,6 +58,8 @@ const AttendanceWithToggle: React.FC = () => {
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
   const [employeeAttendanceData, setEmployeeAttendanceData] = useState<EmployeeAttendanceRecord[]>([]);
   const [location, setLocation] = useState<GeoLocation | null>(null);
+  const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
+  const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [filterRole, setFilterRole] = useState<'all' | UserRole>('all');
@@ -120,13 +122,35 @@ const AttendanceWithToggle: React.FC = () => {
     }
   }, [toast, t.attendance.locationRequired]);
 
+  const refreshLocationFast = useCallback(async () => {
+    try {
+      setIsGettingFastLocation(true);
+      const fastLocation = await getCurrentLocationFast();
+      setLocation({
+        latitude: fastLocation.latitude,
+        longitude: fastLocation.longitude,
+        accuracy: fastLocation.accuracy ?? null,
+        address: fastLocation.address || `${fastLocation.latitude.toFixed(6)}, ${fastLocation.longitude.toFixed(6)}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Location Error',
+        description: error?.message || t.attendance.locationRequired,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsGettingFastLocation(false);
+    }
+  }, [toast, t.attendance.locationRequired]);
+
   useEffect(() => {
     loadFromBackend();
     if (!initialLocationRequestedRef.current) {
       initialLocationRequestedRef.current = true;
-      refreshLocation();
+      // Use fast location for immediate access when page loads
+      refreshLocationFast();
     }
-  }, [refreshLocation]);
+  }, [refreshLocationFast]);
 
   useEffect(() => {
     if (viewMode === 'employee' && canViewEmployeeAttendance) {
@@ -742,10 +766,20 @@ const AttendanceWithToggle: React.FC = () => {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {location && (
+                {isGettingFastLocation ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Getting location...</span>
+                  </div>
+                ) : location ? (
                   <div className="flex items-start gap-2 text-sm text-muted-foreground">
                     <MapPin className="h-4 w-4 mt-0.5" />
                     <span className="flex-1">{location.address}</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <MapPin className="h-4 w-4" />
+                    <span>Location not available</span>
                   </div>
                 )}
                 

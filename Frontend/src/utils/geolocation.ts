@@ -135,3 +135,107 @@ export const getCurrentLocation = async (): Promise<LocationData> => {
     throw error;
   }
 };
+
+/**
+ * Get current location immediately (fast, less accurate)
+ * This function gets location within seconds for immediate use
+ */
+export const getCurrentLocationFast = async (): Promise<LocationData> => {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Geolocation is not supported by your browser'));
+      return;
+    }
+
+    const options = {
+      enableHighAccuracy: false, // Set to false for faster response
+      timeout: 5000, // 5 second timeout for fast response
+      maximumAge: 60000, // Accept cached location up to 1 minute old
+    };
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        
+        try {
+          // Get address details (this might take a moment, but location is already available)
+          const { address, placeName } = await getAddressFromCoords(latitude, longitude);
+          
+          resolve({
+            latitude,
+            longitude,
+            accuracy,
+            address,
+            placeName,
+            timestamp: Date.now()
+          });
+        } catch (error) {
+          // Even if address fails, return location with coordinates
+          resolve({
+            latitude,
+            longitude,
+            accuracy,
+            address: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+            placeName: 'Location',
+            timestamp: Date.now()
+          });
+        }
+      },
+      (error) => {
+        reject(new Error(getErrorMessage(error)));
+      },
+      options
+    );
+  });
+};
+
+/**
+ * Get location immediately and then improve it in background
+ * Returns fast location immediately, then updates with more accurate location
+ */
+export const getCurrentLocationWithImprovement = async (
+  onLocationUpdate?: (location: LocationData) => void
+): Promise<LocationData> => {
+  try {
+    // Get fast location immediately
+    const fastLocation = await getCurrentLocationFast();
+    
+    // Return fast location immediately
+    if (onLocationUpdate) {
+      onLocationUpdate(fastLocation);
+    }
+    
+    // In background, try to get more accurate location
+    try {
+      const accurateLocation = await waitForAccuratePosition();
+      const { latitude, longitude, accuracy } = accurateLocation.coords;
+      
+      // Get address for accurate location
+      const { address, placeName } = await getAddressFromCoords(latitude, longitude);
+      
+      const improvedLocation: LocationData = {
+        latitude,
+        longitude,
+        accuracy,
+        address,
+        placeName,
+        timestamp: Date.now()
+      };
+      
+      // Update with improved location
+      if (onLocationUpdate) {
+        onLocationUpdate(improvedLocation);
+      }
+      
+      return improvedLocation;
+    } catch (error) {
+      // If accurate location fails, just return the fast location
+      console.warn('Could not improve location accuracy:', error);
+      return fastLocation;
+    }
+  } catch (error) {
+    // If even fast location fails, throw error
+    console.error('Error getting any location:', error);
+    throw error;
+  }
+};
