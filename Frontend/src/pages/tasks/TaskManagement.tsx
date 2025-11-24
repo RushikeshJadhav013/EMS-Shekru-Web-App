@@ -2318,22 +2318,22 @@ const TaskManagement: React.FC = () => {
       {/* Task Detail Dialog */}
       {selectedTask && (
         <Dialog open={Boolean(selectedTask)} onOpenChange={() => setSelectedTask(null)}>
-          <DialogContent className="max-w-3xl">
-            <DialogHeader>
+          <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+            <DialogHeader className="flex-shrink-0">
               <DialogTitle className="text-2xl font-bold">{selectedTask.title}</DialogTitle>
               <DialogDescription>
                 Detailed view of task assignments and progress
               </DialogDescription>
             </DialogHeader>
 
-            <Tabs defaultValue="details" className="mt-4">
-              <TabsList className="grid grid-cols-3 gap-2 bg-muted/50">
+            <Tabs defaultValue="details" className="mt-4 flex-1 flex flex-col overflow-hidden">
+              <TabsList className="grid grid-cols-3 gap-2 bg-muted/50 flex-shrink-0">
                 <TabsTrigger value="details">Details</TabsTrigger>
                 <TabsTrigger value="activity">Activity</TabsTrigger>
                 <TabsTrigger value="comments">Comments</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="details" className="mt-4">
+              <TabsContent value="details" className="mt-4 overflow-y-auto flex-1">
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="p-4 rounded-lg bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 border">
@@ -2417,7 +2417,7 @@ const TaskManagement: React.FC = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="activity" className="mt-6">
+              <TabsContent value="activity" className="mt-6 overflow-y-auto flex-1">
                 <div className="space-y-4">
                   {isFetchingHistory && selectedTask && isFetchingHistory === selectedTask.id ? (
                     <div className="flex justify-center py-8 text-muted-foreground">
@@ -2555,7 +2555,7 @@ const TaskManagement: React.FC = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="comments" className="mt-6">
+              <TabsContent value="comments" className="mt-6 overflow-y-auto flex-1">
                 <div className="space-y-6">
                   <div className="p-4 rounded-lg border bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
                     <div className="flex flex-col sm:flex-row gap-3">

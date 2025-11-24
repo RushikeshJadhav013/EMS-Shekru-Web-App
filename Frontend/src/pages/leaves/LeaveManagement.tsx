@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 type Holiday = {
   date: Date;
   name: string;
+  description?: string;
 };
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -13,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Calendar } from '@/components/ui/calendar';
+import { CalendarWithSelect } from '@/components/ui/calendar-with-select';
 import { DatePicker } from '@/components/ui/date-picker';
 import {
   Dialog,
@@ -71,6 +73,7 @@ export default function LeaveManagement() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
+  const [displayedMonth, setDisplayedMonth] = useState<Date>(new Date());
   
   // Initialize leave requests from localStorage or use default mock data
   const initializeLeaveRequests = (): LeaveRequest[] => {
@@ -162,14 +165,75 @@ export default function LeaveManagement() {
 
   // Company holidays state
   const [holidays, setHolidays] = useState<Holiday[]>(loadStoredHolidays());
+  const [selectedHoliday, setSelectedHoliday] = useState<Holiday | null>(null);
+  const [isHolidayDialogOpen, setIsHolidayDialogOpen] = useState(false);
 
-  const [holidayForm, setHolidayForm] = useState<{ date: Date; name: string }>({ date: new Date(), name: '' });
+  const [holidayForm, setHolidayForm] = useState<{ date: Date; name: string; description?: string }>({ 
+    date: new Date(), 
+    name: '',
+    description: ''
+  });
 
   const handleAddHoliday = () => {
-    if (!holidayForm.name) return;
-    setHolidays([...holidays, { date: holidayForm.date, name: holidayForm.name }]);
-    setHolidayForm({ date: new Date(), name: '' });
-    toast({ title: 'Holiday added', description: 'Company holiday added to calendar.' });
+    if (!holidayForm.name) {
+      toast({ 
+        title: 'Error', 
+        description: 'Please enter a holiday name.',
+        variant: 'destructive'
+      });
+      return;
+    }
+    
+    // Check if the date is in the past
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const selectedDate = new Date(holidayForm.date);
+    selectedDate.setHours(0, 0, 0, 0);
+    
+    if (selectedDate < today) {
+      toast({ 
+        title: 'Error', 
+        description: 'Cannot set holidays for past dates. Please select a current or future date.',
+        variant: 'destructive'
+      });
+      return;
+    }
+    
+    // Check if holiday already exists for this date
+    const existingHoliday = holidays.find(h => isSameDay(h.date, holidayForm.date));
+    if (existingHoliday) {
+      toast({ 
+        title: 'Error', 
+        description: `A holiday "${existingHoliday.name}" already exists for this date.`,
+        variant: 'destructive'
+      });
+      return;
+    }
+    
+    setHolidays([...holidays, { 
+      date: holidayForm.date, 
+      name: holidayForm.name,
+      description: holidayForm.description 
+    }]);
+    setHolidayForm({ date: new Date(), name: '', description: '' });
+    toast({ 
+      title: 'Holiday added', 
+      description: `${holidayForm.name} has been added to the calendar.` 
+    });
+  };
+
+  const handleDayClick = (date: Date | undefined) => {
+    if (!date) return;
+    
+    const holiday = holidays.find(h => isSameDay(h.date, date));
+    if (holiday) {
+      // If clicking on a holiday, show the dialog but don't change selected date
+      setSelectedHoliday(holiday);
+      setIsHolidayDialogOpen(true);
+      return; // Don't update selectedDate
+    }
+    // Only update selected date if it's not a holiday
+    setSelectedDate(date);
   };
 
   const handleRemoveHoliday = (date: Date) => {
@@ -1091,32 +1155,47 @@ export default function LeaveManagement() {
             <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
               <CardTitle className="text-xl font-semibold">Leave Calendar</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="pt-6">
               {/* Admin holiday management UI */}
               {user?.role === 'admin' && (
-                <div className="mb-6 space-y-6">
+                <div className="mb-6 space-y-6 mt-4">
                   <div className="p-4 border rounded-lg bg-gradient-to-r from-amber-50 to-yellow-50 dark:from-amber-950 dark:to-yellow-950">
                   <h3 className="font-semibold mb-3 flex items-center gap-2">
                     <CalendarIcon className="h-5 w-5 text-amber-600" />
                     Set Company Holidays
                   </h3>
-                  <div className="flex gap-2 items-center mb-2">
-                    <DatePicker
-                      date={holidayForm.date}
-                      onDateChange={(date) => date && setHolidayForm({ ...holidayForm, date })}
-                      placeholder="Select holiday date"
-                      className="flex-1"
-                    />
-                    <Input
-                      type="text"
-                      placeholder="Holiday name"
-                      value={holidayForm.name}
-                      onChange={e => setHolidayForm({ ...holidayForm, name: e.target.value })}
-                    />
-                    <Button onClick={handleAddHoliday} className="gap-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-700 hover:to-yellow-700">
-                      <CalendarIcon className="h-4 w-4" />
-                      Add Holiday
-                    </Button>
+                  <div className="space-y-3">
+                    <div className="flex gap-2 items-start">
+                      <div className="flex-1 space-y-2">
+                        <DatePicker
+                          date={holidayForm.date}
+                          onDateChange={(date) => date && setHolidayForm({ ...holidayForm, date })}
+                          placeholder="Select holiday date"
+                          className="w-full"
+                          disablePastDates={true}
+                        />
+                        <Input
+                          type="text"
+                          placeholder="Holiday name (e.g., Diwali, New Year)"
+                          value={holidayForm.name}
+                          onChange={e => setHolidayForm({ ...holidayForm, name: e.target.value })}
+                        />
+                        <Textarea
+                          placeholder="Description (optional) - e.g., Festival of Lights celebration"
+                          value={holidayForm.description || ''}
+                          onChange={e => setHolidayForm({ ...holidayForm, description: e.target.value })}
+                          rows={2}
+                          className="resize-none"
+                        />
+                      </div>
+                      <Button 
+                        onClick={handleAddHoliday} 
+                        className="gap-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 shadow-lg mt-0"
+                      >
+                        <CalendarIcon className="h-4 w-4" />
+                        Add Holiday
+                      </Button>
+                    </div>
                   </div>
                   <div>
                     <h4 className="font-medium mb-1">Current Holidays:</h4>
@@ -1263,10 +1342,12 @@ export default function LeaveManagement() {
               )}
               {/* Calendar with holidays highlighted */}
               <div className="flex justify-center">
-                <Calendar
+                <CalendarWithSelect
                   mode="single"
                   selected={selectedDate}
-                  onSelect={setSelectedDate}
+                  onSelect={handleDayClick}
+                  currentMonth={displayedMonth}
+                  onMonthChange={setDisplayedMonth}
                   className="rounded-xl border-2 shadow-lg p-4 bg-white dark:bg-gray-950"
                 modifiers={{
                     holiday: holidays.map(h => h.date),
@@ -1277,25 +1358,53 @@ export default function LeaveManagement() {
                 }}
                 modifiersClassNames={{
                     holiday:
-                      'bg-gradient-to-br from-amber-400 to-yellow-500 text-white font-bold hover:from-amber-500 hover:to-yellow-600 transition-all duration-300 shadow-md',
+                      'bg-gradient-to-br from-red-500 to-rose-600 text-white font-bold hover:from-red-600 hover:to-rose-700 transition-all duration-300 shadow-lg cursor-pointer ring-2 ring-red-300 dark:ring-red-700',
                     weekOff:
                       'border border-sky-400 text-sky-600 font-semibold bg-sky-50 hover:bg-sky-100',
                 }}
                 footer={
-                  <div className="mt-4 p-4 bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 rounded-lg">
-                    <h4 className="font-semibold mb-2 flex items-center gap-2">
-                      <CalendarIcon className="h-4 w-4 text-amber-600" />
-                      Company Holidays:
-                    </h4>
-                    <ul className="space-y-1">
-                      {holidays.map(h => (
-                        <li key={h.date.toISOString()} className="text-sm flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500"></span>
-                          <span className="font-medium">{h.name}</span>
-                          <span className="text-muted-foreground">({h.date.toDateString()})</span>
-                        </li>
-                      ))}
-                    </ul>
+                  (() => {
+                    // Filter holidays for the currently displayed month
+                    const displayedYear = displayedMonth.getFullYear();
+                    const displayedMonthIndex = displayedMonth.getMonth();
+                    const monthHolidays = holidays.filter(h => 
+                      h.date.getFullYear() === displayedYear && 
+                      h.date.getMonth() === displayedMonthIndex
+                    );
+                    
+                    return (
+                      <div className="mt-4 p-4 bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 rounded-lg">
+                        <h4 className="font-semibold mb-3 flex items-center gap-2">
+                          <CalendarIcon className="h-5 w-5 text-red-600" />
+                          Holidays in {format(displayedMonth, 'MMMM yyyy')}:
+                        </h4>
+                        {monthHolidays.length === 0 ? (
+                          <p className="text-sm text-muted-foreground italic">No holidays in this month</p>
+                        ) : (
+                          <ul className="space-y-2">
+                            {monthHolidays.map(h => (
+                          <li 
+                            key={h.date.toISOString()} 
+                            className="text-sm flex items-start gap-2 p-2 rounded-lg hover:bg-white dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                            onClick={() => {
+                              setSelectedHoliday(h);
+                              setIsHolidayDialogOpen(true);
+                            }}
+                          >
+                            <span className="h-3 w-3 mt-0.5 rounded-full bg-gradient-to-r from-red-500 to-rose-600 shadow-sm flex-shrink-0"></span>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-slate-800 dark:text-slate-200">{h.name}</span>
+                                <span className="text-xs text-muted-foreground">({format(h.date, 'MMM dd, yyyy')})</span>
+                              </div>
+                              {h.description && (
+                                <p className="text-xs text-muted-foreground mt-0.5">{h.description}</p>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     {Object.keys(weekOffConfig).length > 0 && (
                       <div className="mt-4">
                         <h4 className="font-semibold mb-2 flex items-center gap-2">
@@ -1314,8 +1423,10 @@ export default function LeaveManagement() {
                       ))}
                     </ul>
                       </div>
-                    )}
-                  </div>
+                        )}
+                      </div>
+                    );
+                  })()
                 }
                 />
               </div>
@@ -1536,6 +1647,54 @@ export default function LeaveManagement() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Holiday Details Dialog */}
+      <Dialog open={isHolidayDialogOpen} onOpenChange={setIsHolidayDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-xl">
+              <div className="h-10 w-10 rounded-full bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-lg">
+                <CalendarIcon className="h-5 w-5 text-white" />
+              </div>
+              Holiday Information
+            </DialogTitle>
+          </DialogHeader>
+          {selectedHoliday && (
+            <div className="space-y-4 py-4">
+              <div className="bg-gradient-to-r from-red-50 to-rose-50 dark:from-red-950 dark:to-rose-950 rounded-lg p-4 border-2 border-red-200 dark:border-red-800">
+                <h3 className="text-2xl font-bold text-red-700 dark:text-red-300 mb-2">
+                  {selectedHoliday.name}
+                </h3>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground mb-3">
+                  <CalendarDays className="h-4 w-4" />
+                  <span className="font-semibold">{format(selectedHoliday.date, 'EEEE, MMMM dd, yyyy')}</span>
+                </div>
+                {selectedHoliday.description && (
+                  <div className="mt-3 pt-3 border-t border-red-200 dark:border-red-800">
+                    <p className="text-sm text-slate-700 dark:text-slate-300">
+                      {selectedHoliday.description}
+                    </p>
+                  </div>
+                )}
+              </div>
+              <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-3 text-sm text-muted-foreground">
+                <p className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-red-500"></span>
+                  This is a company-wide holiday. All offices will be closed.
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button 
+              onClick={() => setIsHolidayDialogOpen(false)}
+              className="w-full bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700"
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

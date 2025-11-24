@@ -12,7 +12,7 @@ import AttendanceCamera from '@/components/attendance/AttendanceCamera';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
-import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast } from '@/utils/geolocation';
+import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast, getCurrentLocationWithContinuousImprovement } from '@/utils/geolocation';
 
 type GeoLocation = {
   latitude: number;
@@ -35,7 +35,10 @@ const AttendancePage: React.FC = () => {
   const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
-  const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
+  const [isGettingFastLocation, setIsGettingFastLocation] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationWatcher, setLocationWatcher] = useState<{ stop: () => void } | null>(null);
+  const [isImprovingAccuracy, setIsImprovingAccuracy] = useState(false);
 
   // Helper to fetch today's attendance for current user
   const fetchTodayAttendance = async () => {
@@ -119,9 +122,59 @@ const AttendancePage: React.FC = () => {
     }
   }, [toast, t.attendance.locationRequired]);
 
+  const stopContinuousLocationImprovement = useCallback(() => {
+    if (locationWatcher) {
+      locationWatcher.stop();
+      setLocationWatcher(null);
+      setIsImprovingAccuracy(false);
+    }
+  }, [locationWatcher]);
+
+  const startContinuousLocationImprovement = useCallback(() => {
+    // Stop any existing watcher
+    if (locationWatcher) {
+      locationWatcher.stop();
+    }
+
+    setIsImprovingAccuracy(true);
+    
+    try {
+      const watcher = getCurrentLocationWithContinuousImprovement(
+        (improvedLocation) => {
+          const refreshed: GeoLocation = {
+            latitude: improvedLocation.latitude,
+            longitude: improvedLocation.longitude,
+            accuracy: improvedLocation.accuracy ?? null,
+            address: improvedLocation.address || `${improvedLocation.latitude.toFixed(6)}, ${improvedLocation.longitude.toFixed(6)}`,
+            updatedAt: Date.now(),
+          };
+          setLocation(refreshed);
+          
+          // Stop improving if we get very accurate location (< 10 meters)
+          if (improvedLocation.accuracy && improvedLocation.accuracy < 10) {
+            setIsImprovingAccuracy(false);
+          }
+        },
+        10 // Target 10 meters accuracy
+      );
+      
+      setLocationWatcher(watcher);
+      
+      // Auto-stop after 30 seconds
+      setTimeout(() => {
+        watcher.stop();
+        setIsImprovingAccuracy(false);
+      }, 30000);
+    } catch (error) {
+      console.error('Failed to start continuous location improvement:', error);
+      setIsImprovingAccuracy(false);
+    }
+  }, [locationWatcher]);
+
   const refreshLocationFast = useCallback(async (): Promise<GeoLocation> => {
     try {
       setIsGettingFastLocation(true);
+      setLocationError(null);
       const fastLocation = await getCurrentLocationFast();
       const refreshed: GeoLocation = {
         latitude: fastLocation.latitude,
@@ -131,25 +184,38 @@ const AttendancePage: React.FC = () => {
         updatedAt: Date.now(),
       };
       setLocation(refreshed);
+      setIsGettingFastLocation(false);
       return refreshed;
     } catch (error: any) {
       const errorMessage =
         error?.message || t.attendance.locationRequired || 'Unable to fetch your location';
+      setLocationError(errorMessage);
+      setIsGettingFastLocation(false);
       toast({
         title: 'Location Error',
         description: errorMessage,
         variant: 'destructive',
       });
       throw new Error(errorMessage);
-    } finally {
-      setIsGettingFastLocation(false);
     }
   }, [toast, t.attendance.locationRequired]);
 
   useEffect(() => {
     fetchTodayAttendance();
-    // Use fast location for immediate access when page loads
-    refreshLocationFast().catch(() => {});
+    
+    // Get location immediately when page loads
+    const initLocation = async () => {
+      try {
+        await refreshLocationFast();
+        // After initial fast location, start continuous improvement
+        startContinuousLocationImprovement();
+      } catch (error) {
+        console.error('Initial location fetch failed:', error);
+        setLocationError(error instanceof Error ? error.message : 'Failed to get location');
+      }
+    };
+    
+    initLocation();
     
     // Auto-refresh at midnight to reset for new day
     const checkMidnight = setInterval(() => {
@@ -160,7 +226,10 @@ const AttendancePage: React.FC = () => {
       }
     }, 60000); // Check every minute
     
-    return () => clearInterval(checkMidnight);
+    return () => {
+      clearInterval(checkMidnight);
+      stopContinuousLocationImprovement();
+    };
   }, [user?.id, refreshLocationFast]);
 
   const handleCheckIn = async () => {
@@ -380,6 +449,153 @@ const AttendancePage: React.FC = () => {
         </div>
       </div>
 
+      {/* Location Status Card - Prominent Display */}
+      <Card className="border-0 shadow-lg bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950 dark:to-indigo-950">
+        <CardHeader className="border-b bg-white/50 dark:bg-gray-900/50">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-xl font-semibold flex items-center gap-2">
+                <MapPin className="h-5 w-5 text-blue-600" />
+                Current Location
+              </CardTitle>
+              <CardDescription>Your real-time GPS location</CardDescription>
+            </div>
+            <div className="flex gap-2">
+              {!isImprovingAccuracy && location && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    startContinuousLocationImprovement();
+                    toast({
+                      title: 'Improving Accuracy',
+                      description: 'Getting more precise location...',
+                    });
+                  }}
+                  disabled={isRefreshingLocation || isGettingFastLocation}
+                >
+                  Improve Accuracy
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  setIsRefreshingLocation(true);
+                  stopContinuousLocationImprovement();
+                  try {
+                    await refreshLocationFast();
+                    startContinuousLocationImprovement();
+                    toast({
+                      title: 'Location Updated',
+                      description: 'Your location has been refreshed successfully',
+                    });
+                  } catch (error: any) {
+                    // Error already handled in refreshLocationFast
+                  } finally {
+                    setIsRefreshingLocation(false);
+                  }
+                }}
+                disabled={isRefreshingLocation || isGettingFastLocation}
+              >
+                {isRefreshingLocation ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Refreshing...
+                  </>
+                ) : (
+                  'Refresh'
+           
+          </div>
+        </CardHeader>
+        <CardContent className="pt-6">
+          {isGettingFastLocation ? (
+            <div className="flex flex-col items-center justify-center py-8 space-y-3">
+              <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+              <p className="text-sm font-medium">Detecting your location...</p>
+              <p className="text-xs text-muted-foreground">This should take just a moment</p>
+            </div>
+          ) : locationError ? (
+            <div className="flex flex-col items-center justify-center py-8 space-y-3">
+              <AlertCircle className="h-8 w-8 text-red-500" />
+              <p className="text-sm font-medium text-red-600">{locationError}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => refreshLocationFast()}
+              >
+                Try Again
+              </Button>
+            </div>
+          ) : location ? (
+            <div className="space-y-4">
+              <div className="bg-white dark:bg-gray-900 rounded-lg p-4 space-y-3">
+                <div className="flex items-start gap-3">
+                  <MapPin className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 space-y-1">
+                    <p className="font-medium text-sm">Address</p>
+                    <p className="text-sm text-muted-foreground">{location.address}</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4 pt-2 border-t">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Latitude</p>
+                    <p className="font-mono text-sm font-semibold">{location.latitude.toFixed(6)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Longitude</p>
+                    <p className="font-mono text-sm font-semibold">{location.longitude.toFixed(6)}</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center justify-between pt-2 border-t text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center gap-1">
+                      <span className="font-medium">Accuracy:</span>
+                      <span className={`font-semibold ${
+                        location.accuracy && location.accuracy < 10 ? 'text-green-600' :
+                        location.accuracy && location.accuracy < 50 ? 'text-yellow-600' :
+                        'text-orange-600'
+                      }`}>
+                        {location.accuracy ? `±${Math.round(location.accuracy)}m` : 'Unknown'}
+                      </span>
+                    </span>
+                    {isImprovingAccuracy && (
+                      <Badge variant="outline" className="text-xs py-0 px-2 border-blue-500 text-blue-600">
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        Improving...
+                      </Badge>
+                    )}
+                  </div>
+                  {location.updatedAt && (
+                    <span>
+                      {new Date(location.updatedAt).toLocaleTimeString('en-IN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      })}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 space-y-3">
+              <AlertCircle className="h-8 w-8 text-orange-500" />
+              <p className="text-sm font-medium">Location not available</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => refreshLocationFast()}
+              >
+                Get Location
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Current Status Card */}
       <Card className="border-0 shadow-lg">
         <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
@@ -388,69 +604,6 @@ const AttendancePage: React.FC = () => {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {isGettingFastLocation ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Getting location...</span>
-              </div>
-            ) : location ? (
-              <div className="space-y-2">
-              <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4 mt-0.5" />
-                <span className="flex-1">{location.address}</span>
-                </div>
-                <div className="flex flex-wrap items-center justify-between text-xs text-muted-foreground gap-2">
-                  <span>
-                    Accuracy:&nbsp;
-                    {location.accuracy ? `±${Math.round(location.accuracy)} m` : 'Unknown'}
-                  </span>
-                  {location.updatedAt && (
-                    <span>
-                      Updated at{' '}
-                      {new Date(location.updatedAt).toLocaleTimeString('en-IN', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4" />
-                <span>Location not available</span>
-              </div>
-            )}
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={async () => {
-                  setIsRefreshingLocation(true);
-                  try {
-                    await refreshLocation();
-                  } catch (error: any) {
-                    toast({
-                      title: 'Location Error',
-                      description: error?.message || 'Unable to refresh location',
-                      variant: 'destructive',
-                    });
-                  } finally {
-                    setIsRefreshingLocation(false);
-                  }
-                }}
-                disabled={isRefreshingLocation}
-              >
-                {isRefreshingLocation ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Refreshing...
-                  </>
-                ) : (
-                  'Refresh Location'
-                )}
-              </Button>
-            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {currentAttendance ? (

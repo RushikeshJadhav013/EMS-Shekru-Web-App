@@ -714,8 +714,8 @@ const formatAadharInput = (value: string) => {
         pan_card: formData.panCard,
         aadhar_card: formData.aadharCard,
         shift_type: formData.shift,
-        employee_type: formData.employeeType,  // ✅ Added
-        profile_photo: imageFile ? undefined : formData.profilePhoto, // Handle file upload separately if needed
+        employee_type: formData.employeeType,
+        profile_photo: imageFile || formData.profilePhoto || undefined, // Pass the file if available
         is_verified: true,
         created_at: formData.createdAt || new Date().toISOString()
       };
@@ -723,6 +723,17 @@ const formatAadharInput = (value: string) => {
       // Call API with user_id instead of employee_id
       const updatedEmployee = await apiService.updateEmployee(userIdToUpdate, employeeData);
       const mappedUpdated = toCamelCase(updatedEmployee);
+      
+      // Fix photo URLs to include backend base URL
+      if (mappedUpdated.profilePhoto && !mappedUpdated.profilePhoto.startsWith('http')) {
+        mappedUpdated.profilePhoto = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${mappedUpdated.profilePhoto}`;
+      }
+      if (mappedUpdated.photoUrl && !mappedUpdated.photoUrl.startsWith('http')) {
+        mappedUpdated.photoUrl = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${mappedUpdated.photoUrl}`;
+      }
+      if (!mappedUpdated.photoUrl && mappedUpdated.profilePhoto) {
+        mappedUpdated.photoUrl = mappedUpdated.profilePhoto;
+      }
       
       // Update the employee in the list using the id field
       setEmployees(employees.map(emp => emp.id === userIdToUpdate ? mappedUpdated : emp));
@@ -1391,7 +1402,7 @@ const formatAadharInput = (value: string) => {
               <DialogTrigger asChild>
                 <Button onClick={openCreateDialog} className="gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-md">
                   <Plus className="h-4 w-4" />
-                  Add Employee
+                  Add User
                 </Button>
               </DialogTrigger>
               <DialogContent className="w-[95vw] max-w-[500px] max-h-[90vh] overflow-y-auto border-2 shadow-2xl">
@@ -1684,16 +1695,6 @@ const formatAadharInput = (value: string) => {
                           )}
                         </SelectContent>
                       </Select>
-                    </div>
-                    <div>
-                      <Label htmlFor="create-resignationDate">Date of Resignation</Label>
-                      <Input
-                        id="create-resignationDate"
-                        type="date"
-                        value={formData.resignationDate || ''}
-                        onChange={(e) => setFormData((prev) => ({ ...prev, resignationDate: e.target.value }))}
-                        className="mt-1"
-                      />
                     </div>
                   </div>
                   <DialogFooter className="mt-4 sticky bottom-0 bg-white py-2 flex flex-col sm:flex-row gap-2">

@@ -306,44 +306,70 @@ class ApiService {
 
   // Update an employee - Updated to use user_id instead of employee_id
   async updateEmployee(userId: string, employeeData: Partial<EmployeeData>): Promise<Employee> {
-    // Prepare the request body as JSON
-    const requestBody: Record<string, unknown> = {
-      name: employeeData.name,
-      email: employeeData.email,
-      employee_id: employeeData.employee_id,
-      department: employeeData.department || null,
-      designation: employeeData.designation || null,
-      phone: employeeData.phone || null,
-      address: employeeData.address || null,
-      role: employeeData.role || 'Employee',
-      gender: employeeData.gender || null,
-      resignation_date: employeeData.resignation_date || null,
-      pan_card: employeeData.pan_card || null,
-      aadhar_card: employeeData.aadhar_card || null,
-      shift_type: employeeData.shift_type || null,
-      employee_type: employeeData.employee_type || null,  // ✅ Added
-      is_verified: employeeData.is_verified !== undefined ? employeeData.is_verified : true,
-      profile_photo: employeeData.profile_photo || null,
-      created_at: employeeData.created_at || new Date().toISOString()
-    };
-
-    // Remove undefined/null values
-    Object.keys(requestBody).forEach(key => {
-      if (requestBody[key] === undefined) {
-        delete requestBody[key];
-      }
-    });
-
     // Get auth token from localStorage
     const token = localStorage.getItem('token');
     
+    // Check if there's a file upload
+    const hasFile = employeeData.profile_photo instanceof File;
+    
+    let body: FormData | string;
+    let headers: Record<string, string> = {
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    };
+
+    if (hasFile) {
+      // Use FormData for file uploads
+      const formData = new FormData();
+      
+      Object.entries(employeeData).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          if (key === 'profile_photo' && value instanceof File) {
+            formData.append(key, value);
+          } else {
+            formData.append(key, String(value));
+          }
+        }
+      });
+      
+      body = formData;
+      // Don't set Content-Type for FormData - browser will set it with boundary
+    } else {
+      // Use JSON for regular updates
+      const requestBody: Record<string, unknown> = {
+        name: employeeData.name,
+        email: employeeData.email,
+        employee_id: employeeData.employee_id,
+        department: employeeData.department || null,
+        designation: employeeData.designation || null,
+        phone: employeeData.phone || null,
+        address: employeeData.address || null,
+        role: employeeData.role || 'Employee',
+        gender: employeeData.gender || null,
+        resignation_date: employeeData.resignation_date || null,
+        pan_card: employeeData.pan_card || null,
+        aadhar_card: employeeData.aadhar_card || null,
+        shift_type: employeeData.shift_type || null,
+        employee_type: employeeData.employee_type || null,
+        is_verified: employeeData.is_verified !== undefined ? employeeData.is_verified : true,
+        profile_photo: employeeData.profile_photo || null,
+        created_at: employeeData.created_at || new Date().toISOString()
+      };
+
+      // Remove undefined/null values
+      Object.keys(requestBody).forEach(key => {
+        if (requestBody[key] === undefined) {
+          delete requestBody[key];
+        }
+      });
+
+      body = JSON.stringify(requestBody);
+      headers['Content-Type'] = 'application/json';
+    }
+    
     const response = await fetch(`${this.baseURL}/employees/${userId}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}), // ✅ Add auth token
-      },
-      body: JSON.stringify(requestBody),
+      headers,
+      body,
     });
 
     if (!response.ok) {
@@ -705,6 +731,45 @@ class ApiService {
     return this.request(`/shift/notifications/${notificationId}/read`, {
       method: 'PUT',
     });
+  }
+
+  // Reports API
+  async getEmployeePerformance(params: {
+    month: number;
+    year: number;
+    department?: string;
+    employeeId?: string;
+  }) {
+    const query = new URLSearchParams({
+      month: params.month.toString(),
+      year: params.year.toString(),
+      ...(params.department && params.department !== 'all' && { department: params.department }),
+      ...(params.employeeId && { employee_id: params.employeeId }),
+    });
+    
+    return this.request(`/reports/employee-performance?${query}`);
+  }
+
+  async getDepartmentMetrics(params: { month: number; year: number }) {
+    const query = new URLSearchParams({
+      month: params.month.toString(),
+      year: params.year.toString(),
+    });
+    
+    return this.request(`/reports/department-metrics?${query}`);
+  }
+
+  async getExecutiveSummary(params: { month: number; year: number }) {
+    const query = new URLSearchParams({
+      month: params.month.toString(),
+      year: params.year.toString(),
+    });
+    
+    return this.request(`/reports/executive-summary?${query}`);
+  }
+
+  async getReportDepartments() {
+    return this.request('/reports/departments');
   }
 }
 

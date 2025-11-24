@@ -138,7 +138,7 @@ export const getCurrentLocation = async (): Promise<LocationData> => {
 
 /**
  * Get current location immediately (fast, less accurate)
- * This function gets location within seconds for immediate use
+ * This function gets location within milliseconds for immediate use
  */
 export const getCurrentLocationFast = async (): Promise<LocationData> => {
   return new Promise((resolve, reject) => {
@@ -148,19 +148,18 @@ export const getCurrentLocationFast = async (): Promise<LocationData> => {
     }
 
     const options = {
-      enableHighAccuracy: false, // Set to false for faster response
-      timeout: 5000, // 5 second timeout for fast response
-      maximumAge: 60000, // Accept cached location up to 1 minute old
+      enableHighAccuracy: true, // Use high accuracy for better results
+      timeout: 10000, // 10 second timeout
+      maximumAge: 10000, // Accept cached location up to 10 seconds old for instant response
     };
 
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         const { latitude, longitude, accuracy } = position.coords;
         
+        // Fetch address immediately
         try {
-          // Get address details (this might take a moment, but location is already available)
           const { address, placeName } = await getAddressFromCoords(latitude, longitude);
-          
           resolve({
             latitude,
             longitude,
@@ -170,7 +169,7 @@ export const getCurrentLocationFast = async (): Promise<LocationData> => {
             timestamp: Date.now()
           });
         } catch (error) {
-          // Even if address fails, return location with coordinates
+          // If address fetch fails, return with coordinates
           resolve({
             latitude,
             longitude,
@@ -187,6 +186,94 @@ export const getCurrentLocationFast = async (): Promise<LocationData> => {
       options
     );
   });
+};
+
+/**
+ * Get highly accurate location with continuous improvement
+ * Returns initial location immediately, then improves accuracy over time
+ */
+export const getCurrentLocationWithContinuousImprovement = (
+  onLocationUpdate: (location: LocationData) => void,
+  targetAccuracy: number = 10 // Target accuracy in meters
+): { stop: () => void } => {
+  if (!navigator.geolocation) {
+    throw new Error('Geolocation is not supported by your browser');
+  }
+
+  let bestAccuracy = Infinity;
+  let watchId: number | null = null;
+  let addressFetchTimeout: NodeJS.Timeout | null = null;
+
+  const options = {
+    enableHighAccuracy: true,
+    timeout: 30000,
+    maximumAge: 0, // Always get fresh location
+  };
+
+  watchId = navigator.geolocation.watchPosition(
+    async (position) => {
+      const { latitude, longitude, accuracy } = position.coords;
+      
+      // Only update if accuracy improved or it's the first reading
+      if (accuracy && accuracy < bestAccuracy) {
+        bestAccuracy = accuracy;
+        
+        // Clear previous address fetch timeout
+        if (addressFetchTimeout) {
+          clearTimeout(addressFetchTimeout);
+        }
+        
+        // Debounce address fetching - wait 500ms before fetching
+        addressFetchTimeout = setTimeout(async () => {
+          try {
+            const { address, placeName } = await getAddressFromCoords(latitude, longitude);
+            onLocationUpdate({
+              latitude,
+              longitude,
+              accuracy,
+              address,
+              placeName,
+              timestamp: Date.now()
+            });
+          } catch (error) {
+            // If address fetch fails, still update with coordinates
+            onLocationUpdate({
+              latitude,
+              longitude,
+              accuracy,
+              address: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+              placeName: 'Location',
+              timestamp: Date.now()
+            });
+          }
+        }, 500);
+        
+        // Stop watching if we reached target accuracy
+        if (accuracy <= targetAccuracy && watchId !== null) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+      }
+    },
+    (error) => {
+      console.error('Location watch error:', error);
+    },
+    options
+  );
+
+  // Return cleanup function
+  return {
+    stop: () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (addressFetchTimeout) {
+        clearTimeout(addressFetchTimeout);
+        addressFetchTimeout = null;
+      }
+    }
+  };
 };
 
 /**

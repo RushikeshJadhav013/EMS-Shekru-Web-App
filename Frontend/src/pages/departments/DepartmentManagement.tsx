@@ -65,6 +65,7 @@ export default function DepartmentManagement() {
     budget: undefined,
     location: ''
   });
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
   
   const managerName = (managerId?: string) => {
     if (!managerId) return undefined;
@@ -359,6 +360,19 @@ export default function DepartmentManagement() {
     loadDepartments();
   }, []);
 
+  // Load all employees for auto-calculation
+  useEffect(() => {
+    const loadEmployees = async () => {
+      try {
+        const employees = await apiService.getEmployees();
+        setAllEmployees(employees || []);
+      } catch (error) {
+        console.error('Failed to load employees:', error);
+      }
+    };
+    loadEmployees();
+  }, []);
+
   useEffect(() => {
     const loadManagers = async () => {
       setIsManagersLoading(true);
@@ -425,6 +439,22 @@ export default function DepartmentManagement() {
 
     loadManagers();
   }, []);
+
+  // Auto-calculate employee count when department name changes
+  useEffect(() => {
+    if (formData.name && allEmployees.length > 0) {
+      const count = allEmployees.filter((emp: any) => {
+        const empDept = (emp.department || '').toLowerCase().trim();
+        const formDept = (formData.name || '').toLowerCase().trim();
+        return empDept === formDept;
+      }).length;
+      
+      // Only update if different to avoid infinite loops
+      if (count !== formData.employeeCount) {
+        setFormData(prev => ({ ...prev, employeeCount: count }));
+      }
+    }
+  }, [formData.name, allEmployees]);
 
 
   return (
@@ -981,15 +1011,23 @@ function DepartmentForm({
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="employeeCount">Number of Employees</Label>
+              <Label htmlFor="employeeCount" className="flex items-center gap-2">
+                Number of Employees
+                <Badge variant="secondary" className="text-xs">Auto-calculated</Badge>
+              </Label>
               <Input
                 id="employeeCount"
                 type="number"
                 min="0"
-              value={formData.employeeCount ?? ''}
+              value={formData.employeeCount ?? 0}
               onChange={onEmployeeCountChange}
-                className="h-11"
+                className="h-11 bg-slate-50 dark:bg-slate-900"
+                readOnly
+                disabled
               />
+              <p className="text-xs text-muted-foreground">
+                Automatically counted from employees in this department
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="budget">Annual Budget (₹)</Label>

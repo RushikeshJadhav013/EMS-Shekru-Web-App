@@ -17,6 +17,7 @@ from app.routes import (
     hiring_routes,
     shift_routes,
     department_routes,
+    report_routes,
 )
 import os
 
@@ -145,6 +146,7 @@ app.include_router(dashboard_routes.router)
 app.include_router(hiring_routes.router)
 app.include_router(shift_routes.router)
 app.include_router(department_routes.router)
+app.include_router(report_routes.router)
 
 @app.get("/")
 async def home():

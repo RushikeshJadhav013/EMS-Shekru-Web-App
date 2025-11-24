@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
     JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
-    OTP_EXPIRY_MINUTES: int = 5
+    OTP_EXPIRY_MINUTES: int = 10
     
     # Environment-based OTP settings
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")  # development, testing, production

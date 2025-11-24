@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings } from 'lucide-react';
+import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings, LogOut, AlertTriangle, CheckCircle2, Timer } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { AttendanceRecord } from '@/types';
 import { format, subMonths, subDays } from 'date-fns';
@@ -487,32 +487,52 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     
     if (!record.checkOutTime) {
       badges.push(
-        <Badge key="active" variant="default" className="bg-blue-500 text-xs">
-          Awaiting Check-out
+        <Badge 
+          key="active" 
+          variant="default" 
+          className="bg-blue-500 hover:bg-blue-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
+        >
+          <Timer className="h-2.5 w-2.5" />
+          Awaiting
         </Badge>,
       );
     }
     
     if (record.checkInStatus === 'late' || record.status === 'late') {
       badges.push(
-        <Badge key="late" variant="destructive" className="text-xs">
-          Late Check-in
+        <Badge 
+          key="late" 
+          variant="destructive" 
+          className="bg-red-500 hover:bg-red-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
+        >
+          <AlertTriangle className="h-2.5 w-2.5" />
+          Late
         </Badge>,
       );
     }
 
     if (record.checkOutStatus === 'early') {
       badges.push(
-        <Badge key="early" variant="outline" className="border-orange-500 text-orange-500 text-xs">
-          Early Check-out
+        <Badge 
+          key="early" 
+          variant="outline" 
+          className="border-orange-500 bg-orange-50 text-orange-600 hover:bg-orange-100 text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
+        >
+          <LogOut className="h-2.5 w-2.5" />
+          Early
         </Badge>,
       );
     }
 
     if (badges.length === 0) {
       badges.push(
-        <Badge key="ontime" variant="default" className="bg-green-500 text-xs">
-          On Schedule
+        <Badge 
+          key="ontime" 
+          variant="default" 
+          className="bg-green-500 hover:bg-green-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
+        >
+          <CheckCircle2 className="h-2.5 w-2.5" />
+          On Time
         </Badge>,
       );
     }
@@ -787,20 +807,26 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <Button 
               onClick={exportToCSV} 
               variant="outline" 
-              className="gap-2 hover:bg-white dark:hover:bg-gray-800"
+              className="gap-2 bg-white dark:bg-gray-900 hover:bg-green-50 dark:hover:bg-green-950 border-2 border-green-600 hover:border-green-700 font-medium shadow-md hover:shadow-lg transition-all"
               disabled={isExporting}
+              style={{ color: '#15803d' }}
             >
-              <Download className="h-4 w-4" />
-              {isExporting ? 'Exporting...' : 'Export CSV'}
+              <Download className="h-4 w-4" style={{ color: '#15803d' }} />
+              <span className="font-semibold" style={{ color: '#15803d' }}>
+                {isExporting ? 'Exporting...' : 'Export CSV'}
+              </span>
             </Button>
             <Button 
               onClick={exportToPDF} 
               variant="outline" 
-              className="gap-2 hover:bg-white dark:hover:bg-gray-800"
+              className="gap-2 bg-white dark:bg-gray-900 hover:bg-red-50 dark:hover:bg-red-950 border-2 border-red-600 hover:border-red-700 font-medium shadow-md hover:shadow-lg transition-all"
               disabled={isExporting}
+              style={{ color: '#b91c1c' }}
             >
-              <Download className="h-4 w-4" />
-              {isExporting ? 'Exporting...' : 'Export PDF'}
+              <Download className="h-4 w-4" style={{ color: '#b91c1c' }} />
+              <span className="font-semibold" style={{ color: '#b91c1c' }}>
+                {isExporting ? 'Exporting...' : 'Export PDF'}
+              </span>
             </Button>
           </div>
         </div>
@@ -1077,7 +1103,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? format(new Date(selectedRecord.checkInTime), 'hh:mm a') : 'N/A'}</p>
+                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatIST(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
                   <p className="text-sm opacity-80">{selectedRecord?.checkInLocation?.address || 'Location not available'}</p>
                 </div>
               </div>
@@ -1114,7 +1140,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 )}
                 {selectedRecord?.checkOutTime && (
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                    <p className="font-medium">Check-out: {format(new Date(selectedRecord.checkOutTime), 'hh:mm a')}</p>
+                    <p className="font-medium">Check-out: {formatIST(selectedRecord.date, selectedRecord.checkOutTime)}</p>
                     <p className="text-sm opacity-80">{selectedRecord.checkOutLocation?.address || 'Location not available'}</p>
                   </div>
                 )}
@@ -1157,7 +1183,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
       {/* Export Modal */}
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
-        <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
+        <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col overflow-visible">
           <DialogHeader>
             <DialogTitle>Export Attendance Report ({exportType?.toUpperCase()})</DialogTitle>
             <DialogDescription>
@@ -1165,19 +1191,35 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             </DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-6 py-4 flex-1 overflow-y-auto pr-1">
+          <div className="space-y-6 py-4 flex-1 overflow-y-auto overflow-x-visible pr-1">
             {/* Quick Filter Dropdown */}
             <div className="space-y-2">
-              <Label htmlFor="quick-filter">Quick Filter</Label>
+              <Label htmlFor="quick-filter" className="text-sm font-medium">Quick Filter</Label>
               <Select value={quickFilter} onValueChange={handleQuickFilter}>
-                <SelectTrigger id="quick-filter">
+                <SelectTrigger 
+                  id="quick-filter" 
+                  className="w-full h-10 border-2 border-gray-300 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                >
                   <SelectValue placeholder="Select time period" />
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="last_month">Last Month</SelectItem>
-                  <SelectItem value="last_3_months">Last 3 Months</SelectItem>
-                  <SelectItem value="last_6_months">Last 6 Months</SelectItem>
-                  <SelectItem value="custom">Custom Date Range</SelectItem>
+                <SelectContent 
+                  position="popper" 
+                  className="w-[var(--radix-select-trigger-width)] min-w-[200px] max-w-[400px] z-50" 
+                  sideOffset={5}
+                  align="start"
+                >
+                  <SelectItem value="last_month" className="cursor-pointer hover:bg-blue-50">
+                    Last Month
+                  </SelectItem>
+                  <SelectItem value="last_3_months" className="cursor-pointer hover:bg-blue-50">
+                    Last 3 Months
+                  </SelectItem>
+                  <SelectItem value="last_6_months" className="cursor-pointer hover:bg-blue-50">
+                    Last 6 Months
+                  </SelectItem>
+                  <SelectItem value="custom" className="cursor-pointer hover:bg-blue-50">
+                    Custom Date Range
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1247,7 +1289,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             {employeeFilter === 'specific' && (
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="department-select">Department</Label>
+                  <Label htmlFor="department-select" className="text-sm font-medium">Department</Label>
                   <Select
                     value={selectedDepartmentFilter}
                     onValueChange={(value) => {
@@ -1256,13 +1298,21 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                       setEmployeeSearch('');
                     }}
                   >
-                    <SelectTrigger id="department-select">
+                    <SelectTrigger 
+                      id="department-select" 
+                      className="w-full h-10 border-2 border-gray-300 hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+                    >
                       <SelectValue placeholder="Select department" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent 
+                      position="popper" 
+                      className="w-[var(--radix-select-trigger-width)] min-w-[200px] max-w-[400px] max-h-[300px] z-50" 
+                      sideOffset={5}
+                      align="start"
+                    >
                       {departments.length ? (
                         departments.map((dept) => (
-                          <SelectItem key={dept} value={dept}>
+                          <SelectItem key={dept} value={dept} className="cursor-pointer hover:bg-blue-50">
                             {dept}
                           </SelectItem>
                         ))
