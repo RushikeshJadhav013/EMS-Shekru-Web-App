@@ -4,7 +4,7 @@ from sqlalchemy import func, and_
 from datetime import datetime, timedelta
 
 from app.db.database import get_db
-from app.db.models import User, Attendance, Leave, Task
+from app.db.models import User, Attendance, Leave, Task, OfficeTiming
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user
 
@@ -94,7 +94,6 @@ def admin_dashboard(db: Session = Depends(get_db)):
     )
     
     # Get office timings for status calculation
-    from app.db.models.office_timing import OfficeTiming
     from datetime import time as dt_time, timedelta
     
     office_timings_map = {}
