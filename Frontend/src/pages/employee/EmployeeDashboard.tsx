@@ -164,8 +164,8 @@ const EmployeeDashboard: React.FC = () => {
             <CardDescription className="text-base">{t.dashboard.currentAssignments}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {myTasks.map((task) => (
-              <div key={task.id} className="p-3 rounded-lg border space-y-2">
+            {myTasks.map((task, index) => (
+              <div key={task.id ?? `task-${index}`} className="p-3 rounded-lg border space-y-2">
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">

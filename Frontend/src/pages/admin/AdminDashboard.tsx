@@ -49,6 +49,39 @@ const AdminDashboard: React.FC = () => {
       .catch(() => {});
   }, []);
 
+  const formatActivityTime = (timeString: string) => {
+    if (!timeString) return '-';
+    
+    // If timeString is an ISO datetime string (contains 'T'), use it directly
+    let date: Date;
+    if (timeString.includes('T')) {
+      // It's an ISO datetime string - check if it has timezone info
+      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
+        // Has explicit timezone info
+        date = new Date(timeString);
+      } else {
+        // No timezone info - assume UTC (backend stores UTC)
+        date = new Date(timeString + 'Z');
+      }
+    } else {
+      // It's just a time string or date string, try to parse it
+      date = new Date(timeString);
+      // If no timezone info, assume it's UTC
+      if (!timeString.includes('Z') && !timeString.includes('+')) {
+        const isoString = date.toISOString();
+        date = new Date(isoString);
+      }
+    }
+    
+    // Convert to IST and format
+    return date.toLocaleString('en-IN', { 
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -213,17 +246,62 @@ const AdminDashboard: React.FC = () => {
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-xs text-muted-foreground">{new Date(activity.time).toLocaleTimeString()}</p>
-                  <Badge 
-                    variant={
-                      activity.status === 'on-time' || activity.status === 'completed' ? 'default' :
-                      activity.status === 'pending' ? 'secondary' :
-                      'destructive'
-                    }
-                    className="text-xs mt-1"
-                  >
-                    {activity.status}
-                  </Badge>
+                  <p className="text-xs text-muted-foreground">
+                    {formatActivityTime(activity.time)}
+                  </p>
+                  {activity.type === 'check-in' && (
+                    <Badge 
+                      variant={
+                        activity.status === 'on-time' || activity.status === 'on_time' ? 'default' :
+                        activity.status === 'late' ? 'destructive' :
+                        activity.status === 'early' ? 'secondary' :
+                        'default'
+                      }
+                      className={`text-xs mt-1 ${
+                        activity.status === 'on-time' || activity.status === 'on_time' ? 'bg-green-500' :
+                        activity.status === 'late' ? 'bg-red-500' :
+                        activity.status === 'early' ? 'bg-orange-500' :
+                        'bg-green-500'
+                      }`}
+                    >
+                      {activity.status === 'on-time' || activity.status === 'on_time' ? 'On Time' :
+                       activity.status === 'late' ? 'Late' :
+                       activity.status === 'early' ? 'Early' :
+                       activity.status}
+                    </Badge>
+                  )}
+                  {activity.type === 'leave' && (
+                    <Badge 
+                      variant={
+                        activity.status === 'approved' ? 'default' :
+                        activity.status === 'pending' ? 'secondary' :
+                        activity.status === 'rejected' ? 'destructive' :
+                        'secondary'
+                      }
+                      className="text-xs mt-1"
+                    >
+                      {activity.status === 'approved' ? 'Approved' :
+                       activity.status === 'pending' ? 'Pending' :
+                       activity.status === 'rejected' ? 'Rejected' :
+                       activity.status}
+                    </Badge>
+                  )}
+                  {activity.type === 'task' && (
+                    <Badge 
+                      variant={
+                        activity.status === 'completed' ? 'default' :
+                        activity.status === 'in-progress' ? 'secondary' :
+                        'default'
+                      }
+                      className={`text-xs mt-1 ${
+                        activity.status === 'completed' ? 'bg-green-500' : ''
+                      }`}
+                    >
+                      {activity.status === 'completed' ? 'Completed' :
+                       activity.status === 'in-progress' ? 'In Progress' :
+                       activity.status}
+                    </Badge>
+                  )}
                 </div>
               </div>
             ))}

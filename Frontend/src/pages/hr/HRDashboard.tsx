@@ -1,5 +1,5 @@
 import React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,15 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '@/lib/api';
 
+type HRActivity = {
+  id: string | number;
+  type: string;
+  user: string;
+  time?: string;
+  status?: string;
+  description?: string;
+};
+
 const HRDashboard: React.FC = () => {
   const { t } = useLanguage();
   const navigate = useNavigate();
@@ -35,17 +44,160 @@ const HRDashboard: React.FC = () => {
     exitingThisMonth: 0,
     openPositions: 0,
   });
+  const [recentActivities, setRecentActivities] = useState<HRActivity[]>([]);
+  const [isLoadingActivities, setIsLoadingActivities] = useState(true);
 
   useEffect(() => {
-    apiService.getHRDashboard().then(setStats).catch(() => {});
+    let isMounted = true;
+    const loadDashboard = async () => {
+      try {
+        const data = await apiService.getHRDashboard();
+        if (!isMounted || !data) return;
+        const { recentActivities: activityFeed = [], ...statSnapshot } = data;
+        setStats((prev) => ({ ...prev, ...statSnapshot }));
+        setRecentActivities(Array.isArray(activityFeed) ? activityFeed : []);
+      } catch (error) {
+        console.error('Failed to load HR dashboard', error);
+      } finally {
+        if (isMounted) {
+          setIsLoadingActivities(false);
+        }
+      }
+    };
+
+    loadDashboard();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  const recentActivities = [
-    { id: 1, type: 'leave', user: 'Jane Smith', time: '10:30 AM', status: 'pending' },
-    { id: 2, type: 'join', user: 'Mike Johnson', time: 'Today', status: 'new-joiner' },
-    { id: 3, type: 'document', user: 'Sarah Wilson', time: '2:00 PM', status: 'submitted' },
-    { id: 4, type: 'leave', user: 'Tom Anderson', time: '3:15 PM', status: 'approved' },
-  ];
+  const safePercentage = (value: number, total: number): number => {
+    if (!total || total <= 0) return 0;
+    const percent = (value / total) * 100;
+    if (!Number.isFinite(percent)) return 0;
+    return Math.min(100, Math.max(0, percent));
+  };
+
+  const formatActivityTime = (value?: string) => {
+    if (!value) return '—';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.valueOf())) {
+      return value;
+    }
+    return parsed.toLocaleString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const formatActivityDescription = (activity: HRActivity) => {
+    if (activity.description) return activity.description;
+    if (activity.type === 'leave') return 'Leave request';
+    if (activity.type === 'join') return 'New employee joined';
+    if (activity.type === 'attendance') return 'Checked in';
+    if (activity.type === 'document') return 'Document update';
+    return 'Activity update';
+  };
+
+  const formatStatusLabel = (status?: string) =>
+    status ? status.replace(/[-_]/g, ' ') : 'update';
+
+  const getActivityBadgeVariant = (status?: string) => {
+    const normalized = (status || '').toLowerCase();
+    if (['approved', 'new-joiner', 'completed', 'on-time'].includes(normalized)) {
+      return 'default' as const;
+    }
+    if (['pending', 'submitted', 'requested'].includes(normalized)) {
+      return 'secondary' as const;
+    }
+    if (['late', 'rejected', 'cancelled'].includes(normalized)) {
+      return 'destructive' as const;
+    }
+    return 'outline' as const;
+  };
+
+  const getActivityIconClasses = (type: string) => {
+    switch (type) {
+      case 'leave':
+        return 'bg-gradient-to-br from-amber-400 to-orange-500';
+      case 'join':
+        return 'bg-gradient-to-br from-green-400 to-emerald-500';
+      case 'attendance':
+        return 'bg-gradient-to-br from-blue-400 to-indigo-500';
+      case 'document':
+        return 'bg-gradient-to-br from-cyan-400 to-blue-500';
+      default:
+        return 'bg-gradient-to-br from-slate-400 to-gray-500';
+    }
+  };
+
+  const renderActivityIcon = (type: string) => {
+    switch (type) {
+      case 'leave':
+        return <CalendarDays className="h-5 w-5 text-white" />;
+      case 'join':
+        return <UserPlus className="h-5 w-5 text-white" />;
+      case 'attendance':
+        return <Clock className="h-5 w-5 text-white" />;
+      case 'document':
+        return <FileText className="h-5 w-5 text-white" />;
+      default:
+        return <Activity className="h-5 w-5 text-white" />;
+    }
+  };
+
+  const activityFeedContent = useMemo(() => {
+    if (isLoadingActivities) {
+      return (
+        <div className="p-6 text-center text-muted-foreground text-sm">
+          Loading recent activities...
+        </div>
+      );
+    }
+
+    if (!recentActivities.length) {
+      return (
+        <div className="p-6 text-center text-muted-foreground text-sm">
+          No recent activities available yet.
+        </div>
+      );
+    }
+
+    return recentActivities.map((activity) => (
+      <div
+        key={activity.id}
+        className="flex items-start gap-3 p-3 rounded-lg border hover:bg-white/50 dark:hover:bg-gray-800/50 transition-colors"
+      >
+        <div
+          className={`h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm ${getActivityIconClasses(
+            activity.type,
+          )}`}
+        >
+          {renderActivityIcon(activity.type)}
+        </div>
+        <div className="flex-1 space-y-1">
+          <p className="text-sm font-medium">{activity.user}</p>
+          <p className="text-xs text-muted-foreground">
+            {formatActivityDescription(activity)}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-muted-foreground">
+            {formatActivityTime(activity.time)}
+          </p>
+          <Badge
+            variant={getActivityBadgeVariant(activity.status)}
+            className="text-xs mt-1 capitalize"
+          >
+            {formatStatusLabel(activity.status)}
+          </Badge>
+        </div>
+      </div>
+    ));
+  }, [isLoadingActivities, recentActivities]);
 
   return (
     <div className="space-y-6">
@@ -99,7 +251,10 @@ const HRDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.presentToday}</div>
-            <Progress value={(stats.presentToday / stats.totalEmployees) * 100} className="mt-2 h-2 bg-white/30" />
+            <Progress
+              value={safePercentage(stats.presentToday, stats.totalEmployees)}
+              className="mt-2 h-2 bg-white/30"
+            />
           </CardContent>
         </Card>
 
@@ -153,42 +308,7 @@ const HRDashboard: React.FC = () => {
             </CardTitle>
             <CardDescription className="text-base">Latest HR activities and requests</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {recentActivities.map((activity) => (
-              <div key={activity.id} className="flex items-start gap-3 p-3 rounded-lg border hover:bg-white/50 dark:hover:bg-gray-800/50 transition-colors">
-                <div className={`h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm ${
-                  activity.type === 'leave' ? 'bg-gradient-to-br from-amber-400 to-orange-500' :
-                  activity.type === 'join' ? 'bg-gradient-to-br from-green-400 to-emerald-500' :
-                  'bg-gradient-to-br from-blue-400 to-indigo-500'
-                }`}>
-                  {activity.type === 'leave' && <CalendarDays className="h-5 w-5 text-white" />}
-                  {activity.type === 'join' && <UserPlus className="h-5 w-5 text-white" />}
-                  {activity.type === 'document' && <FileText className="h-5 w-5 text-white" />}
-                </div>
-                <div className="flex-1 space-y-1">
-                  <p className="text-sm font-medium">{activity.user}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {activity.type === 'leave' && 'Applied for leave'}
-                    {activity.type === 'join' && 'New employee joined'}
-                    {activity.type === 'document' && 'Submitted document'}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-muted-foreground">{activity.time}</p>
-                  <Badge 
-                    variant={
-                      activity.status === 'approved' || activity.status === 'new-joiner' ? 'default' :
-                      activity.status === 'pending' ? 'secondary' :
-                      'outline'
-                    }
-                    className="text-xs mt-1"
-                  >
-                    {activity.status}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </CardContent>
+          <CardContent className="space-y-3">{activityFeedContent}</CardContent>
         </Card>
 
         {/* Quick Stats Summary */}
@@ -222,14 +342,23 @@ const HRDashboard: React.FC = () => {
                 <span className="text-muted-foreground">On Leave</span>
                 <span className="font-medium">{stats.onLeave}</span>
               </div>
-              <Progress value={(stats.onLeave / stats.totalEmployees) * 100} className="h-2" />
+              <Progress
+                value={safePercentage(stats.onLeave, stats.totalEmployees)}
+                className="h-2"
+              />
             </div>
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Late Arrivals Today</span>
                 <span className="font-medium">{stats.lateArrivals}</span>
               </div>
-              <Progress value={(stats.lateArrivals / stats.presentToday) * 100} className="h-2" />
+              <Progress
+                value={safePercentage(
+                  stats.lateArrivals,
+                  stats.presentToday || stats.totalEmployees || 1,
+                )}
+                className="h-2"
+              />
             </div>
           </CardContent>
         </Card>

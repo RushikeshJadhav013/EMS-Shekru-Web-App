@@ -92,11 +92,37 @@ def admin_dashboard(db: Session = Depends(get_db)):
         .limit(20)
         .all()
     )
+    
+    # Get office timings for status calculation
+    from app.db.models.office_timing import OfficeTiming
+    from datetime import time as dt_time, timedelta
+    
+    office_timings_map = {}
+    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
+    for timing in office_timings:
+        key = timing.department if timing.department else "__global__"
+        office_timings_map[key] = timing
+    
     recent_activities = []
     for att, usr in attendance_today:
-        minutes = func.extract('hour', att.check_in) * 60 + func.extract('minute', att.check_in)
-        # Fallback compute since SQL func not available here; classify by hour only
-        status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 30) else 'late'
+        # Get applicable office timing (department-specific or global)
+        timing = office_timings_map.get(usr.department) or office_timings_map.get("__global__")
+        
+        if timing:
+            # Calculate late threshold (start_time + grace_minutes)
+            start_hour = timing.start_time.hour
+            start_minute = timing.start_time.minute
+            grace_minutes = timing.check_in_grace_minutes or 0
+            
+            # Convert to total minutes for comparison
+            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+        else:
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM
+            status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 45) else 'late'
+        
         recent_activities.append({
             "id": att.attendance_id,
             "type": "check-in",
@@ -161,6 +187,92 @@ def hr_dashboard(db: Session = Depends(get_db)):
     exits = db.query(func.count(User.user_id)).filter(User.resignation_date.isnot(None)).filter(User.resignation_date >= month_start, User.resignation_date < next_month).scalar() or 0
     open_positions = 0  # Not modeled; keep zero or derive from another table if exists
 
+    # Recent HR-related activities
+    recent_leave_requests = (
+        db.query(Leave, User)
+        .join(User, User.user_id == Leave.user_id)
+        .order_by(Leave.start_date.desc())
+        .limit(12)
+        .all()
+    )
+
+    attendance_today = (
+        db.query(Attendance, User)
+        .join(User, User.user_id == Attendance.user_id)
+        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .order_by(Attendance.check_in.desc())
+        .limit(10)
+        .all()
+    )
+
+    recent_joiners_records = (
+        db.query(User)
+        .filter(User.joining_date.isnot(None))
+        .order_by(User.joining_date.desc())
+        .limit(8)
+        .all()
+    )
+
+    recent_activities = []
+
+    for leave, usr in recent_leave_requests:
+        recent_activities.append({
+            "id": f"leave-{leave.leave_id}",
+            "type": "leave",
+            "user": usr.name,
+            "time": (leave.start_date or datetime.utcnow()).isoformat(),
+            "status": (leave.status or "pending").lower(),
+            "description": leave.reason or f"{leave.leave_type or 'Leave'} request",
+        })
+
+    # Get office timings for status calculation
+    office_timings_map = {}
+    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
+    for timing in office_timings:
+        key = timing.department if timing.department else "__global__"
+        office_timings_map[key] = timing
+    
+    for att, usr in attendance_today:
+        # Get applicable office timing (department-specific or global)
+        timing = office_timings_map.get(usr.department) or office_timings_map.get("__global__")
+        
+        if timing:
+            # Calculate late threshold (start_time + grace_minutes)
+            start_hour = timing.start_time.hour
+            start_minute = timing.start_time.minute
+            grace_minutes = timing.check_in_grace_minutes or 0
+            
+            # Convert to total minutes for comparison
+            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+        else:
+            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
+            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+        
+        recent_activities.append({
+            "id": f"attendance-{att.attendance_id}",
+            "type": "attendance",
+            "user": usr.name,
+            "time": att.check_in.isoformat() if att.check_in else datetime.utcnow().isoformat(),
+            "status": status,
+            "description": "Checked in",
+        })
+
+    for joiner in recent_joiners_records:
+        recent_activities.append({
+            "id": f"join-{joiner.user_id}",
+            "type": "join",
+            "user": joiner.name,
+            "time": (joiner.joining_date or joiner.created_at or datetime.utcnow()).isoformat(),
+            "status": "new-joiner",
+            "description": f"Joined {joiner.department or 'company'}",
+        })
+
+    recent_activities.sort(key=lambda item: item.get("time") or "", reverse=True)
+    recent_activities = recent_activities[:15]
+
     return {
         "totalEmployees": total_employees,
         "presentToday": present_today,
@@ -170,6 +282,7 @@ def hr_dashboard(db: Session = Depends(get_db)):
         "newJoinersThisMonth": new_joiners,
         "exitingThisMonth": exits,
         "openPositions": open_positions,
+        "recentActivities": recent_activities,
     }
 
 
@@ -244,9 +357,33 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         .limit(20)
         .all()
     )
+    # Get office timings for status calculation
+    office_timings_map = {}
+    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
+    for timing in office_timings:
+        key = timing.department if timing.department else "__global__"
+        office_timings_map[key] = timing
+    
     activities = []
     for att, usr in attendance_today:
-        status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 30) else 'late'
+        # Get applicable office timing (department-specific or global)
+        timing = office_timings_map.get(usr.department) or office_timings_map.get("__global__")
+        
+        if timing:
+            # Calculate late threshold (start_time + grace_minutes)
+            start_hour = timing.start_time.hour
+            start_minute = timing.start_time.minute
+            grace_minutes = timing.check_in_grace_minutes or 0
+            
+            # Convert to total minutes for comparison
+            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+        else:
+            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
+            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+        
         activities.append({
             "id": f"attendance-{att.attendance_id}",
             "type": "attendance",
@@ -386,9 +523,33 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
         .limit(20)
         .all()
     )
+    # Get office timings for status calculation
+    office_timings_map = {}
+    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
+    for timing in office_timings:
+        key = timing.department if timing.department else "__global__"
+        office_timings_map[key] = timing
+    
     recent_activities = []
     for att, usr in attendance_today:
-        status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 30) else 'late'
+        # Get applicable office timing (department-specific or global)
+        timing = office_timings_map.get(usr.department) or office_timings_map.get("__global__")
+        
+        if timing:
+            # Calculate late threshold (start_time + grace_minutes)
+            start_hour = timing.start_time.hour
+            start_minute = timing.start_time.minute
+            grace_minutes = timing.check_in_grace_minutes or 0
+            
+            # Convert to total minutes for comparison
+            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+        else:
+            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
+            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+        
         recent_activities.append({
             "id": att.attendance_id,
             "type": "check-in",

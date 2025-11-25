@@ -32,6 +32,8 @@ class AttendanceOut(AttendanceBase):
     check_in: datetime
     check_out: Optional[datetime] = None
     total_hours: float
+    work_summary: Optional[str] = None
+    work_report: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,15 +12,32 @@ import { toast } from '@/hooks/use-toast';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
-import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X } from 'lucide-react';
+import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X, Download, Search, Loader2 } from 'lucide-react';
 import { AttendanceRecord, UserRole } from '@/types';
-import { format } from 'date-fns';
+import { format, subMonths } from 'date-fns';
+import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast } from '@/utils/geolocation';
+import { DatePicker } from '@/components/ui/date-picker';
 
 type GeoLocation = {
   latitude: number;
   longitude: number;
   accuracy?: number | null;
   address?: string;
+};
+
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
+    reader.readAsDataURL(file);
+  });
+
+type ExportEmployee = {
+  user_id: number;
+  employee_id?: string;
+  name: string;
+  department?: string | null;
 };
 
 const AttendanceWithToggle: React.FC = () => {
@@ -41,6 +58,8 @@ const AttendanceWithToggle: React.FC = () => {
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
   const [employeeAttendanceData, setEmployeeAttendanceData] = useState<EmployeeAttendanceRecord[]>([]);
   const [location, setLocation] = useState<GeoLocation | null>(null);
+  const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
+  const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [filterRole, setFilterRole] = useState<'all' | UserRole>('all');
@@ -48,9 +67,32 @@ const AttendanceWithToggle: React.FC = () => {
   const [showSelfieModal, setShowSelfieModal] = useState(false);
   const initialLocationRequestedRef = useRef(false);
   const lastGeocodeKeyRef = useRef<string | null>(null);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportType, setExportType] = useState<'csv' | 'pdf' | null>(null);
+  const [quickFilter, setQuickFilter] = useState('custom');
+  const [exportStartDate, setExportStartDate] = useState<Date | undefined>(undefined);
+  const [exportEndDate, setExportEndDate] = useState<Date | undefined>(new Date());
+  const [employeeExportFilter, setEmployeeExportFilter] = useState<'all' | 'specific'>('all');
+  const [exportEmployees, setExportEmployees] = useState<ExportEmployee[]>([]);
+  const [filteredExportEmployees, setFilteredExportEmployees] = useState<ExportEmployee[]>([]);
+  const [employeeExportSearch, setEmployeeExportSearch] = useState('');
+  const [selectedExportEmployee, setSelectedExportEmployee] = useState<ExportEmployee | null>(null);
+  const [selectedExportDepartment, setSelectedExportDepartment] = useState<string>('');
+  const [exportDepartments, setExportDepartments] = useState<string[]>([]);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const resolveStaticUrl = useCallback((url?: string | null) => {
+    if (!url) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    const normalized = url.startsWith('/') ? url : `/${url}`;
+    return `http://127.0.0.1:8000${normalized}`;
+  }, []);
 
   // Determine if user can view employee attendance
   const canViewEmployeeAttendance = user?.role && ['admin', 'hr', 'manager'].includes(user.role);
+  const canExportAttendance = user?.role === 'hr';
 
   // Access rules for attendance viewing
   const getViewableRoles = (): UserRole[] => {
@@ -60,13 +102,55 @@ const AttendanceWithToggle: React.FC = () => {
     return [];
   };
 
+  const refreshLocation = useCallback(async () => {
+    try {
+      const preciseLocation = await fetchPreciseLocation();
+      setLocation({
+        latitude: preciseLocation.latitude,
+        longitude: preciseLocation.longitude,
+        accuracy: preciseLocation.accuracy ?? null,
+        address:
+          preciseLocation.address ||
+          `${preciseLocation.latitude.toFixed(6)}, ${preciseLocation.longitude.toFixed(6)}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Location Error',
+        description: error?.message || t.attendance.locationRequired,
+        variant: 'destructive',
+      });
+    }
+  }, [toast, t.attendance.locationRequired]);
+
+  const refreshLocationFast = useCallback(async () => {
+    try {
+      setIsGettingFastLocation(true);
+      const fastLocation = await getCurrentLocationFast();
+      setLocation({
+        latitude: fastLocation.latitude,
+        longitude: fastLocation.longitude,
+        accuracy: fastLocation.accuracy ?? null,
+        address: fastLocation.address || `${fastLocation.latitude.toFixed(6)}, ${fastLocation.longitude.toFixed(6)}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Location Error',
+        description: error?.message || t.attendance.locationRequired,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsGettingFastLocation(false);
+    }
+  }, [toast, t.attendance.locationRequired]);
+
   useEffect(() => {
     loadFromBackend();
     if (!initialLocationRequestedRef.current) {
       initialLocationRequestedRef.current = true;
-      void getCurrentLocation();
+      // Use fast location for immediate access when page loads
+      refreshLocationFast();
     }
-  }, []);
+  }, [refreshLocationFast]);
 
   useEffect(() => {
     if (viewMode === 'employee' && canViewEmployeeAttendance) {
@@ -74,84 +158,204 @@ const AttendanceWithToggle: React.FC = () => {
     }
   }, [viewMode, selectedDate]);
 
-  const getCurrentLocation = async (): Promise<void> => {
-    if (!navigator.geolocation) {
+  useEffect(() => {
+    if (employeeExportFilter !== 'specific') {
+      setFilteredExportEmployees([]);
+      return;
+    }
+    let subset = exportEmployees;
+    const normalizedDept = selectedExportDepartment.trim().toLowerCase();
+    if (normalizedDept) {
+      subset = subset.filter(
+        (emp) => (emp.department || '').trim().toLowerCase() === normalizedDept,
+      );
+    }
+    const searchValue = employeeExportSearch.trim().toLowerCase();
+    if (searchValue) {
+      subset = subset.filter(
+        (emp) =>
+          emp.name.toLowerCase().includes(searchValue) ||
+          emp.employee_id?.toLowerCase().includes(searchValue),
+      );
+    }
+    setFilteredExportEmployees(subset);
+  }, [
+    employeeExportFilter,
+    exportEmployees,
+    selectedExportDepartment,
+    employeeExportSearch,
+  ]);
+
+  useEffect(() => {
+    if (employeeExportFilter === 'all') {
+      setSelectedExportEmployee(null);
+    }
+  }, [employeeExportFilter]);
+
+  const handleQuickFilter = (filter: string) => {
+    setQuickFilter(filter);
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+
+    switch (filter) {
+      case 'last_month':
+        setExportStartDate(subMonths(today, 1));
+        setExportEndDate(today);
+        break;
+      case 'last_3_months':
+        setExportStartDate(subMonths(today, 3));
+        setExportEndDate(today);
+        break;
+      case 'last_6_months':
+        setExportStartDate(subMonths(today, 6));
+        setExportEndDate(today);
+        break;
+      case 'custom':
+      default:
+        break;
+    }
+  };
+
+  const openExportModal = (type: 'csv' | 'pdf') => {
+    if (!canExportAttendance) {
+      return;
+    }
+    setExportType(type);
+    setExportModalOpen(true);
+    setQuickFilter('custom');
+    setExportStartDate(undefined);
+    setExportEndDate(new Date());
+    setEmployeeExportFilter('all');
+    setSelectedExportEmployee(null);
+    setEmployeeExportSearch('');
+    if (exportDepartments.length === 1) {
+      setSelectedExportDepartment(exportDepartments[0]);
+    } else if (user?.department) {
+      const normalized = exportDepartments.find(
+        (dept) => dept.trim().toLowerCase() === user.department.trim().toLowerCase(),
+      );
+      setSelectedExportDepartment(normalized || selectedExportDepartment || '');
+    }
+  };
+
+  const performExport = async () => {
+    if (!exportStartDate && !exportEndDate) {
       toast({
-        title: 'Location Not Supported',
-        description: 'Your browser does not support geolocation. Please use a modern browser.',
+        title: 'Date Range Required',
+        description: 'Please select at least a start or end date.',
         variant: 'destructive',
       });
       return;
     }
 
-    const enhanceAddress = async (coords: GeoLocation) => {
-      const coordKey = `${coords.latitude.toFixed(6)},${coords.longitude.toFixed(6)}`;
-      if (lastGeocodeKeyRef.current === coordKey) {
-        return;
-      }
-      lastGeocodeKeyRef.current = coordKey;
-      try {
-        const response = await fetch(`http://127.0.0.1:8000/attendance/reverse-geocode`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lat: coords.latitude, lon: coords.longitude }),
-        });
-        if (!response.ok) {
-          return;
-        }
-        const data = await response.json();
-        setLocation((prev) => {
-          if (!prev) return prev;
-          if (Math.abs(prev.latitude - coords.latitude) > 0.000001 || Math.abs(prev.longitude - coords.longitude) > 0.000001) {
-            return prev;
-          }
-          return {
-            ...prev,
-            address: data.address || `${coords.latitude.toFixed(6)}, ${coords.longitude.toFixed(6)}`,
-          };
-        });
-      } catch {
-        // ignore fetch errors; fallback address already set
-      }
-    };
-
-    const acquire = (options: PositionOptions): Promise<void> => {
-      return new Promise((resolve) => {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const coords: GeoLocation = {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-              accuracy: position.coords.accuracy ?? null,
-              address: `${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`,
-            };
-            setLocation(coords);
-            void enhanceAddress(coords);
-            resolve();
-          },
-          (error) => {
-            let errorMessage = t.attendance.locationRequired;
-            switch (error.code) {
-              case error.PERMISSION_DENIED:
-                errorMessage = 'Location permission denied. Please enable location access in your browser settings.';
-                break;
-              case error.POSITION_UNAVAILABLE:
-                errorMessage = 'Location information is unavailable. Please check your GPS settings.';
-                break;
-              case error.TIMEOUT:
-                errorMessage = 'Location request timed out. Please try again.';
-                break;
-            }
-            toast({ title: 'Location Error', description: errorMessage, variant: 'destructive' });
-            resolve();
-          },
-          options
-        );
+    if (employeeExportFilter === 'specific' && !selectedExportEmployee) {
+      toast({
+        title: 'Employee Selection Required',
+        description: 'Choose an employee to export their attendance.',
+        variant: 'destructive',
       });
-    };
+      return;
+    }
 
-    await acquire({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+    const departmentParam = (selectedExportDepartment || user?.department || '').trim();
+    if (!departmentParam && canExportAttendance) {
+      toast({
+        title: 'Department Required',
+        description: 'Please select a department to export.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsExporting(true);
+    setExportModalOpen(false);
+
+    try {
+      const params = new URLSearchParams();
+      if (departmentParam) {
+        params.append('department', departmentParam);
+      }
+      if (exportStartDate) {
+        params.append('start_date', format(exportStartDate, 'yyyy-MM-dd'));
+      }
+      if (exportEndDate) {
+        params.append('end_date', format(exportEndDate, 'yyyy-MM-dd'));
+      }
+      if (employeeExportFilter === 'specific' && selectedExportEmployee) {
+        params.append(
+          'employee_id',
+          selectedExportEmployee.employee_id || selectedExportEmployee.user_id.toString(),
+        );
+      }
+
+      const apiUrl = `http://127.0.0.1:8000/attendance/download/${exportType}?${params.toString()}`;
+      const res = await fetch(apiUrl, { method: 'GET' });
+      if (!res.ok) {
+        throw new Error(`Request failed with status ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+
+      const dateStr =
+        exportStartDate && exportEndDate
+          ? `${format(exportStartDate, 'yyyyMMdd')}_${format(exportEndDate, 'yyyyMMdd')}`
+          : exportStartDate
+          ? `from_${format(exportStartDate, 'yyyyMMdd')}`
+          : exportEndDate
+          ? `until_${format(exportEndDate, 'yyyyMMdd')}`
+          : 'all';
+
+      const empSuffix =
+        employeeExportFilter === 'specific' && selectedExportEmployee
+          ? `_${selectedExportEmployee.employee_id || selectedExportEmployee.user_id}`
+          : '';
+
+      a.download = `attendance_report${empSuffix}_${dateStr}.${exportType}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Export Successful',
+        description: `Attendance data exported as ${exportType?.toUpperCase()}.`,
+      });
+    } catch (error: any) {
+      console.error('Attendance export failed', error);
+      toast({
+        title: 'Export Failed',
+        description: error?.message || 'Unable to export attendance data.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsExporting(false);
+      setExportType(null);
+    }
   };
+
+  useEffect(() => {
+    if (!exportDepartments.length) {
+      setSelectedExportDepartment('');
+      return;
+    }
+    if (
+      selectedExportDepartment &&
+      exportDepartments.some(
+        (dept) => dept.trim().toLowerCase() === selectedExportDepartment.trim().toLowerCase(),
+      )
+    ) {
+      return;
+    }
+    const preferred =
+      user?.department &&
+      exportDepartments.find(
+        (dept) => dept.trim().toLowerCase() === user.department.trim().toLowerCase(),
+      );
+    setSelectedExportDepartment(preferred || exportDepartments[0]);
+  }, [exportDepartments, selectedExportDepartment, user?.department]);
 
   const loadFromBackend = async () => {
     try {
@@ -180,6 +384,8 @@ const AttendanceWithToggle: React.FC = () => {
           checkOutSelfie: rec.checkOutSelfie || '',
           status: 'present',
           workHours: rec.total_hours,
+          workSummary: rec.workSummary || rec.work_summary || null,
+          workReport: resolveStaticUrl(rec.workReport || rec.work_report),
         }))
       );
       const today = format(new Date(), 'yyyy-MM-dd');
@@ -209,7 +415,9 @@ const AttendanceWithToggle: React.FC = () => {
           checkInSelfie: todayRecord.checkInSelfie || todayRecord.selfie || '',
           checkOutSelfie: todayRecord.checkOutSelfie || '',
           status: 'present',
-          workHours: todayRecord.total_hours
+          workHours: todayRecord.total_hours,
+          workSummary: todayRecord.workSummary || todayRecord.work_summary || null,
+          workReport: resolveStaticUrl(todayRecord.workReport || todayRecord.work_report),
         };
         setCurrentAttendance(attendance);
 
@@ -269,6 +477,8 @@ const AttendanceWithToggle: React.FC = () => {
           name: rec.name || rec.userName || undefined,
           email: rec.email || rec.userEmail || undefined,
           department: rec.department || undefined,
+          workSummary: rec.workSummary || rec.work_summary || null,
+          workReport: resolveStaticUrl(rec.workReport || rec.work_report),
         }))
         .filter((r: AttendanceRecord) => r.date === selectedDate);
       setEmployeeAttendanceData(records);
@@ -284,6 +494,52 @@ const AttendanceWithToggle: React.FC = () => {
       setIsLoading(false);
     }
   };
+
+  const loadExportEmployees = useCallback(async () => {
+    if (!canExportAttendance) {
+      return;
+    }
+    try {
+      const res = await fetch('http://127.0.0.1:8000/employees');
+      if (!res.ok) {
+        throw new Error(`Failed to load employees: ${res.status}`);
+      }
+      const data = await res.json();
+      let mapped: ExportEmployee[] = data.map((emp: any) => ({
+        user_id: emp.user_id || emp.userId,
+        employee_id: emp.employee_id || emp.employeeId || '',
+        name: emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
+        department: emp.department || emp.department_name || '',
+      }));
+
+      if (user?.department) {
+        const normalizedDept = user.department.trim().toLowerCase();
+        mapped = mapped.filter(
+          (emp) => (emp.department || '').trim().toLowerCase() === normalizedDept,
+        );
+      }
+
+      setExportEmployees(mapped);
+      const deptSet = new Set(
+        mapped
+          .map((emp) => emp.department)
+          .filter((dept): dept is string => Boolean(dept && dept.trim())),
+      );
+      const deptList = Array.from(deptSet).sort((a, b) => a.localeCompare(b));
+      setExportDepartments(deptList);
+      if (deptList.length === 1) {
+        setSelectedExportDepartment(deptList[0]);
+      }
+    } catch (error) {
+      console.error('loadExportEmployees error', error);
+    }
+  }, [canExportAttendance, user?.department]);
+
+  useEffect(() => {
+    if (canExportAttendance) {
+      loadExportEmployees();
+    }
+  }, [canExportAttendance, loadExportEmployees]);
 
   const handleCheckIn = () => {
     if (!location) {
@@ -311,6 +567,14 @@ const AttendanceWithToggle: React.FC = () => {
   };
 
   const confirmCheckOut = () => {
+    if (!todaysWork.trim()) {
+      toast({
+        title: 'Work Summary Required',
+        description: 'Please provide today\'s work summary before checking out.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setIsCheckingIn(false);
     setShowCamera(true);
     setShowCheckoutDialog(false);
@@ -320,9 +584,12 @@ const AttendanceWithToggle: React.FC = () => {
     setIsLoading(true);
     try {
       if (!location) {
-        await getCurrentLocation();
+        await refreshLocation();
       }
       if (!location || !user?.id) throw new Error('Location or user missing');
+      if (!isCheckingIn && !todaysWork.trim()) {
+        throw new Error('Work summary is required to check out.');
+      }
       const locationPayload = {
         latitude: location.latitude,
         longitude: location.longitude,
@@ -333,6 +600,10 @@ const AttendanceWithToggle: React.FC = () => {
       if (location.accuracy && location.accuracy > 10) {
         toast({ title: 'Low GPS Accuracy', description: `Proceeding with ±${Math.round(location.accuracy)}m.`, variant: 'default' });
       }
+      let workReportBase64: string | undefined;
+      if (!isCheckingIn && workPdf) {
+        workReportBase64 = await fileToBase64(workPdf);
+      }
       const payload = {
         user_id: user.id,
         gps_location: locationPayload,
@@ -340,6 +611,8 @@ const AttendanceWithToggle: React.FC = () => {
           [isCheckingIn ? 'check_in' : 'check_out']: locationPayload,
         },
         selfie: imageData,
+        work_summary: !isCheckingIn ? todaysWork.trim() : undefined,
+        work_report: !isCheckingIn ? workReportBase64 : undefined,
       };
       const endpoint = isCheckingIn
         ? 'http://127.0.0.1:8000/attendance/check-in/json'
@@ -355,6 +628,10 @@ const AttendanceWithToggle: React.FC = () => {
       }
       await loadFromBackend();
       toast({ title: 'Success', description: isCheckingIn ? t.attendance.checkedIn : t.attendance.checkedOut });
+      if (!isCheckingIn) {
+        setTodaysWork('');
+        setWorkPdf(null);
+      }
     } catch (e: any) {
       toast({ title: 'Error', description: e?.message || 'Failed to record attendance', variant: 'destructive' });
     } finally {
@@ -365,14 +642,8 @@ const AttendanceWithToggle: React.FC = () => {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type === 'application/pdf') {
+    if (file) {
       setWorkPdf(file);
-    } else {
-      toast({
-        title: 'Error',
-        description: 'Please upload a PDF file',
-        variant: 'destructive',
-      });
     }
   };
 
@@ -462,6 +733,29 @@ const AttendanceWithToggle: React.FC = () => {
         </div>
       </div>
 
+      {canExportAttendance && viewMode === 'employee' && (
+        <div className="flex flex-col md:flex-row gap-2 justify-end">
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => openExportModal('csv')}
+            disabled={isExporting}
+          >
+            <Download className="h-4 w-4" />
+            {isExporting && exportType === 'csv' ? 'Exporting...' : 'Export CSV'}
+          </Button>
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => openExportModal('pdf')}
+            disabled={isExporting}
+          >
+            <Download className="h-4 w-4" />
+            {isExporting && exportType === 'pdf' ? 'Exporting...' : 'Export PDF'}
+          </Button>
+        </div>
+      )}
+
       {viewMode === 'self' ? (
         <>
           {/* Self Attendance View */}
@@ -472,10 +766,20 @@ const AttendanceWithToggle: React.FC = () => {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {location && (
+                {isGettingFastLocation ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Getting location...</span>
+                  </div>
+                ) : location ? (
                   <div className="flex items-start gap-2 text-sm text-muted-foreground">
                     <MapPin className="h-4 w-4 mt-0.5" />
                     <span className="flex-1">{location.address}</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <MapPin className="h-4 w-4" />
+                    <span>Location not available</span>
                   </div>
                 )}
                 
@@ -641,6 +945,8 @@ const AttendanceWithToggle: React.FC = () => {
                         <TableHead>Location</TableHead>
                         <TableHead>Selfie</TableHead>
                         <TableHead>Status</TableHead>
+                        <TableHead>Work Summary</TableHead>
+                        <TableHead>Work Report</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -671,7 +977,7 @@ const AttendanceWithToggle: React.FC = () => {
                                   }}
                                 >
                                   <img
-                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `http://localhost:8000${record.checkInSelfie}`}
+                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${record.checkInSelfie}`}
                                     alt="Selfie"
                                     className="w-full h-full object-cover"
                                     onError={(e) => {
@@ -685,6 +991,23 @@ const AttendanceWithToggle: React.FC = () => {
                             </TableCell>
                             <TableCell>
                               {getStatusBadge(record.status, record.checkInTime, record.checkOutTime)}
+                            </TableCell>
+                            <TableCell className="text-sm text-muted-foreground max-w-[160px]">
+                              {record.workSummary || '—'}
+                            </TableCell>
+                            <TableCell>
+                              {record.workReport ? (
+                                <a
+                                  href={record.workReport}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-blue-600 hover:underline"
+                                >
+                                  View
+                                </a>
+                              ) : (
+                                <span className="text-muted-foreground text-sm">—</span>
+                              )}
                             </TableCell>
                           </TableRow>
                         ))
@@ -710,18 +1033,19 @@ const AttendanceWithToggle: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Confirm Check-out</DialogTitle>
             <DialogDescription>
-              You can optionally add today's work report before checking out.
+              Please provide today's work summary before checking out. You can optionally upload a work report PDF.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <Label htmlFor="work-summary">Today's Work Summary (Optional)</Label>
+              <Label htmlFor="work-summary">Today's Work Summary <span className="text-red-500">*</span></Label>
               <Input
                 id="work-summary"
                 placeholder="Brief description of today's work..."
                 value={todaysWork}
                 onChange={(e) => setTodaysWork(e.target.value)}
                 className="mt-2"
+                required
               />
             </div>
             <div>
@@ -730,7 +1054,7 @@ const AttendanceWithToggle: React.FC = () => {
                 <Input
                   id="work-pdf"
                   type="file"
-                  accept="application/pdf"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
                   onChange={handleFileUpload}
                 />
                 {workPdf && (
@@ -748,6 +1072,221 @@ const AttendanceWithToggle: React.FC = () => {
             </Button>
             <Button onClick={confirmCheckOut}>
               Proceed to Check-out
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={exportModalOpen}
+        onOpenChange={(open) => {
+          setExportModalOpen(open);
+          if (!open) {
+            setExportType(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>
+              Attendance Report {exportType ? `(${exportType.toUpperCase()})` : ''}
+            </DialogTitle>
+            <DialogDescription>
+              Configure date range and employee filters to export department attendance.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-4 flex-1 overflow-y-auto pr-1">
+            <div className="space-y-2">
+              <Label htmlFor="quick-filter">Quick Filter</Label>
+              <Select value={quickFilter} onValueChange={handleQuickFilter}>
+                <SelectTrigger id="quick-filter">
+                  <SelectValue placeholder="Select time period" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="last_month">Last Month</SelectItem>
+                  <SelectItem value="last_3_months">Last 3 Months</SelectItem>
+                  <SelectItem value="last_6_months">Last 6 Months</SelectItem>
+                  <SelectItem value="custom">Custom Date Range</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="export-start">Start Date</Label>
+                <DatePicker
+                  date={exportStartDate}
+                  onDateChange={setExportStartDate}
+                  placeholder="Select start date"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="export-end">End Date</Label>
+                <DatePicker
+                  date={exportEndDate}
+                  onDateChange={setExportEndDate}
+                  placeholder="Select end date"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Employee Filter</Label>
+              <div className="flex gap-4">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="radio"
+                    id="export-all"
+                    name="employee-export-filter"
+                    className="h-4 w-4 text-blue-600"
+                    checked={employeeExportFilter === 'all'}
+                    onChange={() => setEmployeeExportFilter('all')}
+                  />
+                  <Label htmlFor="export-all" className="cursor-pointer">
+                    All Employees
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="radio"
+                    id="export-specific"
+                    name="employee-export-filter"
+                    className="h-4 w-4 text-blue-600"
+                    checked={employeeExportFilter === 'specific'}
+                    onChange={() => setEmployeeExportFilter('specific')}
+                  />
+                  <Label htmlFor="export-specific" className="cursor-pointer">
+                    Specific Employee
+                  </Label>
+                </div>
+              </div>
+            </div>
+
+            {employeeExportFilter === 'specific' && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="export-department">Department</Label>
+                  <Select
+                    value={selectedExportDepartment}
+                    onValueChange={(value) => {
+                      setSelectedExportDepartment(value);
+                      setSelectedExportEmployee(null);
+                      setEmployeeExportSearch('');
+                    }}
+                  >
+                    <SelectTrigger id="export-department">
+                      <SelectValue placeholder="Select department" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {exportDepartments.length ? (
+                        exportDepartments.map((dept) => (
+                          <SelectItem key={dept} value={dept}>
+                            {dept}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="__empty" disabled>
+                          No departments found
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {selectedExportDepartment ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="export-employee-search">Select Employee</Label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        id="export-employee-search"
+                        placeholder="Search by name or employee ID..."
+                        value={employeeExportSearch}
+                        onChange={(e) => setEmployeeExportSearch(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+                    <div className="border rounded-md max-h-40 overflow-y-auto mt-2">
+                      {filteredExportEmployees.length ? (
+                        filteredExportEmployees.map((emp) => {
+                          const isSelected = selectedExportEmployee?.user_id === emp.user_id;
+                          return (
+                            <button
+                              type="button"
+                              key={emp.user_id}
+                              onClick={() => setSelectedExportEmployee(emp)}
+                              className={`w-full text-left p-3 border-b last:border-b-0 transition-colors ${
+                                isSelected
+                                  ? 'bg-blue-50 dark:bg-blue-900'
+                                  : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                              }`}
+                            >
+                              <div className="font-medium">{emp.name}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {emp.employee_id ? `ID: ${emp.employee_id}` : `User: ${emp.user_id}`}
+                              </div>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="p-3 text-sm text-muted-foreground">
+                          No employees found for this department.
+                        </div>
+                      )}
+                    </div>
+                    {selectedExportEmployee && (
+                      <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900 rounded-md flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">{selectedExportEmployee.name}</div>
+                          {selectedExportEmployee.employee_id && (
+                            <div className="text-sm text-muted-foreground">
+                              ID: {selectedExportEmployee.employee_id}
+                            </div>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSelectedExportEmployee(null);
+                            setEmployeeExportSearch('');
+                          }}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Select a department to view its employees.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setExportModalOpen(false);
+                setExportType(null);
+              }}
+              disabled={isExporting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={performExport}
+              disabled={
+                isExporting ||
+                (!exportStartDate && !exportEndDate) ||
+                (employeeExportFilter === 'specific' && !selectedExportEmployee)
+              }
+            >
+              {isExporting ? 'Exporting...' : `Export ${exportType?.toUpperCase() ?? ''}`}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -773,7 +1312,7 @@ const AttendanceWithToggle: React.FC = () => {
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkInSelfie ? (
                   <img 
-                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `http://localhost:8000${selectedRecord.checkInSelfie}`}
+                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${selectedRecord.checkInSelfie}`}
                     alt="Check-in selfie" 
                     className="w-full h-full object-cover"
                   />
@@ -799,7 +1338,7 @@ const AttendanceWithToggle: React.FC = () => {
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkOutSelfie ? (
                   <img 
-                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `http://localhost:8000${selectedRecord.checkOutSelfie}`}
+                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${selectedRecord.checkOutSelfie}`}
                     alt="Check-out selfie" 
                     className="w-full h-full object-cover"
                   />
@@ -818,6 +1357,27 @@ const AttendanceWithToggle: React.FC = () => {
                 )}
               </div>
             </div>
+          </div>
+          <div className="space-y-3 text-sm">
+            <div>
+              <p className="font-medium">Work Summary</p>
+              <p className="text-muted-foreground">
+                {selectedRecord?.workSummary || 'Not provided'}
+              </p>
+            </div>
+            {selectedRecord?.workReport && (
+              <div>
+                <p className="font-medium">Work Report</p>
+                <a
+                  href={selectedRecord.workReport}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  View Document
+                </a>
+              </div>
+            )}
           </div>
           
           <DialogFooter>

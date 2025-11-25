@@ -227,9 +227,23 @@ def get_all_employees_public(
 @router.put("/{user_id}", response_model=UserOut)
 def update_employee(
     user_id: int,
-    user_data: UserCreate,
+    name: str = Form(...),
+    email: str = Form(...),
+    employee_id: str = Form(...),
+    department: Optional[str] = Form(None),
+    designation: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
+    role: str = Form("Employee"),
+    gender: Optional[str] = Form(None),
+    resignation_date: Optional[str] = Form(None),
+    pan_card: Optional[str] = Form(None),
+    aadhar_card: Optional[str] = Form(None),
+    shift_type: Optional[str] = Form(None),
+    employee_type: Optional[str] = Form(None),
+    profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # ✅ Get current logged-in user
+    current_user: User = Depends(get_current_user)
 ):
     # Check permissions: User can update their own profile OR must be Admin/HR to update others
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -242,24 +256,48 @@ def update_employee(
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
+    # Handle profile photo upload
+    profile_photo_path = employee.profile_photo  # Keep existing photo by default
+    if profile_photo and profile_photo.filename:
+        try:
+            # Create a directory to store profile photos if it doesn't exist
+            UPLOAD_DIR = "static/profile_photos"
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+            
+            # Generate a unique filename
+            file_extension = profile_photo.filename.split('.')[-1]
+            file_name = f"{employee_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_extension}"
+            file_path = os.path.join(UPLOAD_DIR, file_name)
+            
+            # Save the file
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(profile_photo.file, buffer)
+            
+            profile_photo_path = file_path
+        except Exception as e:
+            print(f"Error saving profile photo: {e}")
+            # Continue without updating photo if there's an error
+
     # Update fields
-    employee.name = user_data.name
-    employee.email = user_data.email
-    employee.department = user_data.department
-    employee.designation = user_data.designation
-    employee.phone = user_data.phone
-    employee.address = user_data.address
+    employee.name = name
+    employee.email = email
+    employee.employee_id = employee_id
+    employee.department = department
+    employee.designation = designation
+    employee.phone = phone
+    employee.address = address
     
     # ✅ Only Admin/HR can change roles
     if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR]:
-        employee.role = user_data.role
+        employee.role = role
     
-    employee.gender = user_data.gender
-    employee.resignation_date = user_data.resignation_date
-    employee.pan_card = user_data.pan_card
-    employee.aadhar_card = user_data.aadhar_card
-    employee.shift_type = user_data.shift_type
-    employee.employee_type = user_data.employee_type  # ✅ Added
+    employee.gender = gender
+    employee.resignation_date = resignation_date
+    employee.pan_card = pan_card
+    employee.aadhar_card = aadhar_card
+    employee.shift_type = shift_type
+    employee.employee_type = employee_type
+    employee.profile_photo = profile_photo_path
 
     db.commit()
     db.refresh(employee)

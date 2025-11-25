@@ -57,7 +57,10 @@ import {
   Trash2,
   Share2,
   Loader2,
-  RefreshCcw
+  RefreshCcw,
+  Download,
+  FileSpreadsheet,
+  FileDown
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -286,6 +289,15 @@ const TaskManagement: React.FC = () => {
   const [isPassingTask, setIsPassingTask] = useState(false);
   const [taskHistory, setTaskHistory] = useState<Record<string, TaskHistoryEntry[]>>({});
   const [isFetchingHistory, setIsFetchingHistory] = useState<string | null>(null);
+
+  // Export states
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'pdf' | 'csv'>('pdf');
+  const [exportDateRange, setExportDateRange] = useState<'1month' | '3months' | '6months' | 'custom' | 'all'>('all');
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
+  const [exportUserFilter, setExportUserFilter] = useState<string>('all');
+  const [isExporting, setIsExporting] = useState(false);
 
   const isCreateDisabled = !newTask.title.trim() || !newTask.description.trim() || !newTask.assignedTo.length || isSubmitting;
 
@@ -1100,6 +1112,268 @@ const TaskManagement: React.FC = () => {
     }
   };
 
+  // Export functions
+  const getFilteredTasksForExport = useCallback(() => {
+    let filteredTasks = [...tasks];
+    
+    // Apply date range filter
+    if (exportDateRange !== 'all') {
+      const now = new Date();
+      let startDate: Date;
+      
+      switch (exportDateRange) {
+        case '1month':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+          break;
+        case '3months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+          break;
+        case '6months':
+          startDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+          break;
+        case 'custom':
+          if (exportStartDate) {
+            startDate = new Date(exportStartDate);
+          } else {
+            startDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+          }
+          break;
+        default:
+          startDate = new Date(now.getFullYear(), 0, 1);
+      }
+      
+      const endDate = exportEndDate ? new Date(exportEndDate) : new Date();
+      filteredTasks = filteredTasks.filter(task => {
+        const taskDate = new Date(task.createdAt);
+        return taskDate >= startDate && taskDate <= endDate;
+      });
+    }
+    
+    // Apply user filter
+    if (exportUserFilter !== 'all') {
+      filteredTasks = filteredTasks.filter(task => 
+        task.assignedTo.includes(exportUserFilter) || 
+        task.assignedBy === exportUserFilter
+      );
+    }
+    
+    // Apply department filter for non-admin users
+    if (user?.role !== 'admin' && user?.department) {
+      filteredTasks = filteredTasks.filter(task => {
+        const assignee = employeesById.get(task.assignedTo[0] || '');
+        const assigner = employeesById.get(task.assignedBy);
+        return (assignee?.department === user.department) || (assigner?.department === user.department);
+      });
+    }
+    
+    return filteredTasks;
+  }, [tasks, exportDateRange, exportStartDate, exportEndDate, exportUserFilter, user, employeesById]);
+
+  const exportToCSV = useCallback(() => {
+    const filteredTasks = getFilteredTasksForExport();
+    
+    const headers = [
+      'Task ID',
+      'Title',
+      'Description',
+      'Status',
+      'Priority',
+      'Assigned By',
+      'Assigned To',
+      'Created Date',
+      'Due Date',
+      'Completed Date',
+      'Department',
+      'Last Passed By',
+      'Last Passed To',
+      'Last Pass Note'
+    ];
+    
+    const csvData = filteredTasks.map(task => {
+      const assignee = employeesById.get(task.assignedTo[0] || '');
+      const assigner = employeesById.get(task.assignedBy);
+      const lastPassedBy = task.lastPassedBy ? employeesById.get(task.lastPassedBy) : null;
+      const lastPassedTo = task.lastPassedTo ? employeesById.get(task.lastPassedTo) : null;
+      
+      return [
+        task.id,
+        `"${task.title.replace(/"/g, '""')}"`,
+        `"${task.description.replace(/"/g, '""')}"`,
+        task.status.replace('-', ' ').toUpperCase(),
+        task.priority.toUpperCase(),
+        assigner?.name || 'Unknown',
+        assignee?.name || 'Unknown',
+        task.createdAt ? format(new Date(task.createdAt), 'MMM dd, yyyy HH:mm') : '',
+        task.deadline ? format(new Date(task.deadline), 'MMM dd, yyyy') : '',
+        task.completedDate ? format(new Date(task.completedDate), 'MMM dd, yyyy HH:mm') : '',
+        assignee?.department || assigner?.department || 'Unknown',
+        lastPassedBy?.name || '',
+        lastPassedTo?.name || '',
+        `"${(task.lastPassNote || '').replace(/"/g, '""')}"`
+      ];
+    });
+    
+    const csvContent = [headers, ...csvData].map(row => row.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    const dateRange = exportDateRange === 'custom' 
+      ? `${exportStartDate || 'start'}_${exportEndDate || 'end'}`
+      : exportDateRange;
+    const userFilter = exportUserFilter !== 'all' ? `_user_${exportUserFilter}` : '';
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', `task_report_${dateRange}${userFilter}_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [getFilteredTasksForExport, employeesById, exportDateRange, exportStartDate, exportEndDate, exportUserFilter]);
+
+  const exportToPDF = useCallback(async () => {
+    const filteredTasks = getFilteredTasksForExport();
+    
+    // Simple PDF export using window.print() styled for printing
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      toast({
+        title: 'Export Failed',
+        description: 'Please allow popups for this site to export PDF.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
+    const dateRange = exportDateRange === 'custom' 
+      ? `${exportStartDate || 'start'} - ${exportEndDate || 'end'}`
+      : exportDateRange === 'all' ? 'All Time' : exportDateRange;
+    const userFilter = exportUserFilter !== 'all' 
+      ? employeesById.get(exportUserFilter)?.name || 'Unknown User'
+      : 'All Users';
+    
+    const tableRows = filteredTasks.map(task => {
+      const assignee = employeesById.get(task.assignedTo[0] || '');
+      const assigner = employeesById.get(task.assignedBy);
+      const lastPassedBy = task.lastPassedBy ? employeesById.get(task.lastPassedBy) : null;
+      const lastPassedTo = task.lastPassedTo ? employeesById.get(task.lastPassedTo) : null;
+      
+      return `
+        <tr>
+          <td>${task.id}</td>
+          <td>${task.title}</td>
+          <td>${task.description.substring(0, 100)}${task.description.length > 100 ? '...' : ''}</td>
+          <td><span class="status-${task.status}">${task.status.replace('-', ' ').toUpperCase()}</span></td>
+          <td><span class="priority-${task.priority}">${task.priority.toUpperCase()}</span></td>
+          <td>${assigner?.name || 'Unknown'}</td>
+          <td>${assignee?.name || 'Unknown'}</td>
+          <td>${task.createdAt ? format(new Date(task.createdAt), 'MMM dd, yyyy HH:mm') : ''}</td>
+          <td>${task.deadline ? format(new Date(task.deadline), 'MMM dd, yyyy') : ''}</td>
+          <td>${task.completedDate ? format(new Date(task.completedDate), 'MMM dd, yyyy HH:mm') : ''}</td>
+          <td>${assignee?.department || assigner?.department || 'Unknown'}</td>
+          <td>${lastPassedBy?.name || ''}</td>
+          <td>${lastPassedTo?.name || ''}</td>
+          <td>${task.lastPassNote || ''}</td>
+        </tr>
+      `;
+    }).join('');
+    
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Task Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #4F46E5; }
+            .header-info { margin-bottom: 20px; padding: 10px; background: #f5f5f5; border-radius: 5px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #4F46E5; color: white; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .status-todo { background: #94a3b8; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .status-in-progress { background: #3b82f6; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .status-completed { background: #10b981; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .priority-low { background: #10b981; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .priority-medium { background: #f59e0b; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .priority-high { background: #ef4444; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .priority-urgent { background: #dc2626; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            @media print { body { margin: 10px; } }
+          </style>
+        </head>
+        <body>
+          <h1>Task Management Report</h1>
+          <div class="header-info">
+            <p><strong>Date Range:</strong> ${dateRange}</p>
+            <p><strong>User Filter:</strong> ${userFilter}</p>
+            <p><strong>Total Tasks:</strong> ${filteredTasks.length}</p>
+            <p><strong>Generated on:</strong> ${format(new Date(), 'MMM dd, yyyy HH:mm')}</p>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Description</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Assigned By</th>
+                <th>Assigned To</th>
+                <th>Created</th>
+                <th>Due Date</th>
+                <th>Completed</th>
+                <th>Department</th>
+                <th>Last Passed By</th>
+                <th>Last Passed To</th>
+                <th>Pass Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    
+    printWindow.document.close();
+    printWindow.focus();
+    
+    // Wait for the content to load before printing
+    setTimeout(() => {
+      printWindow.print();
+      printWindow.close();
+    }, 500);
+  }, [getFilteredTasksForExport, employeesById, exportDateRange, exportStartDate, exportEndDate, exportUserFilter]);
+
+  const handleExport = useCallback(async () => {
+    setIsExporting(true);
+    
+    try {
+      if (exportFormat === 'csv') {
+        exportToCSV();
+      } else {
+        await exportToPDF();
+      }
+      
+      toast({
+        title: 'Export Successful',
+        description: `Task report exported as ${exportFormat.toUpperCase()}`,
+      });
+      
+      setIsExportDialogOpen(false);
+    } catch (error) {
+      console.error('Export failed:', error);
+      toast({
+        title: 'Export Failed',
+        description: 'Failed to export task report. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  }, [exportFormat, exportToCSV, exportToPDF, toast]);
+
   return (
     <div className="space-y-6 animate-fade-in p-4 sm:p-6">
       {/* Modern Header */}
@@ -1460,6 +1734,21 @@ const TaskManagement: React.FC = () => {
                   <Grid3x3 className="h-4 w-4" />
                 </Button>
               </div>
+              
+              {/* Export Buttons */}
+              {canAssignTasks() && (
+                <div className="flex items-center gap-2 border-l border-gray-200 dark:border-gray-800 pl-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsExportDialogOpen(true)}
+                    className="gap-2 h-10 bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 hover:bg-violet-50 dark:hover:bg-violet-950"
+                  >
+                    <Download className="h-4 w-4" />
+                    Export
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -2029,22 +2318,22 @@ const TaskManagement: React.FC = () => {
       {/* Task Detail Dialog */}
       {selectedTask && (
         <Dialog open={Boolean(selectedTask)} onOpenChange={() => setSelectedTask(null)}>
-          <DialogContent className="max-w-3xl">
-            <DialogHeader>
+          <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+            <DialogHeader className="flex-shrink-0">
               <DialogTitle className="text-2xl font-bold">{selectedTask.title}</DialogTitle>
               <DialogDescription>
                 Detailed view of task assignments and progress
               </DialogDescription>
             </DialogHeader>
 
-            <Tabs defaultValue="details" className="mt-4">
-              <TabsList className="grid grid-cols-3 gap-2 bg-muted/50">
+            <Tabs defaultValue="details" className="mt-4 flex-1 flex flex-col overflow-hidden">
+              <TabsList className="grid grid-cols-3 gap-2 bg-muted/50 flex-shrink-0">
                 <TabsTrigger value="details">Details</TabsTrigger>
                 <TabsTrigger value="activity">Activity</TabsTrigger>
                 <TabsTrigger value="comments">Comments</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="details" className="mt-4">
+              <TabsContent value="details" className="mt-4 overflow-y-auto flex-1">
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="p-4 rounded-lg bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 border">
@@ -2128,7 +2417,7 @@ const TaskManagement: React.FC = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="activity" className="mt-6">
+              <TabsContent value="activity" className="mt-6 overflow-y-auto flex-1">
                 <div className="space-y-4">
                   {isFetchingHistory && selectedTask && isFetchingHistory === selectedTask.id ? (
                     <div className="flex justify-center py-8 text-muted-foreground">
@@ -2266,7 +2555,7 @@ const TaskManagement: React.FC = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="comments" className="mt-6">
+              <TabsContent value="comments" className="mt-6 overflow-y-auto flex-1">
                 <div className="space-y-6">
                   <div className="p-4 rounded-lg border bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
                     <div className="flex flex-col sm:flex-row gap-3">
@@ -2294,6 +2583,167 @@ const TaskManagement: React.FC = () => {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Export Dialog */}
+      <Dialog open={isExportDialogOpen} onOpenChange={setIsExportDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto border-2 shadow-2xl">
+          <DialogHeader className="pb-4 border-b bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950 dark:to-teal-950 -m-6 mb-0 p-6 rounded-t-lg">
+            <div className="flex items-center gap-3">
+              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg">
+                <Download className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <DialogTitle className="text-2xl font-bold">Export Task Report</DialogTitle>
+                <DialogDescription className="mt-1">
+                  Generate and download task reports in various formats
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-6 mt-6">
+            {/* Export Format */}
+            <div className="space-y-3">
+              <Label className="text-sm font-semibold flex items-center gap-2">
+                <div className="h-2 w-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-600"></div>
+                Export Format
+              </Label>
+              <div className="grid grid-cols-2 gap-3">
+                <Button
+                  variant={exportFormat === 'pdf' ? 'default' : 'outline'}
+                  onClick={() => setExportFormat('pdf')}
+                  className="gap-2 h-12 border-2"
+                >
+                  <FileDown className="h-4 w-4" />
+                  PDF Report
+                </Button>
+                <Button
+                  variant={exportFormat === 'csv' ? 'default' : 'outline'}
+                  onClick={() => setExportFormat('csv')}
+                  className="gap-2 h-12 border-2"
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  CSV Data
+                </Button>
+              </div>
+            </div>
+
+            {/* Date Range */}
+            <div className="space-y-3">
+              <Label className="text-sm font-semibold flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-emerald-600" />
+                Date Range
+              </Label>
+              <Select value={exportDateRange} onValueChange={(value: any) => setExportDateRange(value)}>
+                <SelectTrigger className="h-11 border-2 bg-white dark:bg-gray-950">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-2 shadow-xl">
+                  <SelectItem value="all">All Time</SelectItem>
+                  <SelectItem value="1month">Last 1 Month</SelectItem>
+                  <SelectItem value="3months">Last 3 Months</SelectItem>
+                  <SelectItem value="6months">Last 6 Months</SelectItem>
+                  <SelectItem value="custom">Custom Range</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {exportDateRange === 'custom' && (
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div>
+                    <Label htmlFor="start-date" className="text-xs font-medium">Start Date</Label>
+                    <Input
+                      id="start-date"
+                      type="date"
+                      value={exportStartDate}
+                      onChange={(e) => setExportStartDate(e.target.value)}
+                      className="h-10 border-2 mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="end-date" className="text-xs font-medium">End Date</Label>
+                    <Input
+                      id="end-date"
+                      type="date"
+                      value={exportEndDate}
+                      onChange={(e) => setExportEndDate(e.target.value)}
+                      className="h-10 border-2 mt-1"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* User Filter */}
+            <div className="space-y-3">
+              <Label className="text-sm font-semibold flex items-center gap-2">
+                <User className="h-4 w-4 text-emerald-600" />
+                User Filter
+              </Label>
+              <Select value={exportUserFilter} onValueChange={setExportUserFilter}>
+                <SelectTrigger className="h-11 border-2 bg-white dark:bg-gray-950">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-2 shadow-xl max-h-72 overflow-auto">
+                  <SelectItem value="all">All Users</SelectItem>
+                  {extendedEmployees.map((emp) => (
+                    <SelectItem key={emp.userId} value={emp.userId} className="cursor-pointer">
+                      {emp.name}
+                      {emp.department ? ` • ${emp.department}` : ''}
+                      {emp.employeeId ? ` (${emp.employeeId})` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Export Summary */}
+            <div className="p-4 rounded-lg bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950 dark:to-teal-950 border">
+              <h4 className="font-semibold mb-2">Export Summary</h4>
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>• Format: <span className="font-medium text-foreground">{exportFormat.toUpperCase()}</span></p>
+                <p>• Date Range: <span className="font-medium text-foreground">
+                  {exportDateRange === 'all' ? 'All Time' : 
+                   exportDateRange === 'custom' ? `${exportStartDate || 'Not set'} - ${exportEndDate || 'Not set'}` :
+                   `Last ${exportDateRange.replace('months', ' Months').replace('1month', '1 Month')}`}
+                </span></p>
+                <p>• User Filter: <span className="font-medium text-foreground">
+                  {exportUserFilter === 'all' ? 'All Users' : 
+                   employeesById.get(exportUserFilter)?.name || 'Unknown User'}
+                </span></p>
+                <p>• Total Tasks: <span className="font-medium text-foreground">{getFilteredTasksForExport().length}</span></p>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex justify-end gap-3 pt-6 border-t">
+              <Button
+                variant="outline"
+                onClick={() => setIsExportDialogOpen(false)}
+                className="h-11 px-6 border-2 hover:bg-slate-50 dark:hover:bg-slate-900"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleExport}
+                disabled={isExporting || getFilteredTasksForExport().length === 0}
+                className="h-11 px-6 gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isExporting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4" />
+                    Export {exportFormat.toUpperCase()}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

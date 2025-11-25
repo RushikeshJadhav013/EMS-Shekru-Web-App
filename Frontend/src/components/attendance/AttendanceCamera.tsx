@@ -63,9 +63,11 @@ const AttendanceCamera: React.FC<AttendanceCameraProps> = ({ onCapture, onCancel
       if (context) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        // Ensure captured image is not mirrored
+        // Flip horizontally to correct the mirror effect from front camera
+        // This ensures the captured image is in normal (non-mirrored) orientation
         context.save();
-        context.scale(1, 1);
+        context.translate(canvas.width, 0);
+        context.scale(-1, 1);
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         context.restore();
         
@@ -109,7 +111,7 @@ const AttendanceCamera: React.FC<AttendanceCameraProps> = ({ onCapture, onCancel
               playsInline
               muted
               className="w-full h-full object-cover"
-              style={{ display: isLoading ? 'none' : 'block', transform: 'scaleX(1)' }}
+              style={{ display: isLoading ? 'none' : 'block', transform: 'scaleX(-1)' }}
             />
           ) : (
             <img src={photo} alt="Captured" className="w-full h-full object-cover" />

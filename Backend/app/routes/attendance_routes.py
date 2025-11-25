@@ -1,7 +1,9 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, case, or_
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
+from zoneinfo import ZoneInfo
 from app.db.database import get_db
 from app.db.models.attendance import Attendance
 from app.db.models.user import User
@@ -31,11 +33,16 @@ class AttendanceJSONPayload(BaseModel):
     gps_location: Optional[Dict[str, Any]] = None
     selfie: Optional[str] = None  # base64 data URL or raw base64
     location_data: Optional[Dict[str, Any]] = None
+    work_summary: Optional[str] = None
+    work_report: Optional[str] = None  # base64 data URL or raw base64
 
 # ---------------------------------
 # Helper functions for Attendance
 # ---------------------------------
 logger = logging.getLogger(__name__)
+
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
+UTC_TZ = ZoneInfo("UTC")
 
 
 def _ensure_location_dict(location_input: Optional[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
@@ -170,7 +177,56 @@ def _make_selfie_url(path: Optional[str]) -> Optional[str]:
     if path.startswith("http://") or path.startswith("https://"):
         return path
     normalized = path.lstrip("/")
+    full_path = os.path.join(os.getcwd(), normalized)
+    
+    # Check if file exists before returning URL
+    if not os.path.exists(full_path):
+        print(f"Warning: Selfie file not found: {full_path}")
+        return None
+    
     return f"/{normalized}"
+
+
+def _cleanup_broken_selfie_urls(db: Session) -> None:
+    """Clean up broken selfie references in the database"""
+    try:
+        attendances = db.query(Attendance).filter(Attendance.selfie.isnot(None)).all()
+        cleaned_count = 0
+        
+        for attendance in attendances:
+            if attendance.selfie:
+                selfie_data = _load_selfie_data(attendance.selfie)
+                updated = False
+                
+                # Check check-in selfie
+                if selfie_data.get("check_in"):
+                    check_in_path = os.path.join(os.getcwd(), selfie_data["check_in"].lstrip("/"))
+                    if not os.path.exists(check_in_path):
+                        selfie_data["check_in"] = None
+                        updated = True
+                
+                # Check check-out selfie
+                if selfie_data.get("check_out"):
+                    check_out_path = os.path.join(os.getcwd(), selfie_data["check_out"].lstrip("/"))
+                    if not os.path.exists(check_out_path):
+                        selfie_data["check_out"] = None
+                        updated = True
+                
+                # Update database if changes were made
+                if updated:
+                    attendance.selfie = _dump_selfie_data(
+                        selfie_data.get("check_in"),
+                        check_out=selfie_data.get("check_out")
+                    )
+                    cleaned_count += 1
+        
+        if cleaned_count > 0:
+            db.commit()
+            print(f"Cleaned up {cleaned_count} broken selfie references")
+            
+    except Exception as e:
+        print(f"Error cleaning up selfie references: {e}")
+        db.rollback()
 
 
 def _sanitize_text(value: Optional[str], *, max_length: int = 250) -> Optional[str]:
@@ -249,18 +305,30 @@ def _resolve_office_timing(
     return global_entry
 
 
+def _to_local_timezone(dt: Optional[datetime]) -> Optional[datetime]:
+    if not dt:
+        return None
+    value = dt
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC_TZ)
+    return value.astimezone(INDIA_TZ)
+
+
 def _evaluate_attendance_status(
     check_in: Optional[datetime],
     check_out: Optional[datetime],
     timing: Optional[OfficeTiming],
 ) -> Dict[str, Any]:
+    local_check_in = _to_local_timezone(check_in)
+    local_check_out = _to_local_timezone(check_out)
+
     scheduled_start: Optional[str] = None
     scheduled_end: Optional[str] = None
     if timing:
         scheduled_start = timing.start_time.strftime("%H:%M")
         scheduled_end = timing.end_time.strftime("%H:%M")
 
-    if not check_in:
+    if not local_check_in:
         return {
             "status": "absent",
             "check_in_status": "absent",
@@ -275,21 +343,21 @@ def _evaluate_attendance_status(
     check_out_status = "pending"
 
     if timing:
-        start_dt = datetime.combine(check_in.date(), timing.start_time)
+        start_dt = datetime.combine(local_check_in.date(), timing.start_time, tzinfo=INDIA_TZ)
         if timing.check_in_grace_minutes:
             start_dt += timedelta(minutes=timing.check_in_grace_minutes)
-        if check_in > start_dt:
+        if local_check_in > start_dt:
             late = True
             check_in_status = "late"
 
-    if check_out:
+    if local_check_out:
         check_out_status = "on_time"
         if timing:
-            end_reference_date = check_out.date() if check_out else check_in.date()
-            end_dt = datetime.combine(end_reference_date, timing.end_time)
+            end_reference_date = local_check_out.date() if local_check_out else local_check_in.date()
+            end_dt = datetime.combine(end_reference_date, timing.end_time, tzinfo=INDIA_TZ)
             if timing.check_out_grace_minutes:
                 end_dt -= timedelta(minutes=timing.check_out_grace_minutes)
-            if check_out < end_dt:
+            if local_check_out < end_dt:
                 early = True
                 check_out_status = "early"
     else:
@@ -297,7 +365,7 @@ def _evaluate_attendance_status(
 
     if not timing:
         check_in_status = "on_time"
-        check_out_status = "on_time" if check_out else "pending"
+        check_out_status = "on_time" if local_check_out else "pending"
 
     status = "present"
     if late:
@@ -317,6 +385,7 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
     location_sections = _split_location_labels(getattr(attendance, "gps_location", None))
     check_in_selfie_path = _make_selfie_url(selfie_data.get("check_in"))
     check_out_selfie_path = _make_selfie_url(selfie_data.get("check_out"))
+    work_report_url = _make_selfie_url(getattr(attendance, "work_report", None))
     location_label = location_sections.get("check_in") or getattr(attendance, "gps_location", None)
     total_hours_value = getattr(attendance, "total_hours", None)
     if isinstance(total_hours_value, Decimal):
@@ -338,6 +407,10 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
         "selfie": check_in_selfie_path,
         "checkInSelfie": check_in_selfie_path,
         "checkOutSelfie": check_out_selfie_path,
+        "work_summary": getattr(attendance, "work_summary", None),
+        "workSummary": getattr(attendance, "work_summary", None),
+        "work_report": work_report_url,
+        "workReport": work_report_url,
     }
 
 def get_attendance_summary(db: Session) -> Dict[str, Any]:
@@ -437,13 +510,19 @@ def reverse_geocode(payload: ReverseGeocodePayload):
         logger.error("Reverse geocode failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Unable to fetch location details")
 
-def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
+def get_today_attendance_records(db: Session, target_date: Optional[date] = None) -> List[Dict[str, Any]]:
     """
     Return today's attendance records with user details, selfie, and location.
     Only shows users who have checked in today.
     """
     try:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        # Clean up broken selfie references periodically
+        _cleanup_broken_selfie_urls(db)
+        
+        if target_date:
+            today_start = datetime.combine(target_date, datetime.min.time())
+        else:
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
 
         # Get only users who have checked in today
@@ -460,6 +539,8 @@ def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
                 Attendance.gps_location,
                 Attendance.selfie,
                 Attendance.total_hours,
+                Attendance.work_summary,
+                Attendance.work_report,
             )
             .join(Attendance, User.user_id == Attendance.user_id)
             .filter(
@@ -488,6 +569,8 @@ def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
                 gps_location,
                 selfie,
                 total_hours,
+                work_summary,
+                work_report,
             ) = row
 
             # calculate hours if needed
@@ -505,6 +588,8 @@ def get_today_attendance_records(db: Session) -> List[Dict[str, Any]]:
                 gps_location=gps_location,
                 selfie=selfie,
             )
+            attendance_obj.work_summary = work_summary
+            attendance_obj.work_report = work_report
 
             payload = _prepare_attendance_payload(attendance_obj)
             payload.update(
@@ -553,6 +638,53 @@ def save_selfie(user_id: int, selfie: UploadFile, prefix: str = 'checkin') -> Op
         shutil.copyfileobj(selfie.file, buffer)
     return file_path
 
+
+def save_work_report_file(user_id: int, document: UploadFile) -> Optional[str]:
+    """Save uploaded work report/document and return relative path."""
+    if not document:
+        return None
+
+    UPLOAD_DIR = "static/work_reports"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    ext = document.filename.split('.')[-1] if document.filename and '.' in document.filename else 'bin'
+    file_name = f"{user_id}_work_report_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
+    file_path = os.path.join(UPLOAD_DIR, file_name)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(document.file, buffer)
+    return file_path
+
+
+def save_base64_work_report(user_id: int, data: str) -> Optional[str]:
+    """Persist a base64-encoded work report/document."""
+    if not data:
+        return None
+
+    if data.startswith("data:"):
+        header, b64data = data.split(",", 1)
+        mime_part = header.split(";")[0].split(":")[-1]
+        ext = mime_part.split("/")[-1] if "/" in mime_part else "bin"
+    else:
+        b64data = data
+        ext = "bin"
+
+    try:
+        raw = base64.b64decode(b64data)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid work report payload"
+        ) from exc
+
+    upload_dir = "static/work_reports"
+    os.makedirs(upload_dir, exist_ok=True)
+    file_name = f"{user_id}_work_report_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
+    file_path = os.path.join(upload_dir, file_name)
+    with open(file_path, "wb") as f:
+        f.write(raw)
+    return file_path
+
 def validate_and_process_location(location_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Validate location and return processed location data"""
     if not location_data:
@@ -573,8 +705,30 @@ def validate_and_process_location(location_data: Optional[Dict[str, Any]]) -> Di
                 detail="Latitude and longitude are required in location data"
             )
             
-        # Check if location is within allowed area
-        is_valid, message = location_service.validate_location(location_data)
+        try:
+            latitude = float(location_data['latitude'])
+            longitude = float(location_data['longitude'])
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid latitude or longitude provided"
+            )
+
+        raw_accuracy = location_data.get('accuracy')
+        accuracy_value: Optional[float] = None
+        if raw_accuracy is not None:
+            try:
+                accuracy_value = float(raw_accuracy)
+            except (TypeError, ValueError):
+                accuracy_value = None
+
+        normalized_payload = {
+            'latitude': latitude,
+            'longitude': longitude,
+            'accuracy': accuracy_value
+        }
+
+        is_valid, message = location_service.validate_location(normalized_payload)
         if not is_valid:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -582,10 +736,22 @@ def validate_and_process_location(location_data: Optional[Dict[str, Any]]) -> Di
             )
             
         # Get detailed location info
-        location_details = location_service.get_location_details(
-            location_data['latitude'],
-            location_data['longitude']
-        )
+        location_details = location_service.get_location_details(latitude, longitude)
+
+        if accuracy_value is not None:
+            location_details['accuracy'] = accuracy_value
+
+        provided_address = location_data.get('address')
+        if provided_address:
+            location_details['address'] = provided_address
+
+        provided_place_name = location_data.get('placeName') or location_data.get('place_name')
+        if provided_place_name:
+            location_details['place_name'] = provided_place_name
+
+        provided_timestamp = location_data.get('timestamp')
+        if provided_timestamp:
+            location_details['timestamp'] = provided_timestamp
         
         return location_details
         
@@ -744,6 +910,8 @@ async def employee_check_out_route(
     gps_location: Optional[str] = Form(None),
     selfie: Optional[UploadFile] = File(None),
     location_data: Optional[str] = Form(None),
+    work_summary: str = Form(..., description="Required summary of today's work"),
+    work_report: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
     try:
@@ -770,8 +938,16 @@ async def employee_check_out_route(
                 "longitude": None,
             }
 
+        summary_text = (work_summary or "").strip()
+        if not summary_text:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Work summary is required for check-out"
+            )
+
         # Save selfie if provided
         selfie_path = save_selfie(user_id, selfie, 'checkout') if selfie else None
+        work_report_path = save_work_report_file(user_id, work_report) if work_report else None
 
         # Find today's check-in
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -801,6 +977,9 @@ async def employee_check_out_route(
             "Check-out",
             processed_location,
         )
+        attendance.work_summary = summary_text
+        if work_report_path:
+            attendance.work_report = work_report_path
 
         # Calculate total hours worked
         time_worked = attendance.check_out - attendance.check_in
@@ -859,6 +1038,17 @@ async def employee_check_out_json(
                 f.write(raw)
             selfie_path = file_path
 
+        summary_text = (payload.work_summary or "").strip()
+        if not summary_text:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Work summary is required for check-out"
+            )
+
+        work_report_path = None
+        if payload.work_report:
+            work_report_path = save_base64_work_report(payload.user_id, payload.work_report)
+
         location_source = payload.gps_location or (payload.location_data or {}).get('check_out') or (payload.location_data or {}).get('check_in')
         processed_location: Dict[str, Any]
         try:
@@ -896,6 +1086,9 @@ async def employee_check_out_json(
             "Check-out",
             processed_location,
         )
+        attendance.work_summary = summary_text
+        if work_report_path:
+            attendance.work_report = work_report_path
 
         time_worked = attendance.check_out - attendance.check_in
         attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)
@@ -929,15 +1122,28 @@ def attendance_summary(db: Session = Depends(get_db)):
 
 # Today's Attendance Records (for Manager view)
 @router.get("/today")
-def get_today_attendance(db: Session = Depends(get_db)):
-    """Get today's attendance records with employee details"""
-    return get_today_attendance_records(db)
+def get_today_attendance(
+    date: Optional[str] = Query(None, description="Date (YYYY-MM-DD) for which to fetch records"),
+    db: Session = Depends(get_db),
+):
+    """Get attendance records for the specified date (defaults to today)."""
+    target_date: Optional[date] = None
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD",
+            )
+    return get_today_attendance_records(db, target_date)
 @router.get("/download/csv")
 def download_attendance_csv(
     user_id: Optional[int] = Query(None, description="Filter by user ID"),
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db)
 ):
     """Download attendance data as a CSV file with optional filters."""
@@ -957,7 +1163,14 @@ def download_attendance_csv(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
     
-    output = export_attendance_csv(db, user_id=user_id, start_date=start_dt, end_date=end_dt, employee_id=employee_id)
+    output = export_attendance_csv(
+        db,
+        user_id=user_id,
+        start_date=start_dt,
+        end_date=end_dt,
+        employee_id=employee_id,
+        department=department.strip() if department else None,
+    )
     
     # Generate filename with date range
     filename = "attendance_report.csv"
@@ -981,6 +1194,7 @@ def download_attendance_pdf(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db)
 ):
     """Download attendance data as a PDF file with optional filters."""
@@ -1000,7 +1214,14 @@ def download_attendance_pdf(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
     
-    buffer = export_attendance_pdf(db, user_id=user_id, start_date=start_dt, end_date=end_dt, employee_id=employee_id)
+    buffer = export_attendance_pdf(
+        db,
+        user_id=user_id,
+        start_date=start_dt,
+        end_date=end_dt,
+        employee_id=employee_id,
+        department=department.strip() if department else None,
+    )
     
     # Generate filename with date range
     filename = "attendance_report.pdf"

@@ -597,7 +597,7 @@ export default function HiringManagement() {
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 shadow-lg shadow-black/10">
               <Briefcase className="h-6 w-6" />
             </div>
-            <div>
+        <div>
               <h1 className="text-2xl font-semibold tracking-tight">Hiring Management</h1>
               <p className="mt-1 text-xs sm:text-sm text-white/80">
                 Create modern job posts, track candidates, and coordinate your hiring pipeline.
@@ -630,21 +630,21 @@ export default function HiringManagement() {
                 <Users className="h-4 w-4" />
                 Candidates
               </button>
-            </div>
-            {activeTab === 'vacancies' && (
+        </div>
+        {activeTab === 'vacancies' && (
               <Button
                 className="hidden md:inline-flex gap-2 rounded-full bg-white text-slate-900 hover:bg-slate-100"
                 onClick={() => {
-                  resetVacancyForm();
-                  setSelectedVacancy(null);
-                  setIsVacancyDialogOpen(true);
+            resetVacancyForm();
+            setSelectedVacancy(null);
+            setIsVacancyDialogOpen(true);
                 }}
               >
                 <Plus className="h-4 w-4" />
                 <span className="hidden sm:inline">New Vacancy</span>
                 <span className="sm:hidden">New</span>
-              </Button>
-            )}
+          </Button>
+        )}
           </div>
         </div>
       </div>
@@ -1001,7 +1001,7 @@ export default function HiringManagement() {
                     {selectedVacancy
                       ? 'Polish the details for this role before publishing.'
                       : 'Craft a compelling job post with clear responsibilities and requirements.'}
-                  </DialogDescription>
+            </DialogDescription>
                 </div>
               </div>
               <div className="hidden sm:flex flex-col items-end gap-1">
@@ -1035,113 +1035,113 @@ export default function HiringManagement() {
                 </div>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="title">Job Title *</Label>
-                  <Input
-                    id="title"
-                    value={vacancyFormData.title}
-                    onChange={(e) =>
-                      setVacancyFormData({ ...vacancyFormData, title: e.target.value })
-                    }
-                    placeholder="e.g., Senior Software Engineer"
+            <div className="space-y-2">
+              <Label htmlFor="title">Job Title *</Label>
+              <Input
+                id="title"
+                value={vacancyFormData.title}
+                onChange={(e) =>
+                  setVacancyFormData({ ...vacancyFormData, title: e.target.value })
+                }
+                placeholder="e.g., Senior Software Engineer"
                     className="h-10"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="department">Department *</Label>
-                  <Select
-                    value={vacancyFormData.department}
-                    onValueChange={(value) =>
-                      setVacancyFormData({ ...vacancyFormData, department: value })
-                    }
-                    disabled={isHR}
-                  >
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="department">Department *</Label>
+              <Select
+                value={vacancyFormData.department}
+                onValueChange={(value) =>
+                  setVacancyFormData({ ...vacancyFormData, department: value })
+                }
+                disabled={isHR}
+              >
                     <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Select department" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {departments.map((dept) => (
-                        <SelectItem key={dept} value={dept}>
-                          {dept}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {isHR && (
-                    <p className="text-xs text-muted-foreground">
+                  <SelectValue placeholder="Select department" />
+                </SelectTrigger>
+                <SelectContent>
+                  {departments.map((dept) => (
+                    <SelectItem key={dept} value={dept}>
+                      {dept}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {isHR && (
+                <p className="text-xs text-muted-foreground">
                       You can only create vacancies for your department.
-                    </p>
-                  )}
-                </div>
-              </div>
+                </p>
+              )}
+            </div>
+            </div>
 
               <div className="grid gap-4 md:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="location">Location *</Label>
-                  <Input
-                    id="location"
-                    value={vacancyFormData.location}
-                    onChange={(e) =>
-                      setVacancyFormData({ ...vacancyFormData, location: e.target.value })
-                    }
-                    placeholder="e.g., Mumbai, India"
+              <div className="space-y-2">
+                <Label htmlFor="location">Location *</Label>
+                <Input
+                  id="location"
+                  value={vacancyFormData.location}
+                  onChange={(e) =>
+                    setVacancyFormData({ ...vacancyFormData, location: e.target.value })
+                  }
+                  placeholder="e.g., Mumbai, India"
                     className="h-10"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="employment_type">Employment Type *</Label>
-                  <Select
-                    value={vacancyFormData.employment_type}
-                    onValueChange={(value) =>
-                      setVacancyFormData({ ...vacancyFormData, employment_type: value })
-                    }
-                  >
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="employment_type">Employment Type *</Label>
+                <Select
+                  value={vacancyFormData.employment_type}
+                  onValueChange={(value) =>
+                    setVacancyFormData({ ...vacancyFormData, employment_type: value })
+                  }
+                >
                     <SelectTrigger className="h-10">
                       <SelectValue placeholder="Select type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="full-time">Full Time</SelectItem>
-                      <SelectItem value="part-time">Part Time</SelectItem>
-                      <SelectItem value="contract">Contract</SelectItem>
-                      <SelectItem value="internship">Internship</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="salary_range">Salary Range</Label>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="full-time">Full Time</SelectItem>
+                    <SelectItem value="part-time">Part Time</SelectItem>
+                    <SelectItem value="contract">Contract</SelectItem>
+                    <SelectItem value="internship">Internship</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="salary_range">Salary Range</Label>
                   <div className="relative">
                     <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-                    <Input
-                      id="salary_range"
-                      value={vacancyFormData.salary_range}
-                      onChange={(e) =>
-                        setVacancyFormData({ ...vacancyFormData, salary_range: e.target.value })
-                      }
-                      placeholder="e.g., ₹5L - ₹10L"
+                <Input
+                  id="salary_range"
+                  value={vacancyFormData.salary_range}
+                  onChange={(e) =>
+                    setVacancyFormData({ ...vacancyFormData, salary_range: e.target.value })
+                  }
+                  placeholder="e.g., ₹5L - ₹10L"
                       className="pl-7 h-10"
-                    />
-                  </div>
+                />
+              </div>
                 </div>
               </div>
 
               <div className="grid gap-4 md:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="status">Status *</Label>
-                  <Select
-                    value={vacancyFormData.status}
-                    onValueChange={(value) =>
-                      setVacancyFormData({ ...vacancyFormData, status: value })
-                    }
-                  >
+              <div className="space-y-2">
+                <Label htmlFor="status">Status *</Label>
+                <Select
+                  value={vacancyFormData.status}
+                  onValueChange={(value) =>
+                    setVacancyFormData({ ...vacancyFormData, status: value })
+                  }
+                >
                     <SelectTrigger className="h-10">
                       <SelectValue placeholder="Select status" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="open">Open</SelectItem>
-                      <SelectItem value="closed">Closed</SelectItem>
-                      <SelectItem value="on-hold">On Hold</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open">Open</SelectItem>
+                    <SelectItem value="closed">Closed</SelectItem>
+                    <SelectItem value="on-hold">On Hold</SelectItem>
+                  </SelectContent>
+                </Select>
                 </div>
                 <div className="hidden md:block" />
                 <div className="hidden md:block" />

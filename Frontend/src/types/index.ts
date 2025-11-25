@@ -42,6 +42,8 @@ export interface AttendanceRecord {
   checkInSelfie: string;
   checkOutSelfie?: string;
   workHours?: number;
+  workSummary?: string;
+  workReport?: string;
   status: 'present' | 'absent' | 'late' | 'half-day' | 'holiday' | 'weekend';
   overtime?: number;
   remarks?: string;
