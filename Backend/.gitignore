@@ -17,5 +17,5 @@ htmlcov/
 Thumbs.db
 *.swp
 
-Backend/static/profile_photos/
-Backend/static/selfies/
+static/profile_photos/
+static/selfies/
