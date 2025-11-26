@@ -35,10 +35,11 @@ const AttendancePage: React.FC = () => {
   const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
-  const [isGettingFastLocation, setIsGettingFastLocation] = useState(true);
+  const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [locationWatcher, setLocationWatcher] = useState<{ stop: () => void } | null>(null);
   const [isImprovingAccuracy, setIsImprovingAccuracy] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // Helper to fetch today's attendance for current user
   const fetchTodayAttendance = async () => {
@@ -206,12 +207,59 @@ const AttendancePage: React.FC = () => {
     // Get location immediately when page loads
     const initLocation = async () => {
       try {
-        await refreshLocationFast();
+        setIsGettingFastLocation(true);
+        setLocationError(null);
+        
+        // Get fast location immediately
+        const fastLocation = await getCurrentLocationFast();
+        const refreshed: GeoLocation = {
+          latitude: fastLocation.latitude,
+          longitude: fastLocation.longitude,
+          accuracy: fastLocation.accuracy ?? null,
+          address: fastLocation.address || `${fastLocation.latitude.toFixed(6)}, ${fastLocation.longitude.toFixed(6)}`,
+          updatedAt: Date.now(),
+        };
+        setLocation(refreshed);
+        setIsGettingFastLocation(false);
+        
         // After initial fast location, start continuous improvement
-        startContinuousLocationImprovement();
+        try {
+          const watcher = getCurrentLocationWithContinuousImprovement(
+            (improvedLocation) => {
+              const improved: GeoLocation = {
+                latitude: improvedLocation.latitude,
+                longitude: improvedLocation.longitude,
+                accuracy: improvedLocation.accuracy ?? null,
+                address: improvedLocation.address || `${improvedLocation.latitude.toFixed(6)}, ${improvedLocation.longitude.toFixed(6)}`,
+                updatedAt: Date.now(),
+              };
+              setLocation(improved);
+              
+              // Stop improving if we get very accurate location (< 10 meters)
+              if (improvedLocation.accuracy && improvedLocation.accuracy < 10) {
+                setIsImprovingAccuracy(false);
+              }
+            },
+            10 // Target 10 meters accuracy
+          );
+          
+          setLocationWatcher(watcher);
+          setIsImprovingAccuracy(true);
+          
+          // Auto-stop after 30 seconds
+          setTimeout(() => {
+            watcher.stop();
+            setIsImprovingAccuracy(false);
+          }, 30000);
+        } catch (error) {
+          console.error('Failed to start continuous location improvement:', error);
+          setIsImprovingAccuracy(false);
+        }
       } catch (error) {
         console.error('Initial location fetch failed:', error);
-        setLocationError(error instanceof Error ? error.message : 'Failed to get location');
+        const errorMessage = error instanceof Error ? error.message : 'Failed to get location';
+        setLocationError(errorMessage);
+        setIsGettingFastLocation(false);
       }
     };
     
@@ -228,9 +276,12 @@ const AttendancePage: React.FC = () => {
     
     return () => {
       clearInterval(checkMidnight);
-      stopContinuousLocationImprovement();
+      if (locationWatcher) {
+        locationWatcher.stop();
+      }
     };
-  }, [user?.id, refreshLocationFast]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]); // Only depend on user?.id to avoid re-running unnecessarily
 
   const handleCheckIn = async () => {
     try {

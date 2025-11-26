@@ -20,9 +20,13 @@ export const NotificationBell: React.FC = () => {
   const { user } = useAuth();
   const { notifications, unreadCount, markAsRead, markAllAsRead, clearNotification } = useNotifications();
   const [isOpen, setIsOpen] = useState(false);
+  
+  // Filter to show only unread notifications
+  const unreadNotifications = notifications.filter(n => !n.read);
 
-  const handleNotificationClick = (notification: any) => {
-    markAsRead(notification.id);
+  const handleNotificationClick = async (notification: any) => {
+    // Mark as read and wait for it to complete
+    await markAsRead(notification.id);
     
     const userRole = user?.role || 'employee';
     
@@ -113,7 +117,7 @@ export const NotificationBell: React.FC = () => {
         </div>
         
         <ScrollArea className="h-[400px]">
-          {notifications.length === 0 ? (
+          {unreadNotifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <div className="h-20 w-20 rounded-full bg-gradient-to-br from-blue-100 to-indigo-100 dark:from-blue-900 dark:to-indigo-900 flex items-center justify-center mb-4">
                 <Bell className="h-10 w-10 text-blue-400 dark:text-blue-600" />
@@ -123,7 +127,7 @@ export const NotificationBell: React.FC = () => {
             </div>
           ) : (
             <div className="divide-y">
-              {notifications.map((notification) => (
+              {unreadNotifications.map((notification) => (
                 <div
                   key={notification.id}
                   className={`p-4 hover:bg-blue-50 dark:hover:bg-blue-950/30 cursor-pointer transition-all duration-200 hover:scale-[1.02] ${

@@ -1,18 +1,27 @@
-import sys
-import os
-
-sys.path.insert(0, os.path.abspath("."))
-
 from logging.config import fileConfig
-from app.db.database import Base
-from app.db.models import user, attendance, leave, task
-
-target_metadata = Base.metadata
+import sys
+from os.path import abspath, dirname
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
+
+# Add the parent directory to the path so we can import app
+sys.path.insert(0, dirname(dirname(abspath(__file__))))
+
+# Import your Base and all models
+from app.db.database import Base
+from app.db.models.user import User
+from app.db.models.attendance import Attendance
+from app.db.models.leave import Leave
+from app.db.models.task import Task
+from app.db.models.task_comment import TaskComment
+from app.db.models.department import Department
+from app.db.models.shift import Shift
+from app.db.models.office_timing import OfficeTiming
+from app.db.models.notification import LeaveNotification, TaskNotification
+from app.db.models.hiring import Vacancy, Candidate
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -25,9 +34,7 @@ if config.config_file_name is not None:
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = None
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

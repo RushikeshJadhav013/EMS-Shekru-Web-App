@@ -162,6 +162,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(user);
       localStorage.setItem('user', JSON.stringify(user));
       localStorage.setItem('token', userData.access_token);
+      localStorage.setItem('userId', user.id.toString()); // Store userId for language persistence
 
       toast({
         title: 'Login Successful',
@@ -207,6 +208,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     setUser(null);
     localStorage.removeItem('user');
+    localStorage.removeItem('userId'); // Clear userId for language persistence
     toast({
       title: 'Logged Out',
       description: 'You have been successfully logged out.',

@@ -60,9 +60,11 @@ import {
   RefreshCcw,
   Download,
   FileSpreadsheet,
-  FileDown
+  FileDown,
+  Send
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { apiService } from '@/lib/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -289,6 +291,13 @@ const TaskManagement: React.FC = () => {
   const [isPassingTask, setIsPassingTask] = useState(false);
   const [taskHistory, setTaskHistory] = useState<Record<string, TaskHistoryEntry[]>>({});
   const [isFetchingHistory, setIsFetchingHistory] = useState<string | null>(null);
+  
+  // Task Comments State
+  const [taskComments, setTaskComments] = useState<any[]>([]);
+  const [newComment, setNewComment] = useState('');
+  const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [isPostingComment, setIsPostingComment] = useState(false);
+  const commentsEndRef = React.useRef<HTMLDivElement>(null);
 
   // Export states
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
@@ -858,6 +867,94 @@ const TaskManagement: React.FC = () => {
       setIsPassingTask(false);
     }
   }, [authToken, authorizedHeaders, closePassDialog, fetchAndStoreHistory, getAssigneeLabel, passAssignee, passNote, passTaskTarget, toast]);
+
+  // Task Comments Functions
+  const loadTaskComments = useCallback(async (taskId: number) => {
+    setIsLoadingComments(true);
+    try {
+      const data = await apiService.getTaskComments(taskId);
+      setTaskComments(data || []);
+    } catch (error) {
+      console.error('Failed to load comments:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load comments',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingComments(false);
+    }
+  }, [toast]);
+
+  const handlePostComment = useCallback(async () => {
+    if (!newComment.trim() || !selectedTask) return;
+    
+    setIsPostingComment(true);
+    try {
+      const comment = await apiService.addTaskComment(
+        Number(selectedTask.id),
+        newComment.trim()
+      );
+      setTaskComments(prev => [...prev, comment]);
+      setNewComment('');
+      toast({
+        title: 'Success',
+        description: 'Comment posted successfully',
+      });
+      // Scroll to bottom after posting
+      setTimeout(() => {
+        commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    } catch (error) {
+      console.error('Failed to post comment:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to post comment',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsPostingComment(false);
+    }
+  }, [newComment, selectedTask, toast]);
+
+  const handleDeleteComment = useCallback(async (commentId: number) => {
+    if (!selectedTask) return;
+    
+    try {
+      await apiService.deleteTaskComment(Number(selectedTask.id), commentId);
+      setTaskComments(prev => prev.filter(c => c.id !== commentId));
+      toast({
+        title: 'Success',
+        description: 'Comment deleted successfully',
+      });
+    } catch (error) {
+      console.error('Failed to delete comment:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete comment',
+        variant: 'destructive',
+      });
+    }
+  }, [selectedTask, toast]);
+
+  // Load comments when task is selected
+  useEffect(() => {
+    if (selectedTask) {
+      loadTaskComments(Number(selectedTask.id));
+    } else {
+      setTaskComments([]);
+      setNewComment('');
+    }
+  }, [selectedTask, loadTaskComments]);
+
+  // Auto-scroll to bottom when comments change
+  useEffect(() => {
+    if (taskComments.length > 0) {
+      setTimeout(() => {
+        commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    }
+  }, [taskComments]);
 
   const resetEditState = useCallback(() => {
     setIsEditDialogOpen(false);
@@ -2318,7 +2415,7 @@ const TaskManagement: React.FC = () => {
       {/* Task Detail Dialog */}
       {selectedTask && (
         <Dialog open={Boolean(selectedTask)} onOpenChange={() => setSelectedTask(null)}>
-          <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
             <DialogHeader className="flex-shrink-0">
               <DialogTitle className="text-2xl font-bold">{selectedTask.title}</DialogTitle>
               <DialogDescription>
@@ -2555,28 +2652,126 @@ const TaskManagement: React.FC = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="comments" className="mt-6 overflow-y-auto flex-1">
-                <div className="space-y-6">
-                  <div className="p-4 rounded-lg border bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
-                    <div className="flex flex-col sm:flex-row gap-3">
-                      <Textarea 
-                        placeholder="Add a comment..." 
-                        rows={3} 
-                        className="flex-1 resize-none bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 focus:ring-2 focus:ring-violet-500 transition-all"
-                      />
-                      <Button className="gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 shadow-md h-fit">
-                        <MessageSquare className="h-4 w-4" />
-                        Post
-                      </Button>
-                    </div>
+              <TabsContent value="comments" className="mt-6 space-y-4">
+                {/* Comments Header */}
+                <div className="p-4 rounded-lg border bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950">
+                  <h3 className="font-semibold text-sm flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-violet-600" />
+                    Task Discussion
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Chat with team members about this task
+                  </p>
+                </div>
+
+                {/* Comments List with Scrolling */}
+                <div className="overflow-y-auto max-h-[500px] space-y-3 p-4 bg-slate-50/50 dark:bg-slate-900/50 rounded-lg border" style={{ scrollbarWidth: 'thin', scrollbarColor: '#a78bfa #e2e8f0' }}>
+                    {isLoadingComments ? (
+                      <div className="text-center py-8">
+                        <Loader2 className="h-8 w-8 animate-spin mx-auto text-violet-600" />
+                        <p className="text-sm text-muted-foreground mt-2">Loading comments...</p>
+                      </div>
+                    ) : taskComments.length === 0 ? (
+                      <div className="text-center py-12">
+                        <div className="h-16 w-16 rounded-full bg-gradient-to-br from-violet-100 to-purple-100 dark:from-violet-900 dark:to-purple-900 flex items-center justify-center mx-auto mb-3">
+                          <MessageSquare className="h-8 w-8 text-violet-600 dark:text-violet-400" />
+                        </div>
+                        <p className="text-sm text-muted-foreground font-medium">No comments yet</p>
+                        <p className="text-xs text-muted-foreground mt-1">Start the conversation!</p>
+                      </div>
+                    ) : (
+                      <>
+                        {taskComments.map((comment) => {
+                          const isOwnComment = comment.user_id === user?.id;
+                          return (
+                            <div
+                              key={comment.id}
+                              className={`flex ${isOwnComment ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2`}
+                            >
+                              <div
+                                className={`max-w-[80%] rounded-lg p-3 shadow-sm ${
+                                  isOwnComment
+                                    ? 'bg-gradient-to-r from-violet-500 to-purple-600 text-white'
+                                    : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className={`font-semibold text-xs ${isOwnComment ? 'text-white' : 'text-slate-900 dark:text-slate-100'}`}>
+                                    {comment.user_name}
+                                  </span>
+                                  <Badge 
+                                    variant="outline" 
+                                    className={`text-xs h-4 px-1.5 ${isOwnComment ? 'border-white/30 text-white' : ''}`}
+                                  >
+                                    {comment.user_role}
+                                  </Badge>
+                                </div>
+                                <p className={`text-sm ${isOwnComment ? 'text-white' : 'text-slate-700 dark:text-slate-300'}`}>
+                                  {comment.comment}
+                                </p>
+                                <div className="flex items-center justify-between mt-2 gap-2">
+                                  <span className={`text-xs ${isOwnComment ? 'text-white/75' : 'text-muted-foreground'}`}>
+                                    {new Date(comment.created_at).toLocaleString('en-US', {
+                                      month: 'short',
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </span>
+                                  {isOwnComment && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => handleDeleteComment(comment.id)}
+                                      className="h-5 w-5 p-0 hover:bg-white/20"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div ref={commentsEndRef} />
+                      </>
+                    )}
                   </div>
-                  <div className="text-center py-12">
-                    <div className="h-20 w-20 rounded-full bg-gradient-to-br from-violet-100 to-purple-100 dark:from-violet-900 dark:to-purple-900 flex items-center justify-center mx-auto mb-4">
-                      <MessageSquare className="h-10 w-10 text-violet-600 dark:text-violet-400" />
-                    </div>
-                    <p className="text-sm text-muted-foreground font-medium">No comments yet</p>
-                    <p className="text-xs text-muted-foreground mt-1">Be the first to comment on this task</p>
+
+                {/* Comment Input */}
+                <div className="p-4 rounded-lg border bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 sticky bottom-0 bg-white dark:bg-slate-950 z-10">
+                  <div className="flex gap-3 items-start">
+                    <Textarea
+                      placeholder="Type your message..."
+                      value={newComment}
+                      onChange={(e) => setNewComment(e.target.value)}
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handlePostComment();
+                        }
+                      }}
+                      rows={3}
+                      className="flex-1 resize-none bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 focus:ring-2 focus:ring-violet-500 transition-all"
+                    />
+                    <Button
+                      onClick={handlePostComment}
+                      disabled={!newComment.trim() || isPostingComment}
+                      className="gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 shadow-lg px-6 py-6"
+                    >
+                      {isPostingComment ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <div className="flex flex-col items-center gap-1">
+                          <Send className="h-5 w-5" />
+                          <span className="text-sm font-semibold">Post</span>
+                        </div>
+                      )}
+                    </Button>
                   </div>
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    Press Enter to send • Shift+Enter for new line
+                  </p>
                 </div>
               </TabsContent>
             </Tabs>

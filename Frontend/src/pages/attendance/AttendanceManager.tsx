@@ -59,6 +59,7 @@ const AttendanceManager: React.FC = () => {
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendance | null>(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
 const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: string | null }>({ open: false, summary: null });
+  const [locationModal, setLocationModal] = useState<{ open: boolean; location: string | null }>({ open: false, location: null });
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -493,7 +494,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="bg-blue-500 hover:bg-blue-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <Timer className="h-2.5 w-2.5" />
-          Awaiting
+          {t.attendance.awaiting}
         </Badge>,
       );
     }
@@ -506,7 +507,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="bg-red-500 hover:bg-red-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <AlertTriangle className="h-2.5 w-2.5" />
-          Late
+          {t.attendance.late}
         </Badge>,
       );
     }
@@ -519,7 +520,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="border-orange-500 bg-orange-50 text-orange-600 hover:bg-orange-100 text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <LogOut className="h-2.5 w-2.5" />
-          Early
+          {t.attendance.early}
         </Badge>,
       );
     }
@@ -532,7 +533,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="bg-green-500 hover:bg-green-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <CheckCircle2 className="h-2.5 w-2.5" />
-          On Time
+          {t.attendance.onTime}
         </Badge>,
       );
     }
@@ -799,8 +800,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <Clock className="h-7 w-7 text-white" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold">Employee Attendance</h2>
-              <p className="text-sm text-muted-foreground mt-1">Monitor team attendance and export reports</p>
+              <h2 className="text-2xl font-bold">{t.attendance.employeeAttendance}</h2>
+              <p className="text-sm text-muted-foreground mt-1">{t.attendance.monitorTeamAttendance}</p>
             </div>
           </div>
           <div className="flex gap-2">
@@ -813,7 +814,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             >
               <Download className="h-4 w-4" style={{ color: '#15803d' }} />
               <span className="font-semibold" style={{ color: '#15803d' }}>
-                {isExporting ? 'Exporting...' : 'Export CSV'}
+                {isExporting ? t.attendance.exporting : t.attendance.exportCSV}
               </span>
             </Button>
             <Button 
@@ -825,7 +826,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             >
               <Download className="h-4 w-4" style={{ color: '#b91c1c' }} />
               <span className="font-semibold" style={{ color: '#b91c1c' }}>
-                {isExporting ? 'Exporting...' : 'Export PDF'}
+                {isExporting ? t.attendance.exporting : t.attendance.exportPDF}
               </span>
             </Button>
           </div>
@@ -835,7 +836,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-blue-50">Total Employees</CardTitle>
+            <CardTitle className="text-sm font-medium text-blue-50">{t.attendance.totalEmployees}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.total}</div>
@@ -843,7 +844,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </Card>
         <Card className="border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-green-50">Present Today</CardTitle>
+            <CardTitle className="text-sm font-medium text-green-50">{t.attendance.presentToday}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.present}</div>
@@ -851,7 +852,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </Card>
         <Card className="border-0 bg-gradient-to-br from-orange-500 to-amber-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-orange-50">Late Arrivals</CardTitle>
+            <CardTitle className="text-sm font-medium text-orange-50">{t.attendance.lateArrivals}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.late}</div>
@@ -859,7 +860,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </Card>
         <Card className="border-0 bg-gradient-to-br from-yellow-500 to-amber-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-yellow-50">Early Departures</CardTitle>
+            <CardTitle className="text-sm font-medium text-yellow-50">{t.attendance.earlyDepartures}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.early}</div>
@@ -869,8 +870,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
       <Card className="border-0 shadow-lg">
         <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
-          <CardTitle className="text-xl font-semibold">Attendance Records</CardTitle>
-          <CardDescription>View and manage employee attendance</CardDescription>
+          <CardTitle className="text-xl font-semibold">{t.attendance.attendanceRecords}</CardTitle>
+          <CardDescription>{t.attendance.viewAndManage}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col md:flex-row gap-3 mb-6">
@@ -878,7 +879,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <div className="relative">
                 <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Search by name, email, employee ID, or department..."
+                  placeholder={t.attendance.searchPlaceholder}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="pl-10 h-11 bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 focus:ring-2 focus:ring-blue-500"
@@ -888,13 +889,13 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <Select value={filterStatus} onValueChange={setFilterStatus}>
               <SelectTrigger className="w-[200px] h-11 bg-white dark:bg-gray-950">
                 <Filter className="h-4 w-4 mr-2" />
-                <SelectValue placeholder="Filter by status" />
+                <SelectValue placeholder={t.attendance.filterByStatus} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="present">On Schedule</SelectItem>
-                <SelectItem value="late">Late Arrivals</SelectItem>
-                <SelectItem value="early">Early Departures</SelectItem>
+                <SelectItem value="all">{t.attendance.allStatus}</SelectItem>
+                <SelectItem value="present">{t.attendance.onSchedule}</SelectItem>
+                <SelectItem value="late">{t.attendance.lateArrivals}</SelectItem>
+                <SelectItem value="early">{t.attendance.earlyDepartures}</SelectItem>
               </SelectContent>
             </Select>
             <DatePicker
@@ -907,7 +908,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                   loadAllAttendance(formatted);
                 }
               }}
-              placeholder="Select date"
+              placeholder={t.attendance.selectDate}
               className="w-[200px]"
             />
           </div>
@@ -917,17 +918,17 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <table className="w-full">
                 <thead className="bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
                   <tr className="hover:bg-transparent">
-                    <th className="text-left p-3 font-medium">Employee</th>
-                    <th className="text-left p-3 font-medium">Employee ID</th>
-                    <th className="text-left p-3 font-medium">Department</th>
-                    <th className="text-left p-3 font-medium">Check In</th>
-                    <th className="text-left p-3 font-medium">Check Out</th>
-                    <th className="text-left p-3 font-medium">Hours</th>
-                    <th className="text-left p-3 font-medium">Location</th>
-                    <th className="text-left p-3 font-medium">Selfie</th>
-                    <th className="text-left p-3 font-medium">Status</th>
-                    <th className="text-left p-3 font-medium">Work Summary</th>
-                    <th className="text-left p-3 font-medium">Work Report</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.employee}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.employeeId}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.department}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.checkInTime}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.checkOutTime}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.hours}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.location}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.selfiePhoto}</th>
+                    <th className="text-left p-3 font-medium">{t.common.status}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.workSummary}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.workReport}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -956,7 +957,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                           </div>
                           {record.scheduledStart && (
                             <div className="text-xs text-muted-foreground">
-                              Scheduled: {record.scheduledStart}
+                              {t.attendance.scheduled}: {record.scheduledStart}
                             </div>
                           )}
                         </td>
@@ -967,7 +968,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                           </div>
                           {record.scheduledEnd && (
                             <div className="text-xs text-muted-foreground">
-                              Scheduled: {record.scheduledEnd}
+                              {t.attendance.scheduled}: {record.scheduledEnd}
                             </div>
                           )}
                         </td>
@@ -977,10 +978,25 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                           ) : '-'}
                         </td>
                         <td className="p-3">
-                          <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                            <MapPin className="h-3 w-3" />
-                            <span>{record.checkInLocation?.address ?? '-'}</span>
-                          </div>
+                          {record.checkInLocation?.address && record.checkInLocation.address !== '-' ? (
+                            <button
+                              type="button"
+                              onClick={() => setLocationModal({ open: true, location: record.checkInLocation?.address || null })}
+                              className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950 px-2 py-1 rounded-md transition-colors cursor-pointer group"
+                            >
+                              <MapPin className="h-3 w-3 flex-shrink-0" />
+                              <span className="truncate max-w-[120px] group-hover:underline">
+                                {record.checkInLocation.address.length > 20 
+                                  ? `${record.checkInLocation.address.slice(0, 20)}...` 
+                                  : record.checkInLocation.address}
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-1.8 text-sm text-muted-foreground">
+                              <MapPin className="h-3 w-3" />
+                              <span>-</span>
+                            </div>
+                          )}
                         </td>
                         <td className="p-3">
                           <div 
@@ -1041,7 +1057,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                               rel="noopener noreferrer"
                               className="text-sm text-blue-600 hover:underline"
                             >
-                              View Report
+                              {t.attendance.viewReport}
                             </a>
                           ) : (
                             <span className="text-muted-foreground text-sm">—</span>
@@ -1053,7 +1069,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                     <tr>
                       <td colSpan={9} className="p-8 text-center text-muted-foreground">
                         <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                        <p>No attendance records found for the selected date</p>
+                        <p>{t.attendance.noRecordsFound}</p>
                       </td>
                     </tr>
                   )}
@@ -1078,7 +1094,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-green-500"></div>
-                <h3 className="font-medium">Check-in Selfie</h3>
+                <h3 className="font-medium">{t.attendance.checkInSelfie}</h3>
               </div>
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkInSelfie ? (
@@ -1099,7 +1115,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
                     <User className="h-12 w-12 mb-2" />
-                    <p>No selfie available</p>
+                    <p>{t.attendance.noSelfieAvailable}</p>
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
@@ -1113,7 +1129,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-red-500"></div>
-                <h3 className="font-medium">Check-out Selfie</h3>
+                <h3 className="font-medium">{t.attendance.checkOutSelfie}</h3>
               </div>
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkOutSelfie ? (
@@ -1134,8 +1150,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
                     <User className="h-12 w-12 mb-2" />
-                    <p>No check-out selfie</p>
-                    <p className="text-sm">Not checked out yet</p>
+                    <p>{t.attendance.checkOutSelfie}</p>
+                    <p className="text-sm">{t.attendance.notCheckedOut}</p>
                   </div>
                 )}
                 {selectedRecord?.checkOutTime && (
@@ -1155,7 +1171,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               className="gap-2"
             >
               <X className="h-4 w-4" />
-              Close
+              {t.common.close}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1167,15 +1183,55 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Work Summary</DialogTitle>
-            <DialogDescription>Detail submitted during check-out.</DialogDescription>
+            <DialogTitle>{t.attendance.workSummaryTitle}</DialogTitle>
+            <DialogDescription>{t.attendance.workSummaryDescription}</DialogDescription>
           </DialogHeader>
           <div className="py-4 text-sm text-muted-foreground whitespace-pre-wrap">
-            {summaryModal.summary || 'No summary provided.'}
+            {summaryModal.summary || t.attendance.noSummaryProvided}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSummaryModal({ open: false, summary: null })}>
-              Close
+              {t.common.close}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={locationModal.open}
+        onOpenChange={(open) => setLocationModal({ open, location: open ? locationModal.location : null })}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-blue-600" />
+              {t.attendance.checkInLocation}
+            </DialogTitle>
+            <DialogDescription>{t.attendance.fullLocationDetails}</DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4 border">
+              <div className="flex items-start gap-3">
+                <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <MapPin className="h-4 w-4 text-blue-600" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">{t.attendance.address}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed break-words">
+                    {locationModal.location || t.attendance.locationNotAvailable}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setLocationModal({ open: false, location: null })}
+              className="gap-2"
+            >
+              <X className="h-4 w-4" />
+              {t.common.close}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1185,9 +1241,9 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
         <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col overflow-visible">
           <DialogHeader>
-            <DialogTitle>Export Attendance Report ({exportType?.toUpperCase()})</DialogTitle>
+            <DialogTitle>{t.attendance.exportReport} ({exportType?.toUpperCase()})</DialogTitle>
             <DialogDescription>
-              Configure your export preferences. Select date range and employee filter options.
+              {t.attendance.configureExport}
             </DialogDescription>
           </DialogHeader>
           

@@ -771,6 +771,30 @@ class ApiService {
   async getReportDepartments() {
     return this.request('/reports/departments');
   }
+
+  // Task Comments
+  async getTaskComments(taskId: number) {
+    return this.request(`/tasks/${taskId}/comments`);
+  }
+
+  // Task Comments
+  async getTaskComments(taskId: number) {
+    return this.request(`/tasks/${taskId}/comments`);
+  }
+
+  async addTaskComment(taskId: number, comment: string) {
+    return this.request(`/tasks/${taskId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  async deleteTaskComment(taskId: number, commentId: number) {
+    return this.request(`/tasks/${taskId}/comments/${commentId}`, {
+      method: 'DELETE',
+    });
+  }
 }
 
 export const apiService = new ApiService(API_BASE_URL);

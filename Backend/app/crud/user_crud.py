@@ -69,6 +69,36 @@ def get_user_by_employee_id(db: Session, employee_id: str):
         .first()
     )
 
+def get_user_by_phone(db: Session, phone: str):
+    if not phone:
+        return None
+    normalized_phone = phone.strip()
+    return (
+        db.query(User)
+        .filter(User.phone == normalized_phone)
+        .first()
+    )
+
+def get_user_by_pan_card(db: Session, pan_card: str):
+    if not pan_card:
+        return None
+    normalized_pan = pan_card.strip().upper()
+    return (
+        db.query(User)
+        .filter(User.pan_card == normalized_pan)
+        .first()
+    )
+
+def get_user_by_aadhar_card(db: Session, aadhar_card: str):
+    if not aadhar_card:
+        return None
+    normalized_aadhar = aadhar_card.strip()
+    return (
+        db.query(User)
+        .filter(User.aadhar_card == normalized_aadhar)
+        .first()
+    )
+
 def get_user(db: Session, user_id: int):
     return db.query(User).filter(User.user_id == user_id).first()
 

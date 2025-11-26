@@ -472,6 +472,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const markAsRead = useCallback(async (notificationId: string) => {
     let backendId: number | undefined;
     let backendType: Notification['type'] | undefined;
+    
+    // First, mark as read in local state
     setNotifications((prev) =>
       prev.map((notif) => {
         if (notif.id === notificationId) {
@@ -483,9 +485,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       })
     );
 
+    // If it's a local-only notification (no backend ID), we're done
     if (!user || !backendId || !backendType) {
       return;
     }
+    
     const authHeader = getAuthHeader();
     if (!authHeader) {
       return;
@@ -513,8 +517,23 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       if (!response.ok) {
         throw new Error(`Failed to mark notification as read (${response.status})`);
       }
+      
+      // After successfully marking as read on backend, remove it from the list after a short delay
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((notif) => notif.id !== notificationId));
+      }, 500); // 500ms delay to allow smooth UI transition
+      
     } catch (error) {
       console.error('Failed to mark notification as read', error);
+      // Revert the read status if backend call failed
+      setNotifications((prev) =>
+        prev.map((notif) => {
+          if (notif.id === notificationId) {
+            return { ...notif, read: false };
+          }
+          return notif;
+        })
+      );
       fetchBackendNotifications();
     }
   }, [fetchBackendNotifications, user]);
@@ -522,13 +541,21 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const markAllAsRead = useCallback(async () => {
     const taskIds: number[] = [];
     const leaveIds: number[] = [];
+    const shiftIds: number[] = [];
+    const notificationIdsToRemove: string[] = [];
+    
     setNotifications((prev) =>
       prev.map((notif) => {
-        if (!notif.read && notif.backendId) {
-          if (notif.type === 'leave') {
-            leaveIds.push(notif.backendId);
-          } else if (notif.type === 'task') {
-            taskIds.push(notif.backendId);
+        if (!notif.read) {
+          notificationIdsToRemove.push(notif.id);
+          if (notif.backendId) {
+            if (notif.type === 'leave') {
+              leaveIds.push(notif.backendId);
+            } else if (notif.type === 'task') {
+              taskIds.push(notif.backendId);
+            } else if (notif.type === 'shift') {
+              shiftIds.push(notif.backendId);
+            }
           }
         }
         if (notif.read) return notif;
@@ -536,9 +563,14 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       })
     );
 
-    if (!user || (taskIds.length === 0 && leaveIds.length === 0)) {
+    if (!user || (taskIds.length === 0 && leaveIds.length === 0 && shiftIds.length === 0)) {
+      // Still remove local notifications even if no backend IDs
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((notif) => !notificationIdsToRemove.includes(notif.id)));
+      }, 500);
       return;
     }
+    
     const authHeader = getAuthHeader();
     if (!authHeader) {
       return;
@@ -562,16 +594,41 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
             },
           })
         ),
+        ...shiftIds.map((id) =>
+          fetch(`${API_BASE_URL}/shift/notifications/${id}/read`, {
+            method: 'PUT',
+            headers: {
+              Authorization: authHeader,
+            },
+          })
+        ),
       ]);
+      
+      // After successfully marking all as read, remove them from the list
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((notif) => !notificationIdsToRemove.includes(notif.id)));
+      }, 500);
+      
     } catch (error) {
-      console.error('Failed to mark all task notifications as read', error);
+      console.error('Failed to mark all notifications as read', error);
+      // Revert the read status if backend call failed
+      setNotifications((prev) =>
+        prev.map((notif) => {
+          if (notificationIdsToRemove.includes(notif.id)) {
+            return { ...notif, read: false };
+          }
+          return notif;
+        })
+      );
       fetchBackendNotifications();
     }
   }, [fetchBackendNotifications, user]);
 
-  const clearNotification = (notificationId: string) => {
-    setNotifications(prev => prev.filter(notif => notif.id !== notificationId));
-  };
+  const clearNotification = useCallback(async (notificationId: string) => {
+    // First mark as read, then remove
+    await markAsRead(notificationId);
+    // The markAsRead function will handle the removal after marking as read
+  }, [markAsRead]);
 
   const clearAll = () => {
     setNotifications([]);

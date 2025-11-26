@@ -149,8 +149,8 @@ export const getCurrentLocationFast = async (): Promise<LocationData> => {
 
     const options = {
       enableHighAccuracy: true, // Use high accuracy for better results
-      timeout: 10000, // 10 second timeout
-      maximumAge: 10000, // Accept cached location up to 10 seconds old for instant response
+      timeout: 15000, // 15 second timeout (increased for better reliability)
+      maximumAge: 0, // Always get fresh location (no cache)
     };
 
     navigator.geolocation.getCurrentPosition(

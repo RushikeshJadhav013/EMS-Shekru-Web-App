@@ -303,6 +303,8 @@ export default function EmployeeManagement() {
   const [emailError, setEmailError] = useState<string>('');
   const [panCardError, setPanCardError] = useState<string>('');
   const [aadharCardError, setAadharCardError] = useState<string>('');
+  const [panCardDuplicateError, setPanCardDuplicateError] = useState<string>('');
+  const [aadharCardDuplicateError, setAadharCardDuplicateError] = useState<string>('');
 
   // API states
   const [isLoading, setIsLoading] = useState(false);
@@ -383,11 +385,35 @@ export default function EmployeeManagement() {
       setEmailError('');
       return true;
     }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    
+    // More strict email validation
+    // Allows: letters, numbers, dots, hyphens, underscores in local part
+    // Rejects: special characters like *, !, #, $, %, etc.
+    const emailRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    
     if (!emailRegex.test(email)) {
-      setEmailError('Please enter a valid email address');
+      setEmailError('Please enter a valid email address (e.g., user@example.com)');
       return false;
     }
+    
+    // Additional checks
+    if (email.includes('..')) {
+      setEmailError('Email cannot contain consecutive dots');
+      return false;
+    }
+    
+    if (email.startsWith('.') || email.includes('@.') || email.includes('.@')) {
+      setEmailError('Email cannot start or end with a dot around @');
+      return false;
+    }
+    
+    // Check for invalid characters
+    const invalidChars = /[*!#$%^&()+=\[\]{}|\\;:'",<>?/]/;
+    if (invalidChars.test(email)) {
+      setEmailError('Email contains invalid characters (*, !, #, etc.)');
+      return false;
+    }
+    
     setEmailError('');
     return true;
   };
@@ -529,6 +555,10 @@ const formatAadharInput = (value: string) => {
   };
 
   const handleCreateEmployee = async () => {
+    // Clear any previous duplicate errors
+    setPanCardDuplicateError('');
+    setAadharCardDuplicateError('');
+    
     if (!formData.name || !formData.email || !formData.employeeId || !formData.department || !formData.panCard || !formData.aadharCard || !formData.shift || !formData.employeeType) {
       toast({
         title: 'Error',
@@ -606,16 +636,30 @@ const formatAadharInput = (value: string) => {
     } catch (error) {
       console.error('Failed to create employee:', error);
       const rawMessage = error instanceof Error ? error.message : 'Failed to create employee. Please try again.';
-      const friendlyMessage = formatDuplicateErrorMessage(
-        rawMessage,
-        formData.employeeId,
-        formData.email
-      );
-      toast({
-        title: 'Error',
-        description: friendlyMessage,
-        variant: 'destructive'
-      });
+      
+      // Try to handle specific validation errors first
+      const isSpecificError = handleApiValidationError(rawMessage);
+      
+      if (isSpecificError) {
+        // Show a toast notification as well for better visibility
+        toast({
+          title: 'Validation Error',
+          description: 'Please check the form for errors and correct them.',
+          variant: 'destructive'
+        });
+      } else {
+        // If not a specific validation error, show general error message
+        const friendlyMessage = formatDuplicateErrorMessage(
+          rawMessage,
+          formData.employeeId,
+          formData.email
+        );
+        toast({
+          title: 'Error',
+          description: friendlyMessage,
+          variant: 'destructive'
+        });
+      }
     } finally {
       setIsCreating(false);
     }
@@ -623,6 +667,10 @@ const formatAadharInput = (value: string) => {
 
   const handleUpdateEmployee = async () => {
     if (!selectedEmployee) return;
+
+    // Clear any previous duplicate errors
+    setPanCardDuplicateError('');
+    setAadharCardDuplicateError('');
 
     if (!formData.name || !formData.email || !formData.employeeId || !formData.department || !formData.panCard || !formData.aadharCard || !formData.shift) {
       toast({
@@ -745,11 +793,26 @@ const formatAadharInput = (value: string) => {
       });
     } catch (error) {
       console.error('Failed to update employee:', error);
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to update employee. Please try again.',
-        variant: 'destructive'
-      });
+      const rawMessage = error instanceof Error ? error.message : 'Failed to update employee. Please try again.';
+      
+      // Try to handle specific validation errors first
+      const isSpecificError = handleApiValidationError(rawMessage);
+      
+      if (isSpecificError) {
+        // Show a toast notification as well for better visibility
+        toast({
+          title: 'Validation Error',
+          description: 'Please check the form for errors and correct them.',
+          variant: 'destructive'
+        });
+      } else {
+        // If not a specific validation error, show general error message
+        toast({
+          title: 'Error',
+          description: rawMessage,
+          variant: 'destructive'
+        });
+      }
     } finally {
       setIsUpdating(false);
     }
@@ -1074,6 +1137,38 @@ const formatAadharInput = (value: string) => {
     }
   };
 
+  const clearValidationErrors = () => {
+    setPhoneError('');
+    setEmailError('');
+    setPanCardError('');
+    setAadharCardError('');
+    setPanCardDuplicateError('');
+    setAadharCardDuplicateError('');
+  };
+
+  const handleApiValidationError = (errorMessage: string) => {
+    // Clear previous errors
+    clearValidationErrors();
+    
+    // Check for specific validation errors and set them under the appropriate fields
+    if (errorMessage.toLowerCase().includes('phone number already exists')) {
+      setPhoneError('Phone number already exists. Please enter a unique phone number.');
+      return true;
+    }
+    
+    if (errorMessage.toLowerCase().includes('pan card already exists')) {
+      setPanCardDuplicateError('PAN Card already exists. Please enter a unique PAN Card number.');
+      return true;
+    }
+    
+    if (errorMessage.toLowerCase().includes('aadhar card already exists')) {
+      setAadharCardDuplicateError('Aadhar Card already exists. Please enter a unique Aadhar Card number.');
+      return true;
+    }
+    
+    return false; // Return false if no specific validation error was handled
+  };
+
   const resetForm = () => {
     setFormData({
       name: '',
@@ -1097,10 +1192,7 @@ const formatAadharInput = (value: string) => {
     setImageFile(null);
     setImagePreview('');
     setSelectedEmployee(null);
-    setPhoneError('');
-    setEmailError('');
-    setPanCardError('');
-    setAadharCardError('');
+    clearValidationErrors();
   };
 
   const openCreateDialog = () => {
@@ -1610,13 +1702,20 @@ const formatAadharInput = (value: string) => {
                           const panCard = e.target.value.toUpperCase();
                           setFormData((prev) => ({ ...prev, panCard }));
                           validatePanCard(panCard);
+                          // Clear duplicate error when user starts typing
+                          if (panCardDuplicateError) {
+                            setPanCardDuplicateError('');
+                          }
                         }}
                         required
-                        className={`mt-1 ${panCardError ? 'border-red-500' : ''}`}
+                        className={`mt-1 ${panCardError || panCardDuplicateError ? 'border-red-500' : ''}`}
                         placeholder="e.g., ABCDE1234F"
                       />
                       {panCardError && (
                         <p className="text-red-500 text-sm mt-1">{panCardError}</p>
+                      )}
+                      {panCardDuplicateError && (
+                        <p className="text-red-500 text-sm mt-1">{panCardDuplicateError}</p>
                       )}
                     </div>
                     <div>
@@ -1628,13 +1727,20 @@ const formatAadharInput = (value: string) => {
                           const formatted = formatAadharInput(e.target.value);
                           setFormData((prev) => ({ ...prev, aadharCard: formatted }));
                           validateAadharCard(formatted);
+                          // Clear duplicate error when user starts typing
+                          if (aadharCardDuplicateError) {
+                            setAadharCardDuplicateError('');
+                          }
                         }}
                         required
-                        className={`mt-1 ${aadharCardError ? 'border-red-500' : ''}`}
+                        className={`mt-1 ${aadharCardError || aadharCardDuplicateError ? 'border-red-500' : ''}`}
                         placeholder="e.g., 1234-5678-9012"
                       />
                       {aadharCardError && (
                         <p className="text-red-500 text-sm mt-1">{aadharCardError}</p>
+                      )}
+                      {aadharCardDuplicateError && (
+                        <p className="text-red-500 text-sm mt-1">{aadharCardDuplicateError}</p>
                       )}
                     </div>
                     <div>
@@ -2122,13 +2228,20 @@ const formatAadharInput = (value: string) => {
                   const panCard = e.target.value.toUpperCase();
                   setFormData((prev) => ({ ...prev, panCard }));
                   validatePanCard(panCard);
+                  // Clear duplicate error when user starts typing
+                  if (panCardDuplicateError) {
+                    setPanCardDuplicateError('');
+                  }
                 }}
                 required
-                className={`mt-1 ${panCardError ? 'border-red-500' : ''}`}
+                className={`mt-1 ${panCardError || panCardDuplicateError ? 'border-red-500' : ''}`}
                 placeholder="e.g., ABCDE1234F"
               />
               {panCardError && (
                 <p className="text-red-500 text-sm mt-1">{panCardError}</p>
+              )}
+              {panCardDuplicateError && (
+                <p className="text-red-500 text-sm mt-1">{panCardDuplicateError}</p>
               )}
             </div>
             <div>
@@ -2140,13 +2253,20 @@ const formatAadharInput = (value: string) => {
                           const formatted = formatAadharInput(e.target.value);
                           setFormData((prev) => ({ ...prev, aadharCard: formatted }));
                           validateAadharCard(formatted);
+                          // Clear duplicate error when user starts typing
+                          if (aadharCardDuplicateError) {
+                            setAadharCardDuplicateError('');
+                          }
                 }}
                 required
-                className={`mt-1 ${aadharCardError ? 'border-red-500' : ''}`}
+                className={`mt-1 ${aadharCardError || aadharCardDuplicateError ? 'border-red-500' : ''}`}
                 placeholder="e.g., 1234-5678-9012"
               />
               {aadharCardError && (
                 <p className="text-red-500 text-sm mt-1">{aadharCardError}</p>
+              )}
+              {aadharCardDuplicateError && (
+                <p className="text-red-500 text-sm mt-1">{aadharCardDuplicateError}</p>
               )}
             </div>
             <div>

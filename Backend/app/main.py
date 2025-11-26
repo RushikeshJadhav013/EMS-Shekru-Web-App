@@ -12,6 +12,7 @@ from app.routes import (
     attendance_routes,
     leave_routes,
     task_routes,
+    task_comment_routes,
     auth_routes,
     dashboard_routes,
     hiring_routes,
@@ -141,6 +142,7 @@ app.include_router(user_routes.router)
 app.include_router(attendance_routes.router)
 app.include_router(leave_routes.router)
 app.include_router(task_routes.router)
+app.include_router(task_comment_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(dashboard_routes.router)
 app.include_router(hiring_routes.router)
