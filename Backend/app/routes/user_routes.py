@@ -431,3 +431,64 @@ def get_single_employee(user_id: int, db: Session = Depends(get_db),
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return _sanitize_users_response(employee)
+
+
+# ✅ Real-time validation endpoints for form fields
+@router.get("/validate/phone/{phone}")
+def validate_phone_availability(
+    phone: str, 
+    exclude_user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Check if phone number is available (not already taken)"""
+    if not phone or not phone.strip():
+        return {"available": True, "message": ""}
+    
+    existing_user = get_user_by_phone(db, phone.strip())
+    if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
+        return {
+            "available": False, 
+            "message": "Phone number already exists. Please enter a unique phone number."
+        }
+    
+    return {"available": True, "message": ""}
+
+
+@router.get("/validate/pan/{pan_card}")
+def validate_pan_availability(
+    pan_card: str, 
+    exclude_user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Check if PAN card is available (not already taken)"""
+    if not pan_card or not pan_card.strip():
+        return {"available": True, "message": ""}
+    
+    existing_user = get_user_by_pan_card(db, pan_card.strip().upper())
+    if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
+        return {
+            "available": False, 
+            "message": "PAN Card already exists. Please enter a unique PAN Card number."
+        }
+    
+    return {"available": True, "message": ""}
+
+
+@router.get("/validate/aadhar/{aadhar_card}")
+def validate_aadhar_availability(
+    aadhar_card: str, 
+    exclude_user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Check if Aadhar card is available (not already taken)"""
+    if not aadhar_card or not aadhar_card.strip():
+        return {"available": True, "message": ""}
+    
+    existing_user = get_user_by_aadhar_card(db, aadhar_card.strip())
+    if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
+        return {
+            "available": False, 
+            "message": "Aadhar Card already exists. Please enter a unique Aadhar Card number."
+        }
+    
+    return {"available": True, "message": ""}

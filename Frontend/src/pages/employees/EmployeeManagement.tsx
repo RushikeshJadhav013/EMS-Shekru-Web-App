@@ -30,6 +30,7 @@ import {
 import { User } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { apiService, type Employee, type EmployeeData } from '@/lib/api';
+import { useFieldValidation } from '@/hooks/useFieldValidation';
 
 type ShiftType = 'general' | 'morning' | 'afternoon' | 'night' | 'rotational';
 

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from app.db.database import get_db
 from app.db.models import User, Attendance, Leave, Task
+from app.db.models.office_timing import OfficeTiming
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user
 
@@ -39,15 +40,44 @@ def admin_dashboard(db: Session = Depends(get_db)):
         .scalar()
         or 0
     )
-    late_arrivals = (
-        db.query(func.count(Attendance.attendance_id))
+    
+    # Calculate late arrivals using office timing configuration
+    # First get office timings for proper late calculation
+    office_timings_query = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
+    office_timings_map = {}
+    for timing in office_timings_query:
+        key = timing.department if timing.department else "__global__"
+        office_timings_map[key] = timing
+    
+    # Get all attendance records for today with user info for late calculation
+    attendance_for_late_calc = (
+        db.query(Attendance, User)
+        .join(User, User.user_id == Attendance.user_id)
         .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
-        .filter(
-            func.extract('hour', Attendance.check_in) * 60 + func.extract('minute', Attendance.check_in) > 9 * 60 + 30
-        )
-        .scalar()
-        or 0
+        .all()
     )
+    
+    late_arrivals = 0
+    for att, usr in attendance_for_late_calc:
+        # Get applicable office timing (department-specific or global)
+        timing = office_timings_map.get(usr.department) or office_timings_map.get("__global__")
+        
+        if timing:
+            # Calculate late threshold (start_time + grace_minutes)
+            start_hour = timing.start_time.hour
+            start_minute = timing.start_time.minute
+            grace_minutes = timing.check_in_grace_minutes or 0
+            
+            # Convert to total minutes for comparison
+            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes > start_total_minutes:
+                late_arrivals += 1
+        else:
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM
+            if att.check_in.hour > 9 or (att.check_in.hour == 9 and att.check_in.minute > 45):
+                late_arrivals += 1
     pending_leaves = (
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
@@ -94,9 +124,6 @@ def admin_dashboard(db: Session = Depends(get_db)):
     )
     
     # Get office timings for status calculation
-    from app.db.models.office_timing import OfficeTiming
-    from datetime import time as dt_time, timedelta
-    
     office_timings_map = {}
     office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
     for timing in office_timings:
@@ -115,13 +142,29 @@ def admin_dashboard(db: Session = Depends(get_db)):
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
             # Fallback to default 9:30 AM + 15 min grace = 9:45 AM
-            status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 45) else 'late'
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
         recent_activities.append({
             "id": att.attendance_id,
@@ -243,13 +286,29 @@ def hr_dashboard(db: Session = Depends(get_db)):
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
-            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
-            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM (consistent with admin)
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
         recent_activities.append({
             "id": f"attendance-{att.attendance_id}",
@@ -376,13 +435,29 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
-            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
-            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM (consistent with admin)
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
         activities.append({
             "id": f"attendance-{att.attendance_id}",
@@ -542,13 +617,29 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
-            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
-            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM (consistent with admin)
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
         recent_activities.append({
             "id": att.attendance_id,
