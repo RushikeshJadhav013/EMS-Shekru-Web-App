@@ -93,8 +93,8 @@ Updating employee with user_id: 1
 3. Look for a request to `/employees/`
 
 **Check the URL:**
-- ❌ BAD: `PUT http://localhost:8000/employees/` (missing ID)
-- ✅ GOOD: `PUT http://localhost:8000/employees/1` (has ID)
+- ❌ BAD: `PUT http://172.105.56.142/employees/` (missing ID)
+- ✅ GOOD: `PUT http://172.105.56.142/employees/1` (has ID)
 
 **Check the Status:**
 - 200 OK = Success!

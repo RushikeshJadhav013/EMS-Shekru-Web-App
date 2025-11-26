@@ -12,7 +12,7 @@ The `openEditDialog` function wasn't extracting all fields with proper fallbacks
 
 ### Issue 2: Profile Photo Not Displayed
 - Backend stores photo path as: `static/profile_photos/EMP001_20251031120000.jpg`
-- Frontend was not constructing the full URL: `http://localhost:8000/static/...`
+- Frontend was not constructing the full URL: `http://172.105.56.142/static/...`
 - Backend wasn't serving static files
 
 ### Issue 3: Field Name Mismatches
@@ -43,8 +43,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 **What This Does:**
 - Creates static directories if they don't exist
-- Serves files from `static/` folder at `http://localhost:8000/static/`
-- Profile photos accessible at: `http://localhost:8000/static/profile_photos/...`
+- Serves files from `static/` folder at `http://172.105.56.142/static/`
+- Profile photos accessible at: `http://172.105.56.142/static/profile_photos/...`
 
 ### 2. Frontend: Fixed Field Extraction in Edit Dialog
 
@@ -94,7 +94,7 @@ const openEditDialog = (employee: Employee) => {
   
   // ✅ If photo path exists and doesn't start with http, prepend backend URL
   if (photoUrl && !photoUrl.startsWith('http')) {
-    photoUrl = `http://localhost:8000/${photoUrl}`;
+    photoUrl = `http://172.105.56.142/${photoUrl}`;
   }
   
   console.log('Extracted photo URL:', photoUrl);
@@ -142,10 +142,10 @@ useEffect(() => {
       const mappedData = data.map(toCamelCase).map((emp: any) => {
         // ✅ Fix photo URLs to include backend base URL
         if (emp.profilePhoto && !emp.profilePhoto.startsWith('http')) {
-          emp.profilePhoto = `http://localhost:8000/${emp.profilePhoto}`;
+          emp.profilePhoto = `http://172.105.56.142/${emp.profilePhoto}`;
         }
         if (emp.photoUrl && !emp.photoUrl.startsWith('http')) {
-          emp.photoUrl = `http://localhost:8000/${emp.photoUrl}`;
+          emp.photoUrl = `http://172.105.56.142/${emp.photoUrl}`;
         }
         // Also set photoUrl from profilePhoto if not set
         if (!emp.photoUrl && emp.profilePhoto) {
@@ -182,7 +182,7 @@ useEffect(() => {
    ↓
 3. Backend stores path in DB: "static/profile_photos/EMP001_20251031120000.jpg"
    ↓
-4. Backend serves file at: http://localhost:8000/static/profile_photos/EMP001_20251031120000.jpg
+4. Backend serves file at: http://172.105.56.142/static/profile_photos/EMP001_20251031120000.jpg
 ```
 
 ### Frontend Photo Display Flow:
@@ -191,9 +191,9 @@ useEffect(() => {
    ↓
 2. toCamelCase converts to: { profilePhoto: "static/profile_photos/..." }
    ↓
-3. Frontend prepends URL: "http://localhost:8000/static/profile_photos/..."
+3. Frontend prepends URL: "http://172.105.56.142/static/profile_photos/..."
    ↓
-4. Image displayed in <img src="http://localhost:8000/static/..." />
+4. Image displayed in <img src="http://172.105.56.142/static/..." />
 ```
 
 ## Field Mapping Reference
@@ -238,7 +238,7 @@ npm run dev
 4. Look for: `"Loaded employees:"` log
 5. Verify `photoUrl` field has full URL like:
    ```
-   photoUrl: "http://localhost:8000/static/profile_photos/EMP001_20251031120000.jpg"
+   photoUrl: "http://172.105.56.142/static/profile_photos/EMP001_20251031120000.jpg"
    ```
 
 ### 5. Test Edit Form
@@ -266,7 +266,7 @@ npm run dev
 #### Check 1: Backend Serving Static Files
 ```bash
 # Test if backend serves static files
-curl http://localhost:8000/static/
+curl http://172.105.56.142/static/
 ```
 Should return: `{"detail":"Not Found"}` (normal, means static route exists)
 
@@ -282,7 +282,7 @@ Open browser console and check:
 ```javascript
 // After loading employees
 console.log(employees[0].photoUrl);
-// Should show: "http://localhost:8000/static/profile_photos/..."
+// Should show: "http://172.105.56.142/static/profile_photos/..."
 ```
 
 #### Check 4: Network Tab
@@ -304,7 +304,7 @@ When clicking "Edit", check console for:
 Employee data: {id: 1, employeeId: "EMP001", name: "John", ...}
 Extracted id (user_id): 1
 Extracted employeeId: EMP001
-Extracted photo URL: http://localhost:8000/static/...
+Extracted photo URL: http://172.105.56.142/static/...
 =======================
 ```
 
@@ -378,7 +378,7 @@ Should show all fields including:
 ### After Fix:
 ```json
 {
-  "photoUrl": "http://localhost:8000/static/profile_photos/EMP001_20251031120000.jpg"
+  "photoUrl": "http://172.105.56.142/static/profile_photos/EMP001_20251031120000.jpg"
 }
 ```
 **Result:** ✅ Photo displays correctly

@@ -155,7 +155,7 @@ def remove_employee(user_id: int, db: Session = Depends(get_db),
 ### Step 3: API Call
 ```typescript
 // API service makes DELETE request
-const response = await fetch(`http://localhost:8000/employees/${userId}`, {
+const response = await fetch(`http://172.105.56.142/employees/${userId}`, {
   method: 'DELETE',
   headers: {
     'Authorization': `Bearer ${token}`

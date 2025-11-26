@@ -3,7 +3,7 @@
 ## Problem
 When trying to update an employee, the API call was failing with:
 ```
-PUT http://localhost:8000/employees/ 405 (Method Not Allowed)
+PUT http://172.105.56.142/employees/ 405 (Method Not Allowed)
 ```
 
 The URL was missing the `user_id`, resulting in `PUT /employees/` instead of `PUT /employees/{user_id}`.
@@ -73,13 +73,13 @@ console.log('Updating employee with user_id:', userIdToUpdate);
 
 ### Before Fix
 ```
-PUT http://localhost:8000/employees/
+PUT http://172.105.56.142/employees/
 Status: 405 Method Not Allowed
 ```
 
 ### After Fix
 ```
-PUT http://localhost:8000/employees/123
+PUT http://172.105.56.142/employees/123
 Status: 200 OK
 ```
 
@@ -115,7 +115,7 @@ Updating employee with user_id: 123
 
 ### Network Request
 ```
-Request URL: http://localhost:8000/employees/123
+Request URL: http://172.105.56.142/employees/123
 Request Method: PUT
 Content-Type: application/json
 ```

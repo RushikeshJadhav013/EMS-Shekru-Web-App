@@ -154,7 +154,7 @@ if (!userIdToUpdate) {
 console.log('Updating employee with user_id:', userIdToUpdate); // ✅ Logs: '123'
 
 await apiService.updateEmployee(userIdToUpdate, employeeData);
-// ✅ Calls: PUT http://localhost:8000/employees/123
+// ✅ Calls: PUT http://172.105.56.142/employees/123
 ```
 
 ## Testing Instructions
@@ -174,7 +174,7 @@ In the console, expand the first employee object and verify it has an `id` field
 2. Check console for: `Updating employee with user_id: 123`
 3. Modify employee details
 4. Click "Update Employee"
-5. Check Network tab: `PUT http://localhost:8000/employees/123`
+5. Check Network tab: `PUT http://172.105.56.142/employees/123`
 6. Should see success toast!
 
 ## Expected Console Output

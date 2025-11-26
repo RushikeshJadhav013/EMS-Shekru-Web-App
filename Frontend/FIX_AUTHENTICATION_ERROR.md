@@ -3,7 +3,7 @@
 ## Problem
 After fixing the user_id issue, the employee update API was failing with:
 ```
-PUT http://localhost:8000/employees/2 403 (Forbidden)
+PUT http://172.105.56.142/employees/2 403 (Forbidden)
 Error: Not authenticated
 ```
 

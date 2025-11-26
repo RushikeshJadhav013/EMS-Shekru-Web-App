@@ -34,8 +34,8 @@ export const useFieldValidation = (options: UseFieldValidationOptions) => {
       try {
         const encodedValue = encodeURIComponent(value.trim());
         const url = excludeUserId 
-          ? `http://localhost:8000/${endpoint}/${encodedValue}?exclude_user_id=${excludeUserId}`
-          : `http://localhost:8000/${endpoint}/${encodedValue}`;
+          ? `http://172.105.56.142/${endpoint}/${encodedValue}?exclude_user_id=${excludeUserId}`
+          : `http://172.105.56.142/${endpoint}/${encodedValue}`;
 
         const response = await fetch(url);
         

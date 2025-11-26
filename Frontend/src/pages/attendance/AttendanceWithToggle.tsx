@@ -977,7 +977,7 @@ const AttendanceWithToggle: React.FC = () => {
                                   }}
                                 >
                                   <img
-                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${record.checkInSelfie}`}
+                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://172.105.56.142'}${record.checkInSelfie}`}
                                     alt="Selfie"
                                     className="w-full h-full object-cover"
                                     onError={(e) => {
@@ -1312,7 +1312,7 @@ const AttendanceWithToggle: React.FC = () => {
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkInSelfie ? (
                   <img 
-                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${selectedRecord.checkInSelfie}`}
+                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://172.105.56.142'}${selectedRecord.checkInSelfie}`}
                     alt="Check-in selfie" 
                     className="w-full h-full object-cover"
                   />
@@ -1338,7 +1338,7 @@ const AttendanceWithToggle: React.FC = () => {
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkOutSelfie ? (
                   <img 
-                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${selectedRecord.checkOutSelfie}`}
+                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://172.105.56.142'}${selectedRecord.checkOutSelfie}`}
                     alt="Check-out selfie" 
                     className="w-full h-full object-cover"
                   />

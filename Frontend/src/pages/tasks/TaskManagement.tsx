@@ -66,7 +66,7 @@ import {
 import { format } from 'date-fns';
 import { apiService } from '@/lib/api';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://172.105.56.142';
 
 const ROLE_ORDER: UserRole[] = ['admin', 'hr', 'manager', 'team_lead', 'employee'];
 

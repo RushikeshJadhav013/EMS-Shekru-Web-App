@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://172.105.56.142';
 
 interface EmployeeData {
   name: string;
