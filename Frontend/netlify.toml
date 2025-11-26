@@ -11,7 +11,8 @@
     X-Frame-Options = "DENY"
     X-XSS-Protection = "1; mode=block"
     X-Content-Type-Options = "nosniff"
-    Content-Security-Policy = "upgrade-insecure-requests; connect-src 'self' http://172.105.56.142 https://172.105.56.142"
+    Content-Security-Policy = "connect-src 'self' http://172.105.56.142 https://172.105.56.142 'unsafe-inline'; img-src 'self' data: http://172.105.56.142 https://172.105.56.142"
+    Referrer-Policy = "no-referrer-when-downgrade"
 
 [[headers]]
   for = "/assets/*"
