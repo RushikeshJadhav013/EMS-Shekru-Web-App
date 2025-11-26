@@ -1,0 +1,319 @@
+# ===========================================
+# GENERAL
+# ===========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.log
+*.tmp
+*.temp
+*~
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===========================================
+# FRONTEND (React/Node.js)
+# ===========================================
+
+# Dependencies
+Frontend/node_modules/
+Frontend/npm-debug.log*
+Frontend/yarn-debug.log*
+Frontend/yarn-error.log*
+Frontend/pnpm-debug.log*
+Frontend/lerna-debug.log*
+
+# Build outputs
+Frontend/dist/
+Frontend/build/
+Frontend/.next/
+Frontend/out/
+
+# Environment variables
+Frontend/.env
+Frontend/.env.local
+Frontend/.env.development.local
+Frontend/.env.test.local
+Frontend/.env.production.local
+
+# Cache directories
+Frontend/.npm
+Frontend/.eslintcache
+Frontend/.parcel-cache
+Frontend/.cache/
+Frontend/.vite/
+
+# Runtime data
+Frontend/pids
+Frontend/*.pid
+Frontend/*.seed
+Frontend/*.pid.lock
+
+# Coverage directory used by tools like istanbul
+Frontend/coverage/
+Frontend/*.lcov
+
+# nyc test coverage
+Frontend/.nyc_output
+
+# Storybook build outputs
+Frontend/storybook-static
+
+# ===========================================
+# BACKEND (Python/FastAPI)
+# ===========================================
+
+# Python
+Backend/__pycache__/
+Backend/*.py[cod]
+Backend/*$py.class
+Backend/*.so
+Backend/.Python
+Backend/build/
+Backend/develop-eggs/
+Backend/dist/
+Backend/downloads/
+Backend/eggs/
+Backend/.eggs/
+Backend/lib/
+Backend/lib64/
+Backend/parts/
+Backend/sdist/
+Backend/var/
+Backend/wheels/
+Backend/share/python-wheels/
+Backend/*.egg-info/
+Backend/.installed.cfg
+Backend/*.egg
+Backend/MANIFEST
+
+# Virtual environments
+Backend/venv/
+Backend/env/
+Backend/ENV/
+Backend/env.bak/
+Backend/venv.bak/
+Backend/.venv/
+
+# Environment variables
+Backend/.env
+Backend/.env.local
+Backend/.env.development
+Backend/.env.production
+Backend/.env.testing
+
+# Database files
+Backend/*.db
+Backend/*.sqlite
+Backend/*.sqlite3
+Backend/database.db
+Backend/test.db
+
+# Alembic
+Backend/alembic/versions/*.py
+!Backend/alembic/versions/__init__.py
+
+# PyInstaller
+Backend/*.manifest
+Backend/*.spec
+
+# Unit test / coverage reports
+Backend/htmlcov/
+Backend/.tox/
+Backend/.nox/
+Backend/.coverage
+Backend/.coverage.*
+Backend/.cache
+Backend/nosetests.xml
+Backend/coverage.xml
+Backend/*.cover
+Backend/*.py,cover
+Backend/.hypothesis/
+Backend/.pytest_cache/
+Backend/cover/
+
+# Jupyter Notebook
+Backend/.ipynb_checkpoints
+
+# IPython
+Backend/profile_default/
+Backend/ipython_config.py
+
+# pyenv
+Backend/.python-version
+
+# pipenv
+Backend/Pipfile.lock
+
+# poetry
+Backend/poetry.lock
+
+# Celery
+Backend/celerybeat-schedule
+Backend/celerybeat.pid
+
+# SageMath parsed files
+Backend/*.sage.py
+
+# Spyder project settings
+Backend/.spyderproject
+Backend/.spyproject
+
+# Rope project settings
+Backend/.ropeproject
+
+# mkdocs documentation
+Backend/site/
+
+# mypy
+Backend/.mypy_cache/
+Backend/.dmypy.json
+Backend/dmypy.json
+
+# Pyre type checker
+Backend/.pyre/
+
+# pytype static type analyzer
+Backend/.pytype/
+
+# Static files (if using Django)
+Backend/staticfiles/
+Backend/static/
+
+# Media files
+Backend/media/
+Backend/uploads/
+
+# ===========================================
+# DEPLOYMENT & INFRASTRUCTURE
+# ===========================================
+
+# Docker
+Dockerfile.prod
+docker-compose.prod.yml
+.dockerignore
+
+# Kubernetes
+k8s/
+*.yaml
+*.yml
+!docker-compose.yml
+!docker-compose.dev.yml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# AWS
+.aws/
+
+# ===========================================
+# SECURITY & SECRETS
+# ===========================================
+
+# API Keys and secrets
+*.pem
+*.key
+*.crt
+*.p12
+secrets.json
+config/secrets.json
+
+# SSL certificates
+ssl/
+certs/
+
+# ===========================================
+# LOGS & MONITORING
+# ===========================================
+
+# Log files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ===========================================
+# TEMPORARY & BACKUP FILES
+# ===========================================
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+
+# Compressed files
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# ===========================================
+# OS SPECIFIC
+# ===========================================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
