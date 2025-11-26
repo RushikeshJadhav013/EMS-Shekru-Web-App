@@ -131,7 +131,6 @@ const Login: React.FC = () => {
           name: userData.name,
           role: userData.role, // Pass as-is, AuthContext will map it correctly
           access_token: userData.access_token,
-          token_type: userData.token_type,
           department: userData.department,
           designation: userData.designation,
           joining_date: userData.joining_date
