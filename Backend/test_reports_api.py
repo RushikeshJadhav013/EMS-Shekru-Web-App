@@ -3,7 +3,7 @@ Test script to verify reports API endpoints work correctly
 """
 import requests
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://172.105.56.142"
 
 # Test without authentication first
 def test_reports():

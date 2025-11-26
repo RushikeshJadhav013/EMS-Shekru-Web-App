@@ -6,7 +6,7 @@ The employee update functionality has been migrated from using `employee_id` to 
 ## API Endpoint
 
 ### Update Employee
-**Endpoint:** `PUT http://127.0.0.1:8000/employees/{user_id}`
+**Endpoint:** `PUT http://172.105.56.142/employees/{user_id}`
 
 **Path Parameters:**
 - `user_id` (integer, required): The unique user ID (not employee_id)
@@ -177,7 +177,7 @@ npm run dev
 ### 4. Verify API Call
 Open browser DevTools → Network tab:
 - Method: `PUT`
-- URL: `http://127.0.0.1:8000/employees/{user_id}`
+- URL: `http://172.105.56.142/employees/{user_id}`
 - Request Headers: `Content-Type: application/json`
 - Request Body: JSON object with employee data
 
@@ -283,6 +283,6 @@ origins = [
 ## Support
 
 For issues or questions:
-- Check backend API documentation: `http://127.0.0.1:8000/docs`
+- Check backend API documentation: `http://172.105.56.142/docs`
 - Review backend logs for detailed error messages
 - Verify database connection and data integrity

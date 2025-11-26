@@ -6,14 +6,14 @@ The frontend authentication system has been configured to work with your new bac
 ## API Endpoints
 
 ### 1. Send OTP
-**Endpoint:** `POST http://127.0.0.1:8000/auth/send-otp?email={email}`
+**Endpoint:** `POST http://172.105.56.142/auth/send-otp?email={email}`
 
 **Query Parameters:**
 - `email` (string, required): User's email address
 
 **Example:**
 ```
-POST http://127.0.0.1:8000/auth/send-otp?email=user@example.com
+POST http://172.105.56.142/auth/send-otp?email=user@example.com
 ```
 
 **Success Response (200/201):**
@@ -31,7 +31,7 @@ POST http://127.0.0.1:8000/auth/send-otp?email=user@example.com
 ```
 
 ### 2. Verify OTP
-**Endpoint:** `POST http://127.0.0.1:8000/auth/verify-otp?email={email}&otp={otp}`
+**Endpoint:** `POST http://172.105.56.142/auth/verify-otp?email={email}&otp={otp}`
 
 **Query Parameters:**
 - `email` (string, required): User's email address
@@ -39,7 +39,7 @@ POST http://127.0.0.1:8000/auth/send-otp?email=user@example.com
 
 **Example:**
 ```
-POST http://127.0.0.1:8000/auth/verify-otp?email=user@example.com&otp=123456
+POST http://172.105.56.142/auth/verify-otp?email=user@example.com&otp=123456
 ```
 
 **Success Response (200/201):**
@@ -149,8 +149,8 @@ The API endpoints are configured in:
 ```typescript
 // src/pages/Login.tsx
 const API_ENDPOINTS = {
-  sendOtp: 'http://127.0.0.1:8000/auth/send-otp',
-  verifyOtp: 'http://127.0.0.1:8000/auth/verify-otp'
+  sendOtp: 'http://172.105.56.142/auth/send-otp',
+  verifyOtp: 'http://172.105.56.142/auth/verify-otp'
 };
 ```
 
@@ -166,7 +166,7 @@ const API_ENDPOINTS = {
 ## Troubleshooting
 
 ### Issue: "Unable to connect to the server"
-**Solution:** Make sure the backend server is running on `http://127.0.0.1:8000`
+**Solution:** Make sure the backend server is running on `http://172.105.56.142`
 
 ### Issue: "Invalid or expired OTP"
 **Solution:** 
@@ -190,4 +190,4 @@ const API_ENDPOINTS = {
 ## Support
 
 For issues or questions, contact the development team or refer to the backend API documentation at:
-`http://127.0.0.1:8000/docs`
+`http://172.105.56.142/docs`

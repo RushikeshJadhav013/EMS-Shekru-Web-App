@@ -5,7 +5,7 @@
 ### Step 1: Test Backend API Directly
 Open your browser and go to:
 ```
-http://127.0.0.1:8000/employees/
+http://172.105.56.142/employees/
 ```
 
 **Expected Response:**
@@ -150,17 +150,17 @@ if (key === 'user_id') {
 
 ### Check if backend is running:
 ```bash
-curl http://127.0.0.1:8000/
+curl http://172.105.56.142/
 ```
 
 ### Check employees endpoint:
 ```bash
-curl http://127.0.0.1:8000/employees/
+curl http://172.105.56.142/employees/
 ```
 
 ### Check specific employee:
 ```bash
-curl http://127.0.0.1:8000/employees/1
+curl http://172.105.56.142/employees/1
 ```
 
 ## What to Share if Still Broken

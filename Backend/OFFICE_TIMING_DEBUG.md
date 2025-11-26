@@ -93,10 +93,10 @@ The backend stores times in UTC and converts to IST for comparison:
 
 ```bash
 # Get today's attendance
-curl http://127.0.0.1:8000/attendance/today
+curl http://172.105.56.142/attendance/today
 
 # Check office hours
-curl http://127.0.0.1:8000/attendance/office-hours
+curl http://172.105.56.142/attendance/office-hours
 ```
 
 ## Common Issues

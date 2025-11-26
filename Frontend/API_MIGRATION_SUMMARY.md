@@ -224,7 +224,7 @@ npm run dev
 ## Contact & Support
 
 For questions or issues:
-- Check backend API docs: `http://127.0.0.1:8000/docs`
+- Check backend API docs: `http://172.105.56.142/docs`
 - Review console logs for detailed errors
 - Check network tab in browser DevTools
 - Verify backend server is running

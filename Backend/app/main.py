@@ -80,7 +80,7 @@ origins = [
     "http://localhost:5173",    # Vite dev server
     "http://127.0.0.1:5173",   # Vite dev server alternative
     "http://localhost:8000",    # Direct backend access
-    "http://127.0.0.1:8000",   # Direct backend access alternative
+    "http://172.105.56.142",   # Direct backend access alternative
     "http://localhost:8080",    # Common frontend port
     "http://127.0.0.1:8080",   # Common frontend port alternative
     "http://localhost:4173",    # Vite preview server

@@ -20,8 +20,8 @@ import { Language } from '@/i18n/translations';
 
 // API endpoints
 const API_ENDPOINTS = {
-  sendOtp: 'http://127.0.0.1:8000/auth/send-otp',
-  verifyOtp: 'http://127.0.0.1:8000/auth/verify-otp'
+  sendOtp: 'http://172.105.56.142/auth/send-otp',
+  verifyOtp: 'http://172.105.56.142/auth/verify-otp'
 };
 
 // Configure axios defaults

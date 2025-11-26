@@ -139,7 +139,7 @@ python test_user_status_validation.py
 ### API Testing with curl
 ```bash
 # Test OTP request for inactive user
-curl -X POST "http://127.0.0.1:8000/auth/send-otp?email=inactive@example.com"
+curl -X POST "http://172.105.56.142/auth/send-otp?email=inactive@example.com"
 
 # Expected response: 403 Forbidden
 # {"detail":"Account is inactive. Please contact your administrator for assistance."}

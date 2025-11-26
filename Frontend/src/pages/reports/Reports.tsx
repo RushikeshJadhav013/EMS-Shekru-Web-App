@@ -99,7 +99,7 @@ export default function Reports() {
 
   const loadDepartments = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/reports/departments', {
+      const response = await fetch('http://172.105.56.142/reports/departments', {
         headers: {
           'Authorization': localStorage.getItem('token') || '',
         },
@@ -143,9 +143,9 @@ export default function Reports() {
 
       // Fetch all data in parallel
       const [empResponse, deptResponse, summaryResponse] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/reports/employee-performance?${empParams}`, { headers }),
-        fetch(`http://127.0.0.1:8000/reports/department-metrics?${deptParams}`, { headers }),
-        fetch(`http://127.0.0.1:8000/reports/executive-summary?${summaryParams}`, { headers }),
+        fetch(`http://172.105.56.142/reports/employee-performance?${empParams}`, { headers }),
+        fetch(`http://172.105.56.142/reports/department-metrics?${deptParams}`, { headers }),
+        fetch(`http://172.105.56.142/reports/executive-summary?${summaryParams}`, { headers }),
       ]);
 
       // Handle employee performance response
