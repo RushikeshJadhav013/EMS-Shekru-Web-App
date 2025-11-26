@@ -11,6 +11,7 @@
     X-Frame-Options = "DENY"
     X-XSS-Protection = "1; mode=block"
     X-Content-Type-Options = "nosniff"
+    Content-Security-Policy = "upgrade-insecure-requests; connect-src 'self' http://172.105.56.142 https://172.105.56.142"
 
 [[headers]]
   for = "/assets/*"
@@ -31,6 +32,12 @@
   for = "/*.json"
   [headers.values]
     Content-Type = "application/json"
+
+[[redirects]]
+  from = "/api/*"
+  to = "http://172.105.56.142/:splat"
+  status = 200
+  force = true
 
 [[redirects]]
   from = "/*"
