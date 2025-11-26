@@ -20,6 +20,13 @@ def send_otp(email: str, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # ✅ Check if user is active before sending OTP
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403, 
+            detail="Account is inactive. Please contact your administrator for assistance."
+        )
+    
     # Generate OTP based on environment
     otp = generate_otp(email)
     
@@ -49,6 +56,13 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # ✅ Check if user is active before allowing login
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403, 
+            detail="Account is inactive. Please contact your administrator for assistance."
+        )
     
     # Convert role enum to string value
     role_value = user.role.value if hasattr(user.role, 'value') else str(user.role)

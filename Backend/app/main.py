@@ -1,9 +1,6 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
-from fastapi.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy import text
 from app.db import models
 from app.db.database import engine
@@ -55,49 +52,10 @@ except Exception as _e:
     # Fail-soft: app will still boot; detailed error returned via middleware if used
     pass
 
-# Custom middleware to add CORS headers to all responses
-class CORSMiddlewareWithErrorHandling(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # Handle preflight requests
-        if request.method == 'OPTIONS':
-            response = JSONResponse(
-                content={"message": "Preflight request successful"},
-                status_code=200,
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                    "Access-Control-Allow-Headers": "*",
-                }
-            )
-            return response
-
-        try:
-            response = await call_next(request)
-            # Add CORS headers to all successful responses
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            return response
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return JSONResponse(
-                status_code=500,
-                content={"detail": str(e)},
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                    "Access-Control-Allow-Headers": "*",
-                }
-            )
-
-# Initialize FastAPI with middleware
+# Initialize FastAPI
 app = FastAPI(
     title="Employee Management System",
-    version="1.0",
-    middleware=[
-        Middleware(CORSMiddlewareWithErrorHandling)
-    ]
+    version="1.0"
 )
 
 # ✅ Serve static files (profile photos, selfies, etc.)
@@ -122,18 +80,21 @@ origins = [
     "http://127.0.0.1:8000",   # Direct backend access alternative
     "http://localhost:8080",    # Common frontend port
     "http://127.0.0.1:8080",   # Common frontend port alternative
-    "*"                         # Allow all origins (temporary for development)
+    "http://localhost:4173",    # Vite preview server
+    "http://127.0.0.1:4173",   # Vite preview server alternative
+    "https://lovely-pithivier-cfb614.netlify.app",  # Production deployment
+    "*"                         # Allow all origins (for development)
 ]
 
 # Configure CORS middleware with detailed settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=["*"],  # Allow all origins for development
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
-    expose_headers=["*"],  # Expose all headers
-    max_age=600  # Cache preflight requests for 10 minutes
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600
 )
 
 
@@ -162,9 +123,19 @@ async def test_cors():
     return {
         "status": "success",
         "message": "CORS is working! If you can see this, your frontend can communicate with the backend.",
-        "cors_headers": {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "*"
-        }
+        "timestamp": "2024-01-01T00:00:00Z",
+        "endpoints_tested": [
+            "/tasks/notifications",
+            "/shift/notifications"
+        ]
     }
+
+@app.options("/tasks/notifications", tags=["Test"])
+async def test_task_notifications_cors():
+    """Preflight handler for task notifications"""
+    return {"message": "CORS preflight successful for task notifications"}
+
+@app.options("/shift/notifications", tags=["Test"])
+async def test_shift_notifications_cors():
+    """Preflight handler for shift notifications"""
+    return {"message": "CORS preflight successful for shift notifications"}
