@@ -74,6 +74,7 @@ Frontend/storybook-static
 
 # Python
 Backend/__pycache__/
+Backend/**/__pycache__/
 Backend/*.py[cod]
 Backend/*$py.class
 Backend/*.so
