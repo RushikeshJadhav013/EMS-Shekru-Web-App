@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # HTTPS Setup Script for Backend Server
-# Run this on your server (172.105.56.142)
+# Run this on your server (staffly.space)
 
 echo "🔒 Setting up HTTPS for backend server..."
 
@@ -12,7 +12,7 @@ sudo apt install -y certbot python3-certbot-nginx
 # Get domain name or use IP
 read -p "Enter your domain name (or press Enter to use IP): " DOMAIN
 if [ -z "$DOMAIN" ]; then
-    DOMAIN="172.105.56.142"
+    DOMAIN="staffly.space"
     echo "⚠️  Using IP address. Consider getting a domain name for better SSL support."
 fi
 
@@ -37,7 +37,7 @@ sudo ln -sf /etc/nginx/sites-available/backend /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 
 # Get SSL certificate (only works with domain names)
-if [ "$DOMAIN" != "172.105.56.142" ]; then
+if [ "$DOMAIN" != "staffly.space" ]; then
     sudo certbot --nginx -d $DOMAIN
 else
     echo "⚠️  Cannot get SSL certificate for IP address."

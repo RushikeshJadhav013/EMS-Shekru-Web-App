@@ -11,7 +11,7 @@
     X-Frame-Options = "DENY"
     X-XSS-Protection = "1; mode=block"
     X-Content-Type-Options = "nosniff"
-    Content-Security-Policy = "connect-src 'self' http://172.105.56.142 https://172.105.56.142 'unsafe-inline'; img-src 'self' data: http://172.105.56.142 https://172.105.56.142"
+    Content-Security-Policy = "connect-src 'self' https://staffly.space https://staffly.space 'unsafe-inline'; img-src 'self' data: https://staffly.space https://staffly.space"
     Referrer-Policy = "no-referrer-when-downgrade"
 
 [[headers]]
@@ -36,7 +36,7 @@
 
 [[redirects]]
   from = "/api/*"
-  to = "http://172.105.56.142/:splat"
+  to = "https://staffly.space/:splat"
   status = 200
   force = true
 

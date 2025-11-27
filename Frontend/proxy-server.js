@@ -15,7 +15,7 @@ app.use(cors({
 
 // Proxy configuration
 const proxyOptions = {
-  target: 'http://172.105.56.142',
+  target: 'https://staffly.space',
   changeOrigin: true,
   secure: false,
   logLevel: 'debug',
@@ -32,7 +32,7 @@ app.use('/', createProxyMiddleware(proxyOptions));
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🔄 Proxy server running on http://localhost:${PORT}`);
-  console.log(`📡 Proxying requests to: http://172.105.56.142`);
+  console.log(`📡 Proxying requests to: https://staffly.space`);
 });
 
 // For production with self-signed certificate (HTTPS)
@@ -46,6 +46,6 @@ const httpsOptions = {
 const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
 https.createServer(httpsOptions, app).listen(HTTPS_PORT, () => {
   console.log(`🔒 HTTPS Proxy server running on https://localhost:${HTTPS_PORT}`);
-  console.log(`📡 Proxying requests to: http://172.105.56.142`);
+  console.log(`📡 Proxying requests to: https://staffly.space`);
 });
 */

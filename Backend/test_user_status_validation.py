@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 
 # Configuration
-BASE_URL = "http://172.105.56.142"
+BASE_URL = "https://staffly.space"
 TEST_EMAIL = "test@example.com"  # Replace with a test user email
 
 def test_user_status_validation():
@@ -98,7 +98,7 @@ def check_database_status():
             return False
     except requests.exceptions.RequestException as e:
         print(f"❌ Cannot connect to API: {e}")
-        print("Please ensure the backend server is running on http://172.105.56.142")
+        print("Please ensure the backend server is running on https://staffly.space")
         return False
 
 def main():

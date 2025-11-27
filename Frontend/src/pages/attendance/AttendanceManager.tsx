@@ -106,7 +106,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     if (!url) return '';
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
     const normalized = url.startsWith('/') ? url : `/${url}`;
-    return `http://172.105.56.142${normalized}`;
+    return `https://staffly.space${normalized}`;
   };
 
   useEffect(() => {
@@ -160,7 +160,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
   const loadEmployees = async () => {
     try {
-      const res = await fetch('http://172.105.56.142/employees');
+      const res = await fetch('https://staffly.space/employees');
       if (!res.ok) throw new Error(`Failed to load employees: ${res.status}`);
       const data = await res.json();
       const departmentSet = new Set<string>();
@@ -187,7 +187,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     if (!isAdmin) return;
     setOfficeFormLoading(true);
     try {
-      const res = await fetch('http://172.105.56.142/attendance/office-hours', {
+      const res = await fetch('https://staffly.space/attendance/office-hours', {
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeaders(),
@@ -239,7 +239,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         check_in_grace_minutes: resolveGraceValue(globalTimingForm.checkInGrace),
         check_out_grace_minutes: resolveGraceValue(globalTimingForm.checkOutGrace),
       };
-      const res = await fetch('http://172.105.56.142/attendance/office-hours', {
+      const res = await fetch('https://staffly.space/attendance/office-hours', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -281,7 +281,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         check_in_grace_minutes: resolveGraceValue(departmentTimingForm.checkInGrace),
         check_out_grace_minutes: resolveGraceValue(departmentTimingForm.checkOutGrace),
       };
-      const res = await fetch('http://172.105.56.142/attendance/office-hours', {
+      const res = await fetch('https://staffly.space/attendance/office-hours', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -324,7 +324,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
     try {
       setOfficeFormLoading(true);
-      const res = await fetch(`http://172.105.56.142/attendance/office-hours/${timing.id}`, {
+      const res = await fetch(`https://staffly.space/attendance/office-hours/${timing.id}`, {
         method: 'DELETE',
         headers: {
           ...getAuthHeaders(),
@@ -359,7 +359,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
   const fetchSummary = async () => {
     try {
-      const res = await fetch('http://172.105.56.142/attendance/summary');
+      const res = await fetch('https://staffly.space/attendance/summary');
       if (!res.ok) throw new Error(`Failed to load summary: ${res.status}`);
       const data = await res.json();
       setSummary(data);
@@ -378,7 +378,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     (async () => {
       try {
         const query = targetDate ? `?date=${encodeURIComponent(targetDate)}` : '';
-        const res = await fetch(`http://172.105.56.142/attendance/today${query}`);
+        const res = await fetch(`https://staffly.space/attendance/today${query}`);
         
         if (!res.ok) {
           const errorText = await res.text();
@@ -649,7 +649,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         params.append('end_date', format(endDate, 'yyyy-MM-dd'));
       }
 
-      const apiUrl = `http://172.105.56.142/attendance/download/${exportType}?${params.toString()}`;
+      const apiUrl = `https://staffly.space/attendance/download/${exportType}?${params.toString()}`;
       const res = await fetch(apiUrl, { method: 'GET' });
 
       if (!res.ok) {

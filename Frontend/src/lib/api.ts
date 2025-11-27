@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://172.105.56.142';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://staffly.space';
 
 interface EmployeeData {
   name: string;
