@@ -85,8 +85,8 @@ origins = [
     "http://127.0.0.1:8080",   # Common frontend port alternative
     "http://localhost:4173",    # Vite preview server
     "http://127.0.0.1:4173",   # Vite preview server alternative
-    "https://lovely-pithivier-cfb614.netlify.app",  # Production deployment
-    "*"                         # Allow all origins (for development)
+    "https://stafflyhrms.netlify.app/login",  # Production deployment
+    "https://staffly.space"                         # Allow all origins (for development)
 ]
 
 # Configure CORS middleware with detailed settings
