@@ -1,0 +1,16 @@
+# Node
+node_modules/
+Frontend/node_modules/
+Frontend/node_modules/.vite/
+
+# Vite build cache
+.vite/
+
+# VS Code
+.vscode/
+
+# Environment files
+.env
+
+# OS files
+.DS_Store
