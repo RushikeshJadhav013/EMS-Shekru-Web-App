@@ -200,8 +200,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       const globalTiming = data.find((entry) => !entry.department || entry.department === '');
       if (globalTiming) {
         setGlobalTimingForm({
-          startTime: (globalTiming.start_time || '').slice(0, 5) || '09:30',
-          endTime: (globalTiming.end_time || '').slice(0, 5) || '18:00',
+          startTime: (globalTiming.start_time || '').slice(0, 5) || '10:00 AM',
+          endTime: (globalTiming.end_time || '').slice(0, 5) || '07:00PM',
           checkInGrace: globalTiming.check_in_grace_minutes ?? 0,
           checkOutGrace: globalTiming.check_out_grace_minutes ?? 0,
         });
@@ -310,8 +310,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
   const handleDepartmentTimingEdit = (timing: OfficeTiming) => {
     setDepartmentTimingForm({
       department: timing.department || '',
-      startTime: (timing.start_time || '').slice(0, 5) || '09:30',
-      endTime: (timing.end_time || '').slice(0, 5) || '18:00',
+      startTime: (timing.start_time || '').slice(0, 5) || '10:00 AM',
+      endTime: (timing.end_time || '').slice(0, 5) || '07:00 PM',
       checkInGrace: timing.check_in_grace_minutes ?? 0,
       checkOutGrace: timing.check_out_grace_minutes ?? 0,
     });

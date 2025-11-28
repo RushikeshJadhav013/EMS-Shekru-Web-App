@@ -167,7 +167,7 @@ const TeamLeadDashboard: React.FC = () => {
         <Card className="card-hover border-0 bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-indigo-50">
-              Team Size
+              {t.navigation.teamSize}
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <Users className="h-5 w-5 text-white" />
@@ -185,7 +185,7 @@ const TeamLeadDashboard: React.FC = () => {
         <Card className="card-hover border-0 bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-emerald-50">
-              Team Efficiency
+              {t.navigation.teamEfficiency}
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <TrendingUp className="h-5 w-5 text-white" />
@@ -242,15 +242,15 @@ const TeamLeadDashboard: React.FC = () => {
               <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
                 <Users className="h-5 w-5 text-white" />
               </div>
-              Team Members
+              {t.navigation.teamMembers}
             </CardTitle>
             <CardDescription className="text-base">Current status and task progress</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {isLoadingTeamMembers ? (
-              <p className="text-sm text-muted-foreground text-center py-4">Loading team members...</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t.common.loadingTeamMembers}</p>
             ) : teamMembers.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">No team members found</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t.common.noTeamMembers}</p>
             ) : (
               teamMembers.map((member) => (
                 <div key={member.userId} className="p-3 rounded-lg border space-y-2">
@@ -335,11 +335,11 @@ const TeamLeadDashboard: React.FC = () => {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/team_lead/teams')}>
               <Users className="h-5 w-5" />
-              <span className="text-xs">View Team</span>
+              <span className="text-xs">{t.navigation.viewTeam}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/team_lead/attendance')}>
               <Clock className="h-5 w-5" />
-              <span className="text-xs">Team Attendance</span>
+              <span className="text-xs">{t.navigation.teamAttendance}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/team_lead/leaves')}>
               <CalendarDays className="h-5 w-5" />

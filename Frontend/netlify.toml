@@ -11,8 +11,9 @@
     X-Frame-Options = "DENY"
     X-XSS-Protection = "1; mode=block"
     X-Content-Type-Options = "nosniff"
-    Content-Security-Policy = "connect-src 'self' https://staffly.space https://staffly.space 'unsafe-inline'; img-src 'self' data: https://staffly.space https://staffly.space"
+    Content-Security-Policy = "connect-src 'self' https://staffly.space https://nominatim.openstreetmap.org 'unsafe-inline'; img-src 'self' data: https://staffly.space https://nominatim.openstreetmap.org"
     Referrer-Policy = "no-referrer-when-downgrade"
+
 
 [[headers]]
   for = "/assets/*"

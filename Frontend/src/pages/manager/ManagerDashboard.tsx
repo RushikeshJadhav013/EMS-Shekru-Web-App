@@ -170,7 +170,7 @@ const ManagerDashboard: React.FC = () => {
         <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-blue-50">
-              Team Members
+              {t.navigation.teamMembers}
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <Users className="h-5 w-5 text-white" />
@@ -188,7 +188,7 @@ const ManagerDashboard: React.FC = () => {
         <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-green-50">
-              Team Performance
+              {t.navigation.teamPerformance}
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <Target className="h-5 w-5 text-white" />
@@ -245,7 +245,7 @@ const ManagerDashboard: React.FC = () => {
               <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center">
                 <Activity className="h-5 w-5 text-white" />
               </div>
-              Team Activities
+              {t.navigation.teamActivities}
             </CardTitle>
             <CardDescription className="text-base">Recent updates from your team</CardDescription>
           </CardHeader>
@@ -296,7 +296,7 @@ const ManagerDashboard: React.FC = () => {
               <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center">
                 <Target className="h-5 w-5 text-white" />
               </div>
-              Team Performance
+              {t.navigation.teamPerformance}
             </CardTitle>
             <CardDescription className="text-base">Task completion by team</CardDescription>
           </CardHeader>
@@ -326,15 +326,15 @@ const ManagerDashboard: React.FC = () => {
             <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center">
               <Users className="h-5 w-5 text-white" />
             </div>
-            Team Members Current Status
+            {t.navigation.teamMembers} Current Status
           </CardTitle>
           <CardDescription className="text-base">Current status and task progress</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {isLoadingTeamMembers ? (
-            <p className="text-sm text-muted-foreground text-center py-4">Loading team members...</p>
+            <p className="text-sm text-muted-foreground text-center py-4">{t.common.loadingTeamMembers}</p>
           ) : teamMembers.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">No team members found</p>
+            <p className="text-sm text-muted-foreground text-center py-4">{t.common.noTeamMembers}</p>
           ) : (
             teamMembers.map((member) => (
               <div key={member.userId} className="p-3 rounded-lg border space-y-2">
@@ -385,15 +385,15 @@ const ManagerDashboard: React.FC = () => {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/shift-schedule')}>
               <Clock className="h-5 w-5" />
-              <span className="text-xs">Shift Schedule</span>
+              <span className="text-xs">{t.navigation.shiftSchedule}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/teams')}>
               <Users className="h-5 w-5" />
-              <span className="text-xs">View Team</span>
+              <span className="text-xs">{t.navigation.viewTeam}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/attendance')}>
               <Clock className="h-5 w-5" />
-              <span className="text-xs">Team Attendance</span>
+              <span className="text-xs">{t.navigation.teamAttendance}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/leaves')}>
               <CalendarDays className="h-5 w-5" />
