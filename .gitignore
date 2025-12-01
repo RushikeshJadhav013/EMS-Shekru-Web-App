@@ -14,3 +14,4 @@ Frontend/node_modules/.vite/
 
 # OS files
 .DS_Store
+.idea/
