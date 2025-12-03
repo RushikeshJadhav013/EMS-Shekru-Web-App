@@ -1,0 +1,132 @@
+================================================================================
+QUICK GIT CACHE CLEANUP COMMANDS
+================================================================================
+
+OPTION 1: Use the automated script
+-----------------------------------
+Linux/Mac:
+  chmod +x cleanup_git_cache.sh
+  ./cleanup_git_cache.sh
+
+Windows:
+  cleanup_git_cache.bat
+
+
+OPTION 2: Manual commands (copy and paste)
+-------------------------------------------
+
+# Step 1: Remove all cached files from Git index
+git rm -r --cached .
+
+# Step 2: Re-add files based on new .gitignore
+git add .
+
+# Step 3: Check what will be committed
+git status
+
+# Step 4: Commit the changes
+git commit -m "chore: update .gitignore and remove cached files from tracking"
+
+# Step 5: Push to remote
+git push origin main
+# OR if you're on a different branch:
+git push origin <your-branch-name>
+
+
+OPTION 3: Selective cleanup (specific directories only)
+--------------------------------------------------------
+
+# Remove node_modules
+git rm -r --cached Frontend/node_modules
+git add .
+git commit -m "chore: remove node_modules from tracking"
+
+# Remove Python cache
+git rm -r --cached Backend/__pycache__
+git rm -r --cached Backend/**/__pycache__
+git add .
+git commit -m "chore: remove Python cache from tracking"
+
+# Remove database files
+git rm --cached Backend/*.db
+git rm --cached Backend/*.sqlite
+git add .
+git commit -m "chore: remove database files from tracking"
+
+# Remove log files
+git rm --cached Backend/*.log
+git rm --cached Frontend/*.log
+git add .
+git commit -m "chore: remove log files from tracking"
+
+# Remove environment files
+git rm --cached Backend/.env
+git rm --cached Frontend/.env
+git add .
+git commit -m "chore: remove environment files from tracking"
+
+# Push all changes
+git push origin main
+
+
+VERIFICATION COMMANDS
+---------------------
+
+# Check if specific files/directories are ignored
+git check-ignore Frontend/node_modules
+git check-ignore Backend/__pycache__
+git check-ignore Backend/.env
+git check-ignore Backend/venv
+
+# List all currently tracked files
+git ls-files
+
+# Check if node_modules is still tracked
+git ls-files | grep node_modules
+
+# Check if __pycache__ is still tracked
+git ls-files | grep __pycache__
+
+# See all ignored files
+git status --ignored
+
+
+TROUBLESHOOTING
+---------------
+
+If files still appear after cleanup:
+1. Make sure .gitignore is committed:
+   git add .gitignore
+   git commit -m "chore: update .gitignore"
+
+2. Run cleanup again:
+   git rm -r --cached .
+   git add .
+   git commit -m "chore: remove cached files"
+
+3. Check .gitignore patterns are correct:
+   git check-ignore -v <file-path>
+
+
+IMPORTANT NOTES
+---------------
+- git rm --cached removes files from Git tracking but keeps them on your disk
+- Always run 'git status' before committing to review changes
+- Coordinate with your team before pushing these changes
+- Never commit sensitive data (.env files, API keys, passwords)
+
+
+FILES NOW IGNORED BY .gitignore
+--------------------------------
+✓ Frontend: node_modules, dist, build, .cache, .vite, .next, out
+✓ Backend: __pycache__, *.pyc, venv, env, .venv
+✓ Databases: *.db, *.sqlite, *.sqlite3
+✓ Logs: *.log, npm-debug.log, yarn-error.log
+✓ Environment: .env, .env.local, .env.*
+✓ Build caches: .turbo, .webpack, .eslintcache
+✓ Framework caches: storage/framework/cache, bootstrap/cache
+✓ Temporary: *.tmp, *.temp, *.bak, tmp/, temp/
+✓ IDE: .vscode, .idea, *.swp
+✓ OS: .DS_Store, Thumbs.db
+
+================================================================================

@@ -6,6 +6,7 @@ from app.db.models.leave import Leave
 from app.db.models.notification import LeaveNotification
 from app.db.models.user import User
 from app.enums import RoleEnum
+from app.crud.leave_config_crud import get_leave_config_or_default
 
 DEFAULT_LEAVE_ALLOWANCES = {
     "annual": 15,
@@ -97,16 +98,39 @@ def delete_leave(db: Session, leave_id: int, user_id: int):
 
 
 def get_leave_balance(db: Session, user_id: int):
-    # Initialize balances with defaults
+    # Get leave configuration from database or use defaults
+    leave_config = get_leave_config_or_default(db)
+    
+    # Initialize balances with configured values
     balances = {
-        leave_type: {
-            "leave_type": leave_type,
-            "allocated": allocation,
+        "annual": {
+            "leave_type": "annual",
+            "allocated": leave_config["annual"],
             "used": 0,
-            "remaining": allocation,
-        }
-        for leave_type, allocation in DEFAULT_LEAVE_ALLOWANCES.items()
+            "remaining": leave_config["annual"],
+        },
+        "sick": {
+            "leave_type": "sick",
+            "allocated": leave_config["sick"],
+            "used": 0,
+            "remaining": leave_config["sick"],
+        },
+        "casual": {
+            "leave_type": "casual",
+            "allocated": leave_config["casual"],
+            "used": 0,
+            "remaining": leave_config["casual"],
+        },
     }
+    
+    # Add 'other' leave type if configured
+    if leave_config.get("other", 0) > 0:
+        balances["other"] = {
+            "leave_type": "other",
+            "allocated": leave_config["other"],
+            "used": 0,
+            "remaining": leave_config["other"],
+        }
 
     approved_leaves = (
         db.query(Leave)

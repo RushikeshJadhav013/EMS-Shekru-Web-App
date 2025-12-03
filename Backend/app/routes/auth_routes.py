@@ -44,7 +44,7 @@ def send_otp(email: str, db: Session = Depends(get_db)):
         "message": response_message,
         "environment": settings.ENVIRONMENT,
         "otp_method": "email" if settings.should_send_email else "console",
-        "expires_in_minutes": settings.OTP_EXPIRY_MINUTES
+        "expires_in_seconds": settings.OTP_EXPIRY_SECONDS
     }
 
 @router.post("/verify-otp")

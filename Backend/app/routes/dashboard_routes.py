@@ -80,20 +80,19 @@ def admin_dashboard(db: Session = Depends(get_db)):
                 late_arrivals += 1
     pending_leaves = (
         db.query(func.count(Leave.leave_id))
-        .join(User, User.user_id == Leave.user_id)
-        .filter(
-            Leave.status == "Pending",
-            User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
-            User.is_active.is_(True),
-        )
+        .filter(Leave.status == "Pending")
         .scalar()
         or 0
     )
     active_tasks = (
-        db.query(func.count(Task.task_id)).filter(Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)])).scalar() or 0
+        db.query(func.count(Task.task_id))
+        .filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
+        .scalar() or 0
     )
     completed_tasks = (
-        db.query(func.count(Task.task_id)).filter(Task.status == str(TaskStatus.COMPLETED)).scalar() or 0
+        db.query(func.count(Task.task_id))
+        .filter(Task.status == TaskStatus.COMPLETED.value)
+        .scalar() or 0
     )
     # Department performance (by presence rate today)
     dept_names = [row[0] for row in db.query(User.department).filter(User.department.isnot(None)).distinct().all()]
@@ -371,13 +370,13 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     active_tasks = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)]))
+        .filter(User.department == dept, Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
         .scalar() or 0
     )
     completed_tasks = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == str(TaskStatus.COMPLETED))
+        .filter(User.department == dept, Task.status == TaskStatus.COMPLETED.value)
         .scalar() or 0
     )
     pending_approvals = (
@@ -397,7 +396,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         .join(User, User.user_id == Task.assigned_to)
         .filter(
             User.department == dept,
-            Task.status != str(TaskStatus.COMPLETED),
+            Task.status != TaskStatus.COMPLETED.value,
             Task.due_date.isnot(None),
             Task.due_date < datetime.utcnow()
         )
@@ -521,7 +520,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
             .all()
         )
         total_lead_tasks = len(lead_tasks)
-        completed_lead_tasks = len([t for t in lead_tasks if t.status == str(TaskStatus.COMPLETED)])
+        completed_lead_tasks = len([t for t in lead_tasks if t.status == TaskStatus.COMPLETED.value])
         completion_rate = int((completed_lead_tasks / max(total_lead_tasks, 1)) * 100)
         member_ids = {task.assigned_to for task in lead_tasks if task.assigned_to}
         team_performance.append({
@@ -577,13 +576,13 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
     tasks_in_progress = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == str(TaskStatus.IN_PROGRESS))
+        .filter(User.department == dept, Task.status == TaskStatus.IN_PROGRESS.value)
         .scalar() or 0
     )
     completed_today = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == str(TaskStatus.COMPLETED))
+        .filter(User.department == dept, Task.status == TaskStatus.COMPLETED.value)
         .scalar() or 0
     )
     pending_reviews = 0  # Not modeled
@@ -669,8 +668,8 @@ def employee_dashboard(current_user=Depends(get_current_user), db: Session = Dep
     today_start, today_end = _today_bounds()
 
     tasks_assigned = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id).scalar() or 0
-    tasks_completed = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status == str(TaskStatus.COMPLETED)).scalar() or 0
-    tasks_pending = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)])).scalar() or 0
+    tasks_completed = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status == TaskStatus.COMPLETED.value).scalar() or 0
+    tasks_pending = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])).scalar() or 0
 
     # Leaves available not modeled; return 0 and expose leavesTaken from approved leaves this year
     leaves_taken = db.query(func.count(Leave.leave_id)).filter(Leave.user_id == user_id, Leave.status == "Approved").scalar() or 0

@@ -59,7 +59,7 @@ interface LeaveRequest {
   employeeId: string;
   employeeName: string;
   department: string;
-  type: 'annual' | 'sick' | 'casual' | 'maternity' | 'paternity' | 'unpaid';
+  type: 'annual' | 'sick' | 'casual' | 'maternity' | 'paternity' | 'unpaid' | 'work_from_home';
   startDate: Date;
   endDate: Date;
   reason: string;
@@ -140,6 +140,9 @@ export default function LeaveManagement() {
   };
   const [approvalRequests, setApprovalRequests] = useState<LeaveRequest[]>([]);
   const [approvalHistory, setApprovalHistory] = useState<LeaveRequest[]>([]);
+  const [historyFilter, setHistoryFilter] = useState<string>('current_month');
+  const [customHistoryStartDate, setCustomHistoryStartDate] = useState<Date | undefined>(undefined);
+  const [customHistoryEndDate, setCustomHistoryEndDate] = useState<Date | undefined>(new Date());
 
   const [formData, setFormData] = useState({
     type: 'annual',
@@ -314,7 +317,17 @@ export default function LeaveManagement() {
     annual: { allocated: 15, used: 0, remaining: 15 },
     sick: { allocated: 10, used: 0, remaining: 10 },
     casual: { allocated: 5, used: 0, remaining: 5 },
+    unpaid: { allocated: 0, used: 0, remaining: 0 }, // Unpaid leave counter (no allocation, only tracks usage)
   });
+
+  // Leave Allocation Configuration (Admin only)
+  const [leaveAllocationConfig, setLeaveAllocationConfig] = useState({
+    total_annual_leave: 15,
+    sick_leave_allocation: 10,
+    casual_leave_allocation: 5,
+    other_leave_allocation: 0,
+  });
+  const [isSavingLeaveConfig, setIsSavingLeaveConfig] = useState(false);
 
   const weekDayOptions = [
     { value: 'sunday', label: 'Sunday', emoji: '☀️' },
@@ -470,11 +483,18 @@ export default function LeaveManagement() {
         annual: { allocated: 15, used: 0, remaining: 15 },
         sick: { allocated: 10, used: 0, remaining: 10 },
         casual: { allocated: 5, used: 0, remaining: 5 },
+        unpaid: { allocated: 0, used: 0, remaining: 0 },
       };
+
+      // Track unpaid leave count separately
+      let unpaidCount = 0;
 
       response.balances.forEach((item) => {
         const key = item.leave_type.toLowerCase();
-        if (key in defaults) {
+        if (key === 'unpaid') {
+          // For unpaid leave, just track the count
+          unpaidCount = item.used;
+        } else if (key in defaults) {
           defaults[key as keyof typeof defaults] = {
             allocated: item.allocated,
             used: item.used,
@@ -483,11 +503,86 @@ export default function LeaveManagement() {
         }
       });
 
+      // Set unpaid leave count
+      defaults.unpaid = {
+        allocated: 0,
+        used: unpaidCount,
+        remaining: 0,
+      };
+
       setLeaveBalance(defaults);
     } catch (error) {
       console.error('Error fetching leave balance:', error);
     }
   }, [user]);
+
+  // Load leave allocation configuration (Admin only)
+  const loadLeaveAllocationConfig = useCallback(async () => {
+    if (user?.role !== 'admin') return;
+    try {
+      const config = await apiService.getCurrentLeaveAllocation();
+      setLeaveAllocationConfig({
+        total_annual_leave: config.total_annual_leave,
+        sick_leave_allocation: config.sick_leave_allocation,
+        casual_leave_allocation: config.casual_leave_allocation,
+        other_leave_allocation: config.other_leave_allocation,
+      });
+    } catch (error) {
+      console.error('Error fetching leave allocation config:', error);
+    }
+  }, [user]);
+
+  // Save leave allocation configuration
+  const handleSaveLeaveAllocationConfig = async () => {
+    if (!user?.id) return;
+
+    // Validation
+    const total = leaveAllocationConfig.total_annual_leave;
+    const sick = leaveAllocationConfig.sick_leave_allocation;
+    const casual = leaveAllocationConfig.casual_leave_allocation;
+    const other = leaveAllocationConfig.other_leave_allocation;
+
+    if (total < 1) {
+      toast({
+        title: 'Invalid Configuration',
+        description: 'Total annual leave must be at least 1 day.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (sick < 0 || casual < 0 || other < 0) {
+      toast({
+        title: 'Invalid Configuration',
+        description: 'Leave allocations cannot be negative.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsSavingLeaveConfig(true);
+
+    try {
+      await apiService.createLeaveAllocationConfig(leaveAllocationConfig);
+      
+      toast({
+        title: 'Configuration Saved',
+        description: 'Leave allocation has been updated successfully. All users will see the new allocations.',
+      });
+
+      // Reload leave balance to reflect new configuration
+      await loadLeaveBalance();
+    } catch (error) {
+      console.error('Error saving leave allocation config:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to save leave allocation configuration. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSavingLeaveConfig(false);
+    }
+  };
 
   // Load leave requests from API on component mount and when period changes
   useEffect(() => {
@@ -544,8 +639,9 @@ export default function LeaveManagement() {
       fetchApprovals();
       fetchApprovalHistory();
       loadLeaveBalance();
+      loadLeaveAllocationConfig();
     }
-  }, [user, leaveHistoryPeriod, loadLeaveRequests, loadLeaveBalance]);
+  }, [user, leaveHistoryPeriod, loadLeaveRequests, loadLeaveBalance, loadLeaveAllocationConfig]);
 
   // Handle URL parameters for tab navigation and leave highlighting
   useEffect(() => {
@@ -584,6 +680,22 @@ export default function LeaveManagement() {
       return;
     }
 
+    // Calculate number of leave days
+    const leaveDays = Math.ceil((formData.endDate.getTime() - formData.startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+    // Frontend validation: Check if user has sufficient annual leave balance
+    // For Annual, Sick, and Casual leave types, deduct from Annual Leave balance
+    if (['annual', 'sick', 'casual'].includes(formData.type)) {
+      if (leaveDays > leaveBalance.annual.remaining) {
+        toast({
+          title: 'Insufficient Leave Balance',
+          description: `You need ${leaveDays} days but only have ${leaveBalance.annual.remaining} days remaining in your Annual Leave balance. ${formData.type === 'annual' ? '' : `Note: ${formData.type.charAt(0).toUpperCase() + formData.type.slice(1)} Leave deducts from your Annual Leave balance.`}`,
+          variant: 'destructive'
+        });
+        return;
+      }
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -598,6 +710,28 @@ export default function LeaveManagement() {
 
       // Submit to API
       const response = await apiService.submitLeaveRequest(leaveRequestData);
+
+      // Update local leave balance immediately for better UX
+      setLeaveBalance(prev => {
+        const updated = { ...prev };
+        
+        if (formData.type === 'unpaid') {
+          // For unpaid leave, increment the unpaid counter
+          updated.unpaid = {
+            ...prev.unpaid,
+            used: prev.unpaid.used + leaveDays
+          };
+        } else if (['annual', 'sick', 'casual'].includes(formData.type)) {
+          // For Annual, Sick, and Casual leave, deduct from Annual Leave balance
+          updated.annual = {
+            ...prev.annual,
+            used: prev.annual.used + leaveDays,
+            remaining: prev.annual.remaining - leaveDays
+          };
+        }
+        
+        return updated;
+      });
 
       // Create local leave request object for immediate UI update
       const newRequest: LeaveRequest = {
@@ -625,7 +759,7 @@ export default function LeaveManagement() {
       
       toast({
         title: 'Success',
-        description: 'Leave request submitted successfully'
+        description: `Leave request submitted successfully. ${formData.type === 'unpaid' ? 'Unpaid leave does not deduct from your Annual Leave balance.' : formData.type !== 'annual' ? 'This leave has been deducted from your Annual Leave balance.' : ''}`
       });
       
       // Reset form
@@ -738,6 +872,7 @@ export default function LeaveManagement() {
       case 'maternity': return 'bg-purple-100 text-purple-800';
       case 'paternity': return 'bg-indigo-100 text-indigo-800';
       case 'unpaid': return 'bg-gray-100 text-gray-800';
+      case 'work_from_home': return 'bg-orange-100 text-orange-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -847,6 +982,39 @@ export default function LeaveManagement() {
     return leaveRequests.filter(req => req.employeeId === user?.id);
   };
 
+  // Filter approval history based on date range
+  const getFilteredApprovalHistory = useMemo(() => {
+    if (approvalHistory.length === 0) return [];
+
+    const now = new Date();
+    let startDate: Date;
+    let endDate: Date = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    switch (historyFilter) {
+      case 'current_month':
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        break;
+      case 'last_3_months':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+        break;
+      case 'last_6_months':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+        break;
+      case 'custom':
+        if (!customHistoryStartDate || !customHistoryEndDate) return approvalHistory;
+        startDate = new Date(customHistoryStartDate.getFullYear(), customHistoryStartDate.getMonth(), customHistoryStartDate.getDate(), 0, 0, 0);
+        endDate = new Date(customHistoryEndDate.getFullYear(), customHistoryEndDate.getMonth(), customHistoryEndDate.getDate(), 23, 59, 59);
+        break;
+      default:
+        return approvalHistory;
+    }
+
+    return approvalHistory.filter(request => {
+      const requestDate = new Date(request.startDate);
+      return requestDate >= startDate && requestDate <= endDate;
+    });
+  }, [approvalHistory, historyFilter, customHistoryStartDate, customHistoryEndDate]);
+
 
   return (
     <div className="container mx-auto p-4 sm:p-6 space-y-6">
@@ -877,7 +1045,7 @@ export default function LeaveManagement() {
         {canApply && (
           <TabsContent value="request" className="space-y-4">
           {/* Leave Balance Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <Card className="border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
@@ -926,12 +1094,34 @@ export default function LeaveManagement() {
                 </div>
               </CardContent>
             </Card>
+            <Card className="border-0 bg-gradient-to-br from-gray-500 to-slate-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-50">Unpaid Leave</p>
+                    <p className="text-3xl font-bold mt-1">
+                      {leaveBalance.unpaid.used}
+                    </p>
+                    <p className="text-xs text-gray-100 mt-1">days taken</p>
+                  </div>
+                  <div className="h-12 w-12 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                    <FileText className="h-6 w-6 text-white" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Leave Request Form */}
           <Card className="border-0 shadow-lg">
             <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
               <CardTitle className="text-xl font-semibold">Request Leave</CardTitle>
+              <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
+                  <strong>Note:</strong> Annual, Sick, and Casual leave requests will deduct from your <strong>Annual Leave</strong> balance. 
+                  Only <strong>Unpaid Leave</strong> does not affect your Annual Leave balance.
+                </p>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -951,6 +1141,7 @@ export default function LeaveManagement() {
                       <SelectItem value="maternity">Maternity Leave</SelectItem>
                       <SelectItem value="paternity">Paternity Leave</SelectItem>
                       <SelectItem value="unpaid">Unpaid Leave</SelectItem>
+                      <SelectItem value="work_from_home">Work from Home</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1159,6 +1350,136 @@ export default function LeaveManagement() {
               {/* Admin holiday management UI */}
               {user?.role === 'admin' && (
                 <div className="mb-6 space-y-6 mt-4">
+                  {/* Leave Allocation Configuration Panel */}
+                  <div className="p-6 border-2 rounded-xl bg-gradient-to-r from-purple-50 via-indigo-50 to-blue-50 dark:from-purple-950 dark:via-indigo-950 dark:to-blue-950 shadow-lg">
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div>
+                        <h3 className="font-bold text-lg mb-1 flex items-center gap-2">
+                          <FileText className="h-6 w-6 text-purple-600" />
+                          Leave Allocation Configuration
+                        </h3>
+                        <p className="text-sm text-muted-foreground">
+                          Set the total annual leave and distribute it across different leave types. Changes apply to all users immediately.
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mt-6">
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-purple-700 dark:text-purple-300">
+                          Total Annual Leave
+                        </Label>
+                        <Input
+                          type="number"
+                          min="1"
+                          max="365"
+                          value={leaveAllocationConfig.total_annual_leave}
+                          onChange={(e) =>
+                            setLeaveAllocationConfig((prev) => ({
+                              ...prev,
+                              total_annual_leave: parseInt(e.target.value) || 0,
+                            }))
+                          }
+                          className="border-2 border-purple-200 dark:border-purple-800 focus:border-purple-500"
+                          placeholder="e.g., 15"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Total days per year
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-red-700 dark:text-red-300">
+                          Sick Leave
+                        </Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="365"
+                          value={leaveAllocationConfig.sick_leave_allocation}
+                          onChange={(e) =>
+                            setLeaveAllocationConfig((prev) => ({
+                              ...prev,
+                              sick_leave_allocation: parseInt(e.target.value) || 0,
+                            }))
+                          }
+                          className="border-2 border-red-200 dark:border-red-800 focus:border-red-500"
+                          placeholder="e.g., 10"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Days allocated
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-green-700 dark:text-green-300">
+                          Casual Leave
+                        </Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="365"
+                          value={leaveAllocationConfig.casual_leave_allocation}
+                          onChange={(e) =>
+                            setLeaveAllocationConfig((prev) => ({
+                              ...prev,
+                              casual_leave_allocation: parseInt(e.target.value) || 0,
+                            }))
+                          }
+                          className="border-2 border-green-200 dark:border-green-800 focus:border-green-500"
+                          placeholder="e.g., 5"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Days allocated
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-gray-700 dark:text-gray-300">
+                          Other Leave
+                        </Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="365"
+                          value={leaveAllocationConfig.other_leave_allocation}
+                          onChange={(e) =>
+                            setLeaveAllocationConfig((prev) => ({
+                              ...prev,
+                              other_leave_allocation: parseInt(e.target.value) || 0,
+                            }))
+                          }
+                          className="border-2 border-gray-200 dark:border-gray-800 focus:border-gray-500"
+                          placeholder="e.g., 0"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Days allocated
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                      <p className="text-sm text-blue-800 dark:text-blue-200">
+                        <strong>Note:</strong> Annual, Sick, and Casual leave requests will deduct from the <strong>Total Annual Leave</strong> balance. 
+                        The individual allocations (Sick, Casual, Other) are for reference and tracking purposes.
+                      </p>
+                    </div>
+
+                    <div className="mt-6 flex items-center gap-3">
+                      <Button
+                        onClick={handleSaveLeaveAllocationConfig}
+                        disabled={isSavingLeaveConfig}
+                        className="gap-2 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-700 hover:via-indigo-700 hover:to-blue-700 shadow-lg"
+                      >
+                        <CheckCircle className="h-4 w-4" />
+                        {isSavingLeaveConfig ? 'Saving...' : 'Save Configuration'}
+                      </Button>
+                      <p className="text-sm text-muted-foreground">
+                        Changes will apply to all users immediately
+                      </p>
+                    </div>
+                  </div>
+
                   <div className="p-4 border rounded-lg bg-gradient-to-r from-amber-50 to-yellow-50 dark:from-amber-950 dark:to-yellow-950">
                   <h3 className="font-semibold mb-3 flex items-center gap-2">
                     <CalendarIcon className="h-5 w-5 text-amber-600" />
@@ -1535,22 +1856,73 @@ export default function LeaveManagement() {
                     </div>
                   )))}
                   <div className="pt-6 border-t mt-6">
-                    <h3 className="font-semibold mb-3">Recent Decisions</h3>
-                    {approvalHistory.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No recent approvals or rejections.</p>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-semibold">Recent Decisions</h3>
+                      <div className="flex items-center gap-2">
+                        <Select value={historyFilter} onValueChange={setHistoryFilter}>
+                          <SelectTrigger className="w-[180px] h-9 bg-white dark:bg-gray-950">
+                            <SelectValue placeholder="Select period" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="current_month">Current Month</SelectItem>
+                            <SelectItem value="last_3_months">Last 3 Months</SelectItem>
+                            <SelectItem value="last_6_months">Last 6 Months</SelectItem>
+                            <SelectItem value="custom">Custom Range</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    
+                    {historyFilter === 'custom' && (
+                      <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-900 rounded-lg border">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <div className="flex-1 min-w-[150px]">
+                            <Label className="text-xs mb-1">Start Date</Label>
+                            <DatePicker
+                              date={customHistoryStartDate}
+                              onDateChange={setCustomHistoryStartDate}
+                              placeholder="Select start date"
+                              className="w-full"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-[150px]">
+                            <Label className="text-xs mb-1">End Date</Label>
+                            <DatePicker
+                              date={customHistoryEndDate}
+                              onDateChange={setCustomHistoryEndDate}
+                              placeholder="Select end date"
+                              className="w-full"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {getFilteredApprovalHistory.length === 0 ? (
+                      <div className="text-center py-6 text-muted-foreground bg-slate-50 dark:bg-slate-900 rounded-lg">
+                        <AlertCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                        <p className="text-sm">No decisions found for the selected period.</p>
+                      </div>
                     ) : (
                       <div className="space-y-3">
-                        {approvalHistory.map((request) => (
-                          <div key={`hist-${request.id}`} className="border rounded-lg p-3 flex items-center justify-between">
-                            <div className="text-sm">
-                              <div className="font-medium">{request.employeeName}</div>
-                              <div className="text-muted-foreground">
+                        {getFilteredApprovalHistory.map((request) => (
+                          <div key={`hist-${request.id}`} className="border rounded-lg p-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors">
+                            <div className="text-sm flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-medium">{request.employeeName}</span>
+                                <Badge className={`${getLeaveTypeColor(request.type)} text-xs`}>
+                                  {request.type}
+                                </Badge>
+                              </div>
+                              <div className="text-muted-foreground text-xs">
                                 {format(request.startDate, 'MMM dd')} - {format(request.endDate, 'MMM dd, yyyy')} • {request.department}
                               </div>
                             </div>
-                            <Badge className={`px-4 py-1.5 text-sm font-bold capitalize transition-all duration-300 ${getStatusBadgeStyle(request.status)}`}>
-                              {request.status}
-                            </Badge>
+                            <div className="flex items-center gap-2">
+                              <Badge className={`px-4 py-1.5 text-sm font-bold capitalize transition-all duration-300 ${getStatusBadgeStyle(request.status)}`}>
+                                {request.status}
+                              </Badge>
+                            </div>
                           </div>
                         ))}
                       </div>

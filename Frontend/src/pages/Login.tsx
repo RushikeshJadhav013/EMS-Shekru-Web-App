@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,15 +40,74 @@ interface ApiError {
 }
 
 const Login: React.FC = () => {
-  const { login } = useAuth();
+  const { login, isAuthenticated } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const location = useLocation();
   
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+  const [otpExpiryTime, setOtpExpiryTime] = useState<number>(0); // Countdown in seconds
+  const [canResend, setCanResend] = useState(false);
+
+  // Check for session message from navigation state
+  useEffect(() => {
+    if (location.state?.message) {
+      setSessionMessage(location.state.message);
+      toast({
+        title: 'Session Required',
+        description: location.state.message,
+        variant: 'default',
+      });
+      // Clear the state
+      window.history.replaceState({}, document.title);
+    }
+  }, [location, toast]);
+
+  // Redirect if already authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/admin', { replace: true });
+    }
+  }, [isAuthenticated, navigate]);
+
+  // OTP Countdown Timer
+  useEffect(() => {
+    if (otpExpiryTime > 0) {
+      const timer = setInterval(() => {
+        setOtpExpiryTime((prev) => {
+          if (prev <= 1) {
+            setCanResend(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      return () => clearInterval(timer);
+    }
+  }, [otpExpiryTime]);
+
+  // Prevent back navigation to authenticated pages after logout
+  useEffect(() => {
+    const handlePopState = () => {
+      if (!isAuthenticated) {
+        window.history.pushState(null, '', window.location.href);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.history.pushState(null, '', window.location.href);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [isAuthenticated]);
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,6 +123,10 @@ const Login: React.FC = () => {
       // Handle successful response
       if (response.status === 200 || response.status === 201) {
         setOtpSent(true);
+        // Set OTP expiry time from backend response in seconds
+        const expirySeconds = response.data?.expires_in_seconds || 30;
+        setOtpExpiryTime(expirySeconds);
+        setCanResend(false);
         const successMessage = response.data?.message || "OTP sent successfully";
         toast({
           variant: "success",
@@ -87,6 +150,60 @@ const Login: React.FC = () => {
         errorMessage = apiError.response.data.message;
       } else if (!apiError.response) {
         errorMessage = 'Unable to connect to the server. Please check if the server is running.';
+      }
+      
+      setError(errorMessage);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: errorMessage,
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Format countdown time as MM:SS
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleResendOtp = async () => {
+    if (!email || !canResend) return;
+    
+    setIsLoading(true);
+    setError('');
+    
+    try {
+      const response = await axios.post(`${API_ENDPOINTS.sendOtp}?email=${encodeURIComponent(email)}`);
+      
+      if (response.status === 200 || response.status === 201) {
+        // Reset OTP expiry time from backend response in seconds
+        const expirySeconds = response.data?.expires_in_seconds || 30;
+        setOtpExpiryTime(expirySeconds);
+        setCanResend(false);
+        setOtp(''); // Clear previous OTP
+        toast({
+          variant: "success",
+          title: "OTP Resent",
+          description: "A new OTP has been sent to your email",
+        });
+      }
+    } catch (err) {
+      console.error('OTP resend error:', err);
+      const apiError = err as ApiError;
+      let errorMessage = 'Failed to resend OTP';
+      
+      if (apiError.response?.data?.detail) {
+        if (typeof apiError.response.data.detail === 'string') {
+            errorMessage = apiError.response.data.detail;
+        } else if (Array.isArray(apiError.response.data.detail)) {
+            errorMessage = apiError.response.data.detail.map(err => err.msg).join(', ');
+        } 
+      } else if (apiError.response?.data?.message) {
+        errorMessage = apiError.response.data.message;
       }
       
       setError(errorMessage);
@@ -270,6 +387,13 @@ const Login: React.FC = () => {
                   </p>
                 </div>
 
+                {/* Session Message */}
+                {sessionMessage && (
+                  <div className="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded-xl text-sm mb-4">
+                    <p className="font-medium">{sessionMessage}</p>
+                  </div>
+                )}
+
                 {/* Form */}
                 {!otpSent ? (
                   <form onSubmit={handleSendOtp} className="space-y-5">
@@ -284,7 +408,10 @@ const Login: React.FC = () => {
                           type="email"
                           placeholder="you@company.com"
                           value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          onChange={(e) => {
+                            setEmail(e.target.value);
+                            setSessionMessage(null); // Clear message when user starts typing
+                          }}
                           className="pl-12 h-12 bg-white border-slate-200 focus:border-blue-500 focus:ring-blue-500 rounded-xl"
                           required
                           disabled={isLoading}
@@ -330,9 +457,21 @@ const Login: React.FC = () => {
                         disabled={isLoading}
                         className="text-center tracking-[0.5em] text-2xl font-semibold h-14 bg-white border-slate-200 focus:border-blue-500 focus:ring-blue-500 rounded-xl"
                       />
-                      <p className="text-xs text-slate-500 text-center mt-2">
-                        OTP sent to <span className="font-medium text-slate-700">{email}</span>
-                      </p>
+                      <div className="flex items-center justify-between text-xs mt-2">
+                        <p className="text-slate-500">
+                          OTP sent to <span className="font-medium text-slate-700">{email}</span>
+                        </p>
+                        {otpExpiryTime > 0 && (
+                          <p className="text-blue-600 font-medium">
+                            {formatTime(otpExpiryTime)}
+                          </p>
+                        )}
+                        {otpExpiryTime === 0 && (
+                          <p className="text-red-600 font-medium">
+                            Expired
+                          </p>
+                        )}
+                      </div>
                     </div>
 
                     {error && (
@@ -344,7 +483,7 @@ const Login: React.FC = () => {
                     <Button
                       type="submit"
                       className="w-full h-12 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transition-all duration-200"
-                      disabled={isLoading}
+                      disabled={isLoading || otpExpiryTime === 0}
                     >
                       {isLoading ? (
                         <>
@@ -356,6 +495,25 @@ const Login: React.FC = () => {
                       )}
                     </Button>
 
+                    {canResend && otpExpiryTime === 0 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full h-12 border-2 border-blue-600 text-blue-600 hover:bg-blue-50 font-medium rounded-xl"
+                        onClick={handleResendOtp}
+                        disabled={isLoading}
+                      >
+                        {isLoading ? (
+                          <>
+                            <div className="h-5 w-5 rounded-full border-2 border-blue-600 border-t-transparent animate-spin mr-2" />
+                            Resending...
+                          </>
+                        ) : (
+                          '🔄 Resend OTP'
+                        )}
+                      </Button>
+                    )}
+
                     <Button
                       type="button"
                       variant="ghost"
@@ -364,6 +522,8 @@ const Login: React.FC = () => {
                         setOtpSent(false);
                         setOtp('');
                         setError('');
+                        setOtpExpiryTime(0);
+                        setCanResend(false);
                       }}
                       disabled={isLoading}
                     >

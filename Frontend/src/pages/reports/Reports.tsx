@@ -63,7 +63,11 @@ export default function Reports() {
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth().toString());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedDepartment, setSelectedDepartment] = useState('all');
-  const [selectedReportType, setSelectedReportType] = useState('performance');
+  
+  // Check URL for tab parameter
+  const urlParams = new URLSearchParams(window.location.search);
+  const tabParam = urlParams.get('tab');
+  const [selectedReportType, setSelectedReportType] = useState(tabParam || 'performance');
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeePerformance | null>(null);
   const [employeeRatings, setEmployeeRatings] = useState<Record<string, EmployeeRating>>({});

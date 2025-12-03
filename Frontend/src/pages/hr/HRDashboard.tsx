@@ -222,7 +222,7 @@ const HRDashboard: React.FC = () => {
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/hr/employees')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-blue-50">
               {t.dashboard.totalEmployees}
@@ -233,14 +233,21 @@ const HRDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.totalEmployees}</div>
-            <div className="flex items-center gap-1 mt-2">
-              <TrendingUp className="h-4 w-4 text-blue-100" />
-              <span className="text-sm text-blue-100">+{stats.newJoinersThisMonth} new this month</span>
-            </div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-blue-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/hr/employees');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/hr/attendance')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-green-50">
               {t.dashboard.presentToday}
@@ -251,10 +258,17 @@ const HRDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.presentToday}</div>
-            <Progress
-              value={safePercentage(stats.presentToday, stats.totalEmployees)}
-              className="mt-2 h-2 bg-white/30"
-            />
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-green-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/hr/attendance');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
 
@@ -276,7 +290,7 @@ const HRDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/hr/hiring')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-purple-50">
               Open Positions
@@ -287,10 +301,17 @@ const HRDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.openPositions}</div>
-            <div className="flex items-center gap-1 mt-2">
-              <Activity className="h-4 w-4 text-purple-100" />
-              <span className="text-sm text-purple-100">Active recruitment</span>
-            </div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-purple-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/hr/hiring');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
       </div>

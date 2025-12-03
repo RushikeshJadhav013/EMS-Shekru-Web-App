@@ -411,6 +411,8 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
         "workSummary": getattr(attendance, "work_summary", None),
         "work_report": work_report_url,
         "workReport": work_report_url,
+        "work_location": getattr(attendance, "work_location", "office"),
+        "workLocation": getattr(attendance, "work_location", "office"),
     }
 
 def get_attendance_summary(db: Session) -> Dict[str, Any]:
@@ -814,13 +816,31 @@ async def employee_check_in_route(
         if existing_attendance:
             return _prepare_attendance_payload(existing_attendance)
 
+        # Check if user has approved work from home leave for today
+        from app.db.models.leave import Leave
+        today_date = datetime.utcnow().date()
+        work_from_home_leave = (
+            db.query(Leave)
+            .filter(
+                Leave.user_id == user_id,
+                Leave.leave_type == 'work_from_home',
+                Leave.status == 'Approved',
+                Leave.start_date <= today_date,
+                Leave.end_date >= today_date
+            )
+            .first()
+        )
+        
+        work_location = 'work_from_home' if work_from_home_leave else 'office'
+
         # Create new check-in with location data
         attendance = Attendance(
             user_id=user_id,
             check_in=datetime.utcnow(),
             gps_location=_compose_location_entry(None, "Check-in", processed_location),
             selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
-            total_hours=0.0
+            total_hours=0.0,
+            work_location=work_location
         )
         
         db.add(attendance)
@@ -883,13 +903,31 @@ async def employee_check_in_json(
         if existing_attendance:
             return _prepare_attendance_payload(existing_attendance)
 
+        # Check if user has approved work from home leave for today
+        from app.db.models.leave import Leave
+        today_date = datetime.utcnow().date()
+        work_from_home_leave = (
+            db.query(Leave)
+            .filter(
+                Leave.user_id == payload.user_id,
+                Leave.leave_type == 'work_from_home',
+                Leave.status == 'Approved',
+                Leave.start_date <= today_date,
+                Leave.end_date >= today_date
+            )
+            .first()
+        )
+        
+        work_location = 'work_from_home' if work_from_home_leave else 'office'
+
         # Create new check-in with location data
         attendance = Attendance(
             user_id=payload.user_id,
             check_in=datetime.utcnow(),
             gps_location=_compose_location_entry(None, "Check-in", processed_location),
             selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
-            total_hours=0.0
+            total_hours=0.0,
+            work_location=work_location
         )
         db.add(attendance)
         db.commit()
@@ -1455,4 +1493,315 @@ def deactivate_office_timing(
 
     timing.is_active = False
     db.commit()
+
+
+# Online/Offline Status Management
+class OnlineStatusPayload(BaseModel):
+    attendance_id: int
+    is_online: bool
+    reason: Optional[str] = None
+
+
+@router.post("/online-status", status_code=status.HTTP_200_OK)
+def update_online_status(
+    payload: OnlineStatusPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Update user's online/offline status for attendance tracking.
+    When offline, work hours calculation is paused.
+    """
+    from app.db.models.online_status import OnlineStatus
+    
+    # Verify attendance record exists and belongs to user
+    attendance = db.query(Attendance).filter(
+        Attendance.attendance_id == payload.attendance_id,
+        Attendance.user_id == current_user.user_id
+    ).first()
+    
+    if not attendance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attendance record not found"
+        )
+    
+    # Check if user has already checked out
+    if attendance.check_out:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change status after checkout"
+        )
+    
+    # Validate reason for going offline
+    if not payload.is_online:
+        if not payload.reason or len(payload.reason.strip()) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Reason required (minimum 10 characters) for going offline"
+            )
+    
+    # Create status log entry
+    status_log = OnlineStatus(
+        attendance_id=payload.attendance_id,
+        user_id=current_user.user_id,
+        is_online=payload.is_online,
+        reason=payload.reason.strip() if payload.reason else None,
+        timestamp=datetime.now(UTC_TZ)
+    )
+    db.add(status_log)
+    db.commit()
+    db.refresh(status_log)
+    
+    return {
+        "message": f"Status updated to {'online' if payload.is_online else 'offline'}",
+        "status_id": status_log.id,
+        "timestamp": status_log.timestamp.isoformat(),
+        "is_online": status_log.is_online
+    }
+
+
+@router.get("/online-status/{attendance_id}")
+def get_online_status_history(
+    attendance_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get online/offline status history for an attendance record.
+    Returns list of status changes with timestamps.
+    """
+    from app.db.models.online_status import OnlineStatus
+    
+    # Verify attendance belongs to user or user has permission
+    attendance = db.query(Attendance).filter(
+        Attendance.attendance_id == attendance_id
+    ).first()
+    
+    if not attendance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attendance record not found"
+        )
+    
+    # Check permissions
+    if attendance.user_id != current_user.user_id:
+        if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+    
+    # Get status history
+    status_logs = db.query(OnlineStatus).filter(
+        OnlineStatus.attendance_id == attendance_id
+    ).order_by(OnlineStatus.timestamp.asc()).all()
+    
+    return {
+        "attendance_id": attendance_id,
+        "status_history": [
+            {
+                "id": log.id,
+                "is_online": log.is_online,
+                "reason": log.reason,
+                "timestamp": log.timestamp.isoformat()
+            }
+            for log in status_logs
+        ]
+    }
+
+
+@router.get("/current-online-status")
+def get_all_current_online_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get current online/offline status for all users who are checked in today.
+    Returns a map of user_id to online status.
+    Only accessible by admin, hr, and manager roles.
+    """
+    from app.db.models.online_status import OnlineStatus
+    
+    # Check permissions
+    if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Get today's date in UTC
+    today_start = datetime.now(UTC_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+    
+    # Get all attendance records for today that haven't checked out
+    today_attendances = db.query(Attendance).filter(
+        Attendance.check_in >= today_start,
+        Attendance.check_in < today_end,
+        Attendance.check_out.is_(None)  # Only checked-in users
+    ).all()
+    
+    status_map = {}
+    
+    for attendance in today_attendances:
+        # Get the latest status log for this attendance
+        latest_status = db.query(OnlineStatus).filter(
+            OnlineStatus.attendance_id == attendance.attendance_id
+        ).order_by(OnlineStatus.timestamp.desc()).first()
+        
+        # Default to online if no status logs (just checked in)
+        is_online = True if not latest_status else latest_status.is_online
+        
+        status_map[attendance.user_id] = {
+            "is_online": is_online,
+            "attendance_id": attendance.attendance_id,
+            "check_in": attendance.check_in.isoformat(),
+            "last_status_change": latest_status.timestamp.isoformat() if latest_status else attendance.check_in.isoformat()
+        }
+    
+    return status_map
+
+
+@router.get("/user-online-status/{user_id}")
+def get_user_current_online_status(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get current online/offline status for a specific user.
+    """
+    from app.db.models.online_status import OnlineStatus
+    
+    # Check permissions - user can check their own status, or admin/hr/manager can check anyone
+    if current_user.user_id != user_id:
+        if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+    
+    # Get today's attendance for this user
+    today_start = datetime.now(UTC_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+    
+    attendance = db.query(Attendance).filter(
+        Attendance.user_id == user_id,
+        Attendance.check_in >= today_start,
+        Attendance.check_in < today_end
+    ).first()
+    
+    if not attendance:
+        return {
+            "is_checked_in": False,
+            "is_online": False,
+            "message": "User has not checked in today"
+        }
+    
+    # If checked out, they're offline
+    if attendance.check_out:
+        return {
+            "is_checked_in": True,
+            "is_online": False,
+            "checked_out": True,
+            "check_out_time": attendance.check_out.isoformat()
+        }
+    
+    # Get latest status
+    latest_status = db.query(OnlineStatus).filter(
+        OnlineStatus.attendance_id == attendance.attendance_id
+    ).order_by(OnlineStatus.timestamp.desc()).first()
+    
+    is_online = True if not latest_status else latest_status.is_online
+    
+    return {
+        "is_checked_in": True,
+        "is_online": is_online,
+        "attendance_id": attendance.attendance_id,
+        "check_in": attendance.check_in.isoformat(),
+        "last_status_change": latest_status.timestamp.isoformat() if latest_status else attendance.check_in.isoformat()
+    }
+
+
+@router.get("/working-hours/{attendance_id}")
+def calculate_working_hours(
+    attendance_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Calculate actual working hours based on online/offline status.
+    Only counts time when user was online.
+    """
+    from app.db.models.online_status import OnlineStatus
+    
+    # Verify attendance
+    attendance = db.query(Attendance).filter(
+        Attendance.attendance_id == attendance_id
+    ).first()
+    
+    if not attendance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attendance record not found"
+        )
+    
+    # Check permissions
+    if attendance.user_id != current_user.user_id:
+        if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+    
+    # Get status history
+    status_logs = db.query(OnlineStatus).filter(
+        OnlineStatus.attendance_id == attendance_id
+    ).order_by(OnlineStatus.timestamp.asc()).all()
+    
+    # Calculate working hours
+    total_online_seconds = 0
+    last_online_time = None
+    current_status = True  # Assume online after check-in (default)
+    
+    # Start from check-in time
+    check_in_time = attendance.check_in
+    last_online_time = check_in_time
+    
+    # If no status logs exist, user has been online since check-in
+    if not status_logs:
+        end_time = attendance.check_out if attendance.check_out else datetime.now(UTC_TZ)
+        total_online_seconds = (end_time - check_in_time).total_seconds()
+    else:
+        # Process status logs
+        for log in status_logs:
+            if log.is_online:
+                # Going online
+                last_online_time = log.timestamp
+                current_status = True
+            else:
+                # Going offline - calculate time since last online
+                if last_online_time:
+                    duration = (log.timestamp - last_online_time).total_seconds()
+                    total_online_seconds += duration
+                current_status = False
+                last_online_time = None
+        
+        # If currently online, add time until now or checkout
+        if current_status and last_online_time:
+            end_time = attendance.check_out if attendance.check_out else datetime.now(UTC_TZ)
+            duration = (end_time - last_online_time).total_seconds()
+            total_online_seconds += duration
+    
+    # Convert to hours
+    working_hours = total_online_seconds / 3600
+    
+    return {
+        "attendance_id": attendance_id,
+        "working_hours": round(working_hours, 2),
+        "total_seconds": int(total_online_seconds),
+        "is_currently_online": current_status,
+        "check_in": attendance.check_in.isoformat(),
+        "check_out": attendance.check_out.isoformat() if attendance.check_out else None
+    }
     return None

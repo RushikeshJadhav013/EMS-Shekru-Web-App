@@ -298,6 +298,11 @@ export default function EmployeeManagement() {
   const [bulkFileName, setBulkFileName] = useState('');
   const [bulkSummary, setBulkSummary] = useState<BulkUploadResult[]>([]);
   const [isBulkUploading, setIsBulkUploading] = useState(false);
+  
+  // Export dialog states
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportType, setExportType] = useState<'csv' | 'pdf' | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
   const [phoneError, setPhoneError] = useState<string>('');
@@ -1084,14 +1089,22 @@ const formatAadharInput = (value: string) => {
     }
   };
 
-  // Export employees as CSV
-  const exportEmployeesCSV = async () => {
+  // Export employees
+  const performExport = async () => {
+    if (!exportType) return;
+    
+    setIsExporting(true);
+    setIsExportDialogOpen(false);
+    
     try {
-      const blob = await apiService.exportEmployeesCSV();
+      const blob = exportType === 'csv' 
+        ? await apiService.exportEmployeesCSV()
+        : await apiService.exportEmployeesPDF();
+        
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `employees_${new Date().toISOString().split('T')[0]}.csv`;
+      a.download = `employees_${new Date().toISOString().split('T')[0]}.${exportType}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -1099,43 +1112,80 @@ const formatAadharInput = (value: string) => {
       
       toast({
         title: 'Success',
-        description: 'Employee data exported as CSV successfully'
+        description: `Employee data exported as ${exportType.toUpperCase()} successfully`
       });
     } catch (error) {
-      console.error('Failed to export CSV:', error);
+      console.error(`Failed to export ${exportType}:`, error);
       toast({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to export CSV',
+        description: error instanceof Error ? error.message : `Failed to export ${exportType.toUpperCase()}`,
         variant: 'destructive'
       });
+    } finally {
+      setIsExporting(false);
+      setExportType(null);
     }
   };
 
-  // Export employees as PDF
-  const exportEmployeesPDF = async () => {
-    try {
-      const blob = await apiService.exportEmployeesPDF();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `employees_${new Date().toISOString().split('T')[0]}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      toast({
-        title: 'Success',
-        description: 'Employee data exported as PDF successfully'
-      });
-    } catch (error) {
-      console.error('Failed to export PDF:', error);
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to export PDF',
-        variant: 'destructive'
-      });
-    }
+  // Download CSV Template
+  const downloadCSVTemplate = () => {
+    const headers = [
+      'EmployeeID',
+      'Name',
+      'Email',
+      'Department',
+      'Role',
+      'Designation',
+      'Phone',
+      'Address',
+      'JoiningDate',
+      'Status',
+      'Gender',
+      'EmployeeType',
+      'ResignationDate',
+      'PANCard',
+      'AadharCard',
+      'Shift'
+    ];
+    
+    const sampleData = [
+      'EMP001',
+      'John Doe',
+      'john.doe@example.com',
+      'Engineering',
+      'Employee',
+      'Software Engineer',
+      '+91-98765-43210',
+      '123 Main St, City',
+      '2024-01-15',
+      'active',
+      'male',
+      'permanent',
+      '',
+      'ABCDE1234F',
+      '1234-5678-9012',
+      'general'
+    ];
+    
+    const csvContent = [
+      headers.join(','),
+      sampleData.join(',')
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'employee_bulk_upload_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    toast({
+      title: 'Template Downloaded',
+      description: 'CSV template has been downloaded successfully'
+    });
   };
 
   const clearValidationErrors = () => {
@@ -1336,20 +1386,12 @@ const formatAadharInput = (value: string) => {
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
-              onClick={exportEmployeesCSV}
+              onClick={() => setIsExportDialogOpen(true)}
               variant="outline"
               className="group gap-2 border-blue-200 text-slate-700 bg-white/70 hover:bg-gradient-to-r hover:from-blue-500 hover:to-indigo-500 hover:text-white hover:border-transparent shadow-sm hover:shadow-lg transition-all dark:text-slate-100 dark:bg-slate-900/60 dark:border-slate-700"
             >
-              <FileSpreadsheet className="h-4 w-4 text-blue-600 transition-colors group-hover:text-white" />
-              Export CSV
-            </Button>
-            <Button
-              onClick={exportEmployeesPDF}
-              variant="outline"
-              className="group gap-2 border-blue-200 text-slate-700 bg-white/70 hover:bg-gradient-to-r hover:from-purple-500 hover:to-pink-500 hover:text-white hover:border-transparent shadow-sm hover:shadow-lg transition-all dark:text-slate-100 dark:bg-slate-900/60 dark:border-slate-700"
-            >
-              <FileText className="h-4 w-4 text-purple-600 transition-colors group-hover:text-white" />
-              Export PDF
+              <Download className="h-4 w-4 text-blue-600 transition-colors group-hover:text-white" />
+              Export
             </Button>
             <Dialog
               open={isBulkUploadOpen}
@@ -1375,11 +1417,21 @@ const formatAadharInput = (value: string) => {
                   <DialogDescription>Upload multiple employees at once using CSV format</DialogDescription>
                 </DialogHeader>
                   <div className="space-y-4 overflow-y-auto pr-2" style={{ maxHeight: '55vh' }}>
-                    <div>
-                      <Label>CSV Format</Label>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        EmployeeID, Name, Email, Department, Role, Designation, Phone, Address, JoiningDate, Status, Gender, EmployeeType, ResignationDate, PANCard, AadharCard, Shift
-                      </p>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <Label>CSV Format</Label>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          EmployeeID, Name, Email, Department, Role, Designation, Phone, Address, JoiningDate, Status, Gender, EmployeeType, ResignationDate, PANCard, AadharCard, Shift
+                        </p>
+                      </div>
+                      <Button
+                        onClick={downloadCSVTemplate}
+                        variant="outline"
+                        className="gap-2 border-green-200 text-green-700 bg-green-50 hover:bg-green-100 dark:bg-green-950 dark:text-green-300 dark:border-green-800 shadow-sm"
+                      >
+                        <Download className="h-4 w-4" />
+                        Download Template
+                      </Button>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="bulk-file">CSV File</Label>
@@ -1556,9 +1608,14 @@ const formatAadharInput = (value: string) => {
                       <Input
                         id="create-employeeId"
                         value={formData.employeeId || ''}
-                        onChange={(e) => setFormData((prev) => ({ ...prev, employeeId: e.target.value }))}
+                        onChange={(e) => {
+                          // Remove all spaces from employee ID
+                          const value = e.target.value.replace(/\s/g, '');
+                          setFormData((prev) => ({ ...prev, employeeId: value }));
+                        }}
                         required
                         className="mt-1"
+                        placeholder="e.g., EMP001"
                       />
                     </div>
                     <div>
@@ -1566,9 +1623,14 @@ const formatAadharInput = (value: string) => {
                       <Input
                         id="create-name"
                         value={formData.name || ''}
-                        onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                        onChange={(e) => {
+                          // Only allow alphabetic characters and spaces
+                          const value = e.target.value.replace(/[^a-zA-Z\s]/g, '');
+                          setFormData((prev) => ({ ...prev, name: value }));
+                        }}
                         required
                         className="mt-1"
+                        placeholder="e.g., John Doe"
                       />
                     </div>
                     <div>
@@ -1700,7 +1762,8 @@ const formatAadharInput = (value: string) => {
                         id="create-panCard"
                         value={formData.panCard || ''}
                         onChange={(e) => {
-                          const panCard = e.target.value.toUpperCase();
+                          // Limit to maximum 10 characters
+                          const panCard = e.target.value.toUpperCase().slice(0, 10);
                           setFormData((prev) => ({ ...prev, panCard }));
                           validatePanCard(panCard);
                           // Clear duplicate error when user starts typing
@@ -1709,6 +1772,7 @@ const formatAadharInput = (value: string) => {
                           }
                         }}
                         required
+                        maxLength={10}
                         className={`mt-1 ${panCardError || panCardDuplicateError ? 'border-red-500' : ''}`}
                         placeholder="e.g., ABCDE1234F"
                       />
@@ -1960,7 +2024,7 @@ const formatAadharInput = (value: string) => {
                           employee.role === 'TeamLead' ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white border-0' :
                           'bg-gradient-to-r from-green-500 to-emerald-600 text-white border-0'
                         } shadow-md`}>
-                          {employee.role}
+                          {employee.role ? employee.role.charAt(0).toUpperCase() + employee.role.slice(1) : '-'}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -1969,7 +2033,7 @@ const formatAadharInput = (value: string) => {
                             ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white border-0 shadow-md' 
                             : 'bg-gradient-to-r from-gray-400 to-slate-500 text-white border-0 shadow-md'
                         }`}>
-                          {employee.status}
+                          {employee.status ? employee.status.charAt(0).toUpperCase() + employee.status.slice(1) : '-'}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
@@ -2013,7 +2077,7 @@ const formatAadharInput = (value: string) => {
                             variant="outline"
                             onClick={() => handleToggleStatus(employee.employeeId)}
                             disabled={isDeleting === employee.employeeId}
-                            className="h-9 text-xs px-3 border-2 hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 dark:hover:from-blue-950 dark:hover:to-indigo-950 transition-all font-medium"
+                            className="h-9 w-[90px] text-xs px-3 border-2 hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 dark:hover:from-blue-950 dark:hover:to-indigo-950 transition-all font-medium"
                           >
                             {employee.status === 'active' ? 'Deactivate' : 'Activate'}
                           </Button>
@@ -2092,9 +2156,14 @@ const formatAadharInput = (value: string) => {
               <Input
                 id="edit-name"
                 value={formData.name || ''}
-                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                onChange={(e) => {
+                  // Only allow alphabetic characters and spaces
+                  const value = e.target.value.replace(/[^a-zA-Z\s]/g, '');
+                  setFormData((prev) => ({ ...prev, name: value }));
+                }}
                 required
                 className="mt-1"
+                placeholder="e.g., John Doe"
               />
             </div>
             <div>
@@ -2226,7 +2295,8 @@ const formatAadharInput = (value: string) => {
                 id="edit-panCard"
                 value={formData.panCard || ''}
                 onChange={(e) => {
-                  const panCard = e.target.value.toUpperCase();
+                  // Limit to maximum 10 characters
+                  const panCard = e.target.value.toUpperCase().slice(0, 10);
                   setFormData((prev) => ({ ...prev, panCard }));
                   validatePanCard(panCard);
                   // Clear duplicate error when user starts typing
@@ -2235,6 +2305,7 @@ const formatAadharInput = (value: string) => {
                   }
                 }}
                 required
+                maxLength={10}
                 className={`mt-1 ${panCardError || panCardDuplicateError ? 'border-red-500' : ''}`}
                 placeholder="e.g., ABCDE1234F"
               />
@@ -2376,8 +2447,11 @@ const formatAadharInput = (value: string) => {
               <div className="text-center">
                 <h3 className="text-lg font-semibold">{viewEmployee.name}</h3>
                 <p className="text-sm text-muted-foreground mt-1">{viewEmployee.designation || '-'}</p>
+                <p className="text-sm font-medium text-blue-600 dark:text-blue-400 mt-1">
+                  {viewEmployee.role ? viewEmployee.role.charAt(0).toUpperCase() + viewEmployee.role.slice(1) : '-'}
+                </p>
                 <Badge variant={viewEmployee.status === 'active' ? 'default' : 'secondary'} className="mt-2">
-                  {viewEmployee.status}
+                  {viewEmployee.status ? viewEmployee.status.charAt(0).toUpperCase() + viewEmployee.status.slice(1) : '-'}
                 </Badge>
               </div>
               <div className="w-full space-y-2 text-sm bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 p-4 rounded-lg">
@@ -2395,7 +2469,7 @@ const formatAadharInput = (value: string) => {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Role</span>
-                  <span className="font-medium">{viewEmployee.role}</span>
+                  <span className="font-medium">{viewEmployee.role ? viewEmployee.role.charAt(0).toUpperCase() + viewEmployee.role.slice(1) : '-'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Phone</span>
@@ -2453,6 +2527,85 @@ const formatAadharInput = (value: string) => {
               }}
             >
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Export Dialog */}
+      <Dialog open={isExportDialogOpen} onOpenChange={setIsExportDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Export Employee Data</DialogTitle>
+            <DialogDescription>
+              Choose the format to export employee data
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            {/* Export Format Selection */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Export Format</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setExportType('csv')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'csv'
+                      ? 'border-green-600 bg-green-50 dark:bg-green-950'
+                      : 'border-gray-200 hover:border-green-300 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <FileSpreadsheet className={`h-8 w-8 ${exportType === 'csv' ? 'text-green-600' : 'text-gray-400'}`} />
+                    <span className={`font-semibold ${exportType === 'csv' ? 'text-green-600' : 'text-gray-600'}`}>
+                      CSV
+                    </span>
+                    <span className="text-xs text-muted-foreground text-center">
+                      Excel compatible
+                    </span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportType('pdf')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'pdf'
+                      ? 'border-red-600 bg-red-50 dark:bg-red-950'
+                      : 'border-gray-200 hover:border-red-300 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <FileText className={`h-8 w-8 ${exportType === 'pdf' ? 'text-red-600' : 'text-gray-400'}`} />
+                    <span className={`font-semibold ${exportType === 'pdf' ? 'text-red-600' : 'text-gray-600'}`}>
+                      PDF
+                    </span>
+                    <span className="text-xs text-muted-foreground text-center">
+                      Print ready
+                    </span>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsExportDialogOpen(false);
+                setExportType(null);
+              }}
+              disabled={isExporting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={performExport}
+              disabled={isExporting || !exportType}
+              className={exportType === 'csv' ? 'bg-green-600 hover:bg-green-700' : exportType === 'pdf' ? 'bg-red-600 hover:bg-red-700' : ''}
+            >
+              {isExporting ? 'Exporting...' : exportType ? `Export ${exportType.toUpperCase()}` : 'Select Format'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -424,6 +424,39 @@ class ApiService {
     return this.request('/leave/balance');
   }
 
+  // Leave Allocation Configuration (Admin only)
+  async getLeaveAllocationConfig(): Promise<any> {
+    return this.request('/leave/config/allocation');
+  }
+
+  async getCurrentLeaveAllocation(): Promise<any> {
+    return this.request('/leave/config/allocation/current');
+  }
+
+  async createLeaveAllocationConfig(data: {
+    total_annual_leave: number;
+    sick_leave_allocation: number;
+    casual_leave_allocation: number;
+    other_leave_allocation: number;
+  }): Promise<any> {
+    return this.request('/leave/config/allocation', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateLeaveAllocationConfig(configId: number, data: {
+    total_annual_leave?: number;
+    sick_leave_allocation?: number;
+    casual_leave_allocation?: number;
+    other_leave_allocation?: number;
+  }): Promise<any> {
+    return this.request(`/leave/config/allocation/${configId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
   // Update a leave request
   async updateLeaveRequest(leaveId: string, data: LeaveUpdateData): Promise<LeaveRequestResponse> {
     return this.request(`/leave/${leaveId}`, {

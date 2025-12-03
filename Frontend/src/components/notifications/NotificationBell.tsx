@@ -21,6 +21,17 @@ export const NotificationBell: React.FC = () => {
   const { notifications, unreadCount, markAsRead, markAllAsRead, clearNotification } = useNotifications();
   const [isOpen, setIsOpen] = useState(false);
   
+  // Check if notifications are enabled
+  const areNotificationsEnabled = () => {
+    const stored = localStorage.getItem('notificationsEnabled');
+    return stored === null ? true : stored === 'true';
+  };
+  
+  // Don't render the bell if notifications are disabled
+  if (!areNotificationsEnabled()) {
+    return null;
+  }
+  
   // Filter to show only unread notifications
   const unreadNotifications = notifications.filter(n => !n.read);
 
@@ -155,7 +166,30 @@ export const NotificationBell: React.FC = () => {
                       </p>
                       <div className="flex items-center justify-between pt-1">
                         <p className="text-[10px] text-muted-foreground">
-                          {formatDistanceToNow(new Date(notification.createdAt), { addSuffix: true })}
+                          {(() => {
+                            try {
+                              // Parse the timestamp and ensure it's treated as UTC
+                              const timestamp = notification.createdAt;
+                              let date: Date;
+                              
+                              // If timestamp doesn't end with 'Z', it's likely UTC without the indicator
+                              if (timestamp && !timestamp.endsWith('Z') && !timestamp.includes('+')) {
+                                date = new Date(timestamp + 'Z');
+                              } else {
+                                date = new Date(timestamp);
+                              }
+                              
+                              // Check if date is valid
+                              if (isNaN(date.getTime())) {
+                                return 'Just now';
+                              }
+                              
+                              return formatDistanceToNow(date, { addSuffix: true });
+                            } catch (error) {
+                              console.error('Error formatting notification time:', error);
+                              return 'Just now';
+                            }
+                          })()}
                         </p>
                         <Button
                           variant="ghost"

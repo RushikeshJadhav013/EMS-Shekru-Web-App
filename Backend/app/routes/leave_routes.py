@@ -23,6 +23,11 @@ from app.crud.leave_crud import (
     mark_leave_notification_as_read,
     get_leave_balance,
 )
+from app.crud.leave_config_crud import (
+    get_active_leave_config,
+    create_leave_config,
+    update_leave_config,
+)
 from app.dependencies import get_current_user, require_roles
 from app.schemas.leave_schema import (
     LeaveCreate,
@@ -31,6 +36,11 @@ from app.schemas.leave_schema import (
     LeaveNotificationOut,
     LeaveUpdate,
     LeaveBalanceResponse,
+)
+from app.schemas.leave_config_schema import (
+    LeaveAllocationConfigCreate,
+    LeaveAllocationConfigOut,
+    LeaveAllocationConfigUpdate,
 )
 from app.db.models.user import User
 from fastapi import Body
@@ -245,3 +255,118 @@ def mark_notification_as_read(
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
     return notification
+
+
+# ============================================================================
+# LEAVE ALLOCATION CONFIGURATION ENDPOINTS (Admin Only)
+# ============================================================================
+
+@router.get("/config/allocation", response_model=LeaveAllocationConfigOut)
+def get_leave_allocation_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([RoleEnum.ADMIN]))
+):
+    """
+    Get the active leave allocation configuration.
+    Only accessible by admins.
+    """
+    config = get_active_leave_config(db)
+    
+    if not config:
+        # Return default configuration if none exists
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No leave allocation configuration found. Please create one."
+        )
+    
+    return config
+
+
+@router.post("/config/allocation", response_model=LeaveAllocationConfigOut, status_code=status.HTTP_201_CREATED)
+def create_leave_allocation_config_route(
+    config_data: LeaveAllocationConfigCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([RoleEnum.ADMIN]))
+):
+    """
+    Create a new leave allocation configuration.
+    This will deactivate all previous configurations and apply the new one globally.
+    Only accessible by admins.
+    """
+    # Validate that allocations are reasonable
+    total = config_data.total_annual_leave
+    sick = config_data.sick_leave_allocation
+    casual = config_data.casual_leave_allocation
+    other = config_data.other_leave_allocation
+    
+    # Create the configuration
+    config = create_leave_config(
+        db=db,
+        total_annual_leave=total,
+        sick_leave_allocation=sick,
+        casual_leave_allocation=casual,
+        other_leave_allocation=other,
+        updated_by=current_user.user_id
+    )
+    
+    return config
+
+
+@router.put("/config/allocation/{config_id}", response_model=LeaveAllocationConfigOut)
+def update_leave_allocation_config_route(
+    config_id: int,
+    config_data: LeaveAllocationConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([RoleEnum.ADMIN]))
+):
+    """
+    Update an existing leave allocation configuration.
+    Only accessible by admins.
+    """
+    config = update_leave_config(
+        db=db,
+        config_id=config_id,
+        total_annual_leave=config_data.total_annual_leave,
+        sick_leave_allocation=config_data.sick_leave_allocation,
+        casual_leave_allocation=config_data.casual_leave_allocation,
+        other_leave_allocation=config_data.other_leave_allocation,
+        updated_by=current_user.user_id
+    )
+    
+    if not config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Leave allocation configuration not found"
+        )
+    
+    return config
+
+
+@router.get("/config/allocation/current")
+def get_current_leave_allocation(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get the current leave allocation values (for all users).
+    Returns default values if no configuration exists.
+    """
+    config = get_active_leave_config(db)
+    
+    if config:
+        return {
+            "total_annual_leave": config.total_annual_leave,
+            "sick_leave_allocation": config.sick_leave_allocation,
+            "casual_leave_allocation": config.casual_leave_allocation,
+            "other_leave_allocation": config.other_leave_allocation,
+            "is_configured": True
+        }
+    
+    # Return defaults
+    return {
+        "total_annual_leave": 15,
+        "sick_leave_allocation": 10,
+        "casual_leave_allocation": 5,
+        "other_leave_allocation": 0,
+        "is_configured": False
+    }

@@ -7,7 +7,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
     JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
-    OTP_EXPIRY_MINUTES: int = 10
+    OTP_EXPIRY_SECONDS: int = 30
+    
+    @property
+    def OTP_EXPIRY_MINUTES(self) -> float:
+        """Calculate OTP expiry in minutes from seconds"""
+        return self.OTP_EXPIRY_SECONDS / 60
     
     # Environment-based OTP settings
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")  # development, testing, production

@@ -12,6 +12,8 @@ import { toast } from '@/hooks/use-toast';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
+import OnlineStatusToggle from '@/components/attendance/OnlineStatusToggle';
+import OnlineStatusIndicator from '@/components/attendance/OnlineStatusIndicator';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X, Download, Search, Loader2 } from 'lucide-react';
 import { AttendanceRecord, UserRole } from '@/types';
 import { format, subMonths } from 'date-fns';
@@ -80,6 +82,12 @@ const AttendanceWithToggle: React.FC = () => {
   const [selectedExportDepartment, setSelectedExportDepartment] = useState<string>('');
   const [exportDepartments, setExportDepartments] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
+  
+  // Online/Offline status state
+  const [isOnline, setIsOnline] = useState(true);
+  const [workingHours, setWorkingHours] = useState('0:00');
+  const [onlineStatusMap, setOnlineStatusMap] = useState<Record<number, boolean>>({});
+  const [allUsersOnlineStatus, setAllUsersOnlineStatus] = useState<Record<string, boolean>>({});
 
   const resolveStaticUrl = useCallback((url?: string | null) => {
     if (!url) return '';
@@ -666,6 +674,12 @@ const AttendanceWithToggle: React.FC = () => {
       }
       await loadFromBackend();
       toast({ title: 'Success', description: isCheckingIn ? t.attendance.checkedIn : t.attendance.checkedOut });
+      
+      // Set user as online after check-in
+      if (isCheckingIn) {
+        setIsOnline(true);
+      }
+      
       if (!isCheckingIn) {
         setTodaysWork('');
         setWorkPdf(null);
@@ -684,6 +698,136 @@ const AttendanceWithToggle: React.FC = () => {
       setWorkPdf(file);
     }
   };
+
+  const handleOnlineStatusChange = async (newStatus: boolean, reason?: string) => {
+    if (!currentAttendance?.id) {
+      throw new Error('No active attendance record');
+    }
+
+    const token = localStorage.getItem('token');
+    const response = await fetch('https://staffly.space/attendance/online-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify({
+        attendance_id: parseInt(currentAttendance.id),
+        is_online: newStatus,
+        reason: reason || null,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Failed to update status');
+    }
+
+    setIsOnline(newStatus);
+    
+    // Fetch updated working hours
+    await fetchWorkingHours();
+  };
+
+  const fetchWorkingHours = async () => {
+    if (!currentAttendance?.id) return;
+
+    try {
+      // Calculate hours from check-in time
+      if (currentAttendance.checkInTime) {
+        const checkInDate = new Date(currentAttendance.checkInTime);
+        const now = new Date();
+        const diffMs = now.getTime() - checkInDate.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
+        const hours = Math.floor(diffHours);
+        const minutes = Math.round((diffHours - hours) * 60);
+        setWorkingHours(`${hours}:${minutes.toString().padStart(2, '0')}`);
+      } else {
+        setWorkingHours('0:00');
+      }
+    } catch (error) {
+      console.error('Failed to calculate working hours:', error);
+      setWorkingHours('0:00');
+    }
+  };
+
+  // Fetch working hours periodically when checked in
+  useEffect(() => {
+    if (currentAttendance && !currentAttendance.checkOutTime) {
+      fetchWorkingHours();
+      const interval = setInterval(fetchWorkingHours, 30000); // Update every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [currentAttendance]);
+
+  // Fetch online status for all employees (for admin/hr/manager view)
+  const fetchAllOnlineStatus = useCallback(async () => {
+    if (!canViewEmployeeAttendance) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://staffly.space/attendance/current-online-status', {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Convert to simple map of user_id -> is_online
+        const statusMap: Record<number, boolean> = {};
+        Object.keys(data).forEach(userId => {
+          statusMap[parseInt(userId)] = data[userId].is_online;
+        });
+        setOnlineStatusMap(statusMap);
+      }
+    } catch (error) {
+      console.error('Failed to fetch online status:', error);
+    }
+  }, [canViewEmployeeAttendance]);
+
+  // Fetch online status periodically when viewing employee attendance
+  useEffect(() => {
+    if (viewMode === 'employee' && canViewEmployeeAttendance) {
+      fetchAllOnlineStatus();
+      const interval = setInterval(fetchAllOnlineStatus, 15000); // Update every 15 seconds
+      return () => clearInterval(interval);
+    }
+  }, [viewMode, canViewEmployeeAttendance, fetchAllOnlineStatus]);
+
+  // Fetch all users' online status (for Admin, HR, Manager viewing employee attendance)
+  const fetchAllUsersOnlineStatus = useCallback(async () => {
+    if (!canViewEmployeeAttendance) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://staffly.space/attendance/current-online-status', {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const statusMap: Record<string, boolean> = {};
+        Object.keys(data).forEach(userId => {
+          statusMap[userId] = data[userId].is_online;
+        });
+        setAllUsersOnlineStatus(statusMap);
+      }
+    } catch (error) {
+      console.error('Failed to fetch online status:', error);
+    }
+  }, [canViewEmployeeAttendance]);
+
+  // Fetch online status periodically when viewing employee attendance
+  useEffect(() => {
+    if (viewMode === 'employee' && canViewEmployeeAttendance) {
+      fetchAllUsersOnlineStatus();
+      const interval = setInterval(fetchAllUsersOnlineStatus, 15000); // Update every 15 seconds
+      return () => clearInterval(interval);
+    }
+  }, [viewMode, canViewEmployeeAttendance, fetchAllUsersOnlineStatus]);
 
   const getStatusBadge = (status: string, checkInTime?: string, checkOutTime?: string) => {
     if (status === 'late' || checkInTime && checkInTime > '09:30:00') {
@@ -891,6 +1035,16 @@ const AttendanceWithToggle: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Online/Offline Status Toggle */}
+          {currentAttendance && !currentAttendance.checkOutTime && (
+            <OnlineStatusToggle
+              isOnline={isOnline}
+              onStatusChange={handleOnlineStatusChange}
+              workingHours={workingHours}
+              isVisible={true}
+            />
+          )}
+
           {/* Attendance History */}
           <Card>
             <CardHeader>
@@ -977,6 +1131,7 @@ const AttendanceWithToggle: React.FC = () => {
                         <TableHead>Employee (Name & Email)</TableHead>
                         <TableHead>Employee ID</TableHead>
                         <TableHead>Department</TableHead>
+                        <TableHead>Online Status</TableHead>
                         <TableHead>Check In</TableHead>
                         <TableHead>Check Out</TableHead>
                         <TableHead>Hours</TableHead>
@@ -999,11 +1154,34 @@ const AttendanceWithToggle: React.FC = () => {
                             </TableCell>
                             <TableCell className="font-medium">{record.userId}</TableCell>
                             <TableCell>{record.department || '-'}</TableCell>
+                            <TableCell>
+                              {!record.checkOutTime ? (
+                                <OnlineStatusIndicator 
+                                  isOnline={onlineStatusMap[parseInt(record.userId)] ?? true} 
+                                  size="md"
+                                  showLabel={true}
+                                />
+                              ) : (
+                                <span className="text-xs text-muted-foreground">Checked Out</span>
+                              )}
+                            </TableCell>
                             <TableCell>{formatIST(record.date, record.checkInTime)}</TableCell>
                             <TableCell>{formatIST(record.date, record.checkOutTime)}</TableCell>
                             <TableCell>{record.workHours || '-'} h</TableCell>
-                            <TableCell className="text-sm text-muted-foreground">
-                              {record.checkInLocation.address || 'N/A'}
+                            <TableCell>
+                              {record.checkInLocation?.address && record.checkInLocation.address !== 'N/A' ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setSelectedRecord(record)}
+                                  className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950"
+                                >
+                                  <MapPin className="h-4 w-4 mr-1" />
+                                  View
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">-</span>
+                              )}
                             </TableCell>
                             <TableCell>
                               {record.checkInSelfie ? (
@@ -1422,6 +1600,90 @@ const AttendanceWithToggle: React.FC = () => {
             <Button 
               variant="outline" 
               onClick={() => setShowSelfieModal(false)}
+              className="gap-2"
+            >
+              <X className="h-4 w-4" />
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Location Details Modal */}
+      <Dialog open={!!selectedRecord && !showSelfieModal} onOpenChange={(open) => !open && setSelectedRecord(null)}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-blue-600" />
+              Location Details
+            </DialogTitle>
+            <DialogDescription>
+              Check-in and check-out location information
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-4">
+            {/* Check-in Location */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="h-3 w-3 rounded-full bg-green-500"></div>
+                <h3 className="font-semibold text-base">Check-in Location</h3>
+              </div>
+              <div className="bg-green-50 dark:bg-green-950/20 border-2 border-green-200 dark:border-green-800 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <MapPin className="h-5 w-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-green-900 dark:text-green-100 mb-1">
+                      {formatIST(selectedRecord?.date || '', selectedRecord?.checkInTime)}
+                    </p>
+                    <p className="text-sm text-green-700 dark:text-green-300 leading-relaxed">
+                      {selectedRecord?.checkInLocation?.address || 'Location not available'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Check-out Location */}
+            {selectedRecord?.checkOutTime ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-3 w-3 rounded-full bg-red-500"></div>
+                  <h3 className="font-semibold text-base">Check-out Location</h3>
+                </div>
+                <div className="bg-red-50 dark:bg-red-950/20 border-2 border-red-200 dark:border-red-800 rounded-xl p-4">
+                  <div className="flex items-start gap-3">
+                    <MapPin className="h-5 w-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-red-900 dark:text-red-100 mb-1">
+                        {formatIST(selectedRecord?.date || '', selectedRecord?.checkOutTime)}
+                      </p>
+                      <p className="text-sm text-red-700 dark:text-red-300 leading-relaxed">
+                        {selectedRecord?.checkOutLocation?.address || 'Location not available'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-3 w-3 rounded-full bg-slate-400"></div>
+                  <h3 className="font-semibold text-base">Check-out Location</h3>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-900/20 border-2 border-slate-200 dark:border-slate-700 rounded-xl p-4">
+                  <p className="text-sm text-slate-600 dark:text-slate-400 text-center py-2">
+                    User has not checked out yet
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline"
+              onClick={() => setSelectedRecord(null)}
               className="gap-2"
             >
               <X className="h-4 w-4" />

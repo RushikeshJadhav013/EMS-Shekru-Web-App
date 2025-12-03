@@ -89,6 +89,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const audioRef = useRef<{ play: () => void } | null>(null);
   const pollIntervalRef = useRef<number | null>(null);
   const pollIdleTimeoutRef = useRef<number | null>(null);
+  
+  // Check if notifications are enabled
+  const areNotificationsEnabled = () => {
+    const stored = localStorage.getItem('notificationsEnabled');
+    return stored === null ? true : stored === 'true';
+  };
 
   // Load notifications from localStorage
   useEffect(() => {
@@ -254,6 +260,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const fetchBackendNotifications = useCallback(async () => {
     if (!user) return;
+    
+    // Check if notifications are enabled
+    if (!areNotificationsEnabled()) {
+      return;
+    }
+    
     const authHeader = getAuthHeader();
     if (!authHeader) {
       stopPolling();
@@ -429,6 +441,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       stopPolling();
       return;
     }
+    
+    // Check if notifications are enabled
+    if (!areNotificationsEnabled()) {
+      stopPolling();
+      return;
+    }
 
     // Check if we have a valid token before starting
     const authHeader = getAuthHeader();
@@ -484,6 +502,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const addNotification = (notification: Omit<Notification, 'id' | 'userId' | 'createdAt' | 'read'>) => {
     if (!user) return;
+    
+    // Check if notifications are enabled
+    if (!areNotificationsEnabled()) {
+      return;
+    }
 
     const newNotification: Notification = {
       ...notification,

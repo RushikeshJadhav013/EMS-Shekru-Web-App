@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/use-toast';
+import { Switch } from '@/components/ui/switch';
 import {
   User,
   Mail,
@@ -31,6 +32,8 @@ import {
   TrendingUp,
   Palette,
   Check,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 
 const Profile: React.FC = () => {
@@ -43,6 +46,10 @@ const Profile: React.FC = () => {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [employeeData, setEmployeeData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    const stored = localStorage.getItem('notificationsEnabled');
+    return stored === null ? true : stored === 'true';
+  });
 
   // Fetch employee data from database
   useEffect(() => {
@@ -87,6 +94,17 @@ const Profile: React.FC = () => {
 
     fetchEmployeeData();
   }, [user?.email, user?.id]);
+
+  const handleNotificationToggle = (enabled: boolean) => {
+    setNotificationsEnabled(enabled);
+    localStorage.setItem('notificationsEnabled', enabled.toString());
+    toast({
+      title: enabled ? 'Notifications Enabled' : 'Notifications Disabled',
+      description: enabled 
+        ? 'You will now receive notifications.' 
+        : 'You will no longer receive notifications.',
+    });
+  };
 
   if (!user || !editedUser) return null;
   
@@ -417,6 +435,29 @@ const Profile: React.FC = () => {
                   </div>
                 </div>
                 <div className="border-t pt-6"></div>
+                <div className="flex items-center justify-between p-4 rounded-lg border bg-gradient-to-r from-blue-50/50 to-indigo-50/50 dark:from-blue-950/20 dark:to-indigo-950/20">
+                  <div className="flex items-center gap-3">
+                    {notificationsEnabled ? (
+                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+                        <Bell className="h-5 w-5 text-white" />
+                      </div>
+                    ) : (
+                      <div className="h-10 w-10 rounded-lg bg-gray-400 dark:bg-gray-600 flex items-center justify-center">
+                        <BellOff className="h-5 w-5 text-white" />
+                      </div>
+                    )}
+                    <div>
+                      <p className="font-medium">Push Notifications</p>
+                      <p className="text-sm text-muted-foreground">
+                        {notificationsEnabled ? 'Receive real-time updates' : 'Notifications are disabled'}
+                      </p>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={notificationsEnabled}
+                    onCheckedChange={handleNotificationToggle}
+                  />
+                </div>
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">Two-Factor Authentication</p>

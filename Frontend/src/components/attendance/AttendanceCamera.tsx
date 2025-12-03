@@ -73,12 +73,22 @@ const AttendanceCamera: React.FC<AttendanceCameraProps> = ({ onCapture, onCancel
         
         const imageData = canvas.toDataURL('image/jpeg', 0.8);
         setPhoto(imageData);
+        
+        // Stop the camera stream after capturing to save resources
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+        }
       }
     }
-  }, []);
+  }, [stream]);
 
-  const retakePhoto = () => {
+  const retakePhoto = async () => {
     setPhoto(null);
+    // Restart the camera if it was stopped
+    if (!stream || !stream.active) {
+      setIsLoading(true);
+      await startCamera();
+    }
   };
 
   const confirmPhoto = () => {

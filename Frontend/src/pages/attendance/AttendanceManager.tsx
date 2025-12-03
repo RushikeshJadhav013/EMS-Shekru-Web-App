@@ -9,11 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings, LogOut, AlertTriangle, CheckCircle2, Timer } from 'lucide-react';
+import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings, LogOut, AlertTriangle, CheckCircle2, Timer, FileSpreadsheet, FileText } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { AttendanceRecord } from '@/types';
 import { format, subMonths, subDays } from 'date-fns';
 import { DatePicker } from '@/components/ui/date-picker';
+import OnlineStatusIndicator from '@/components/attendance/OnlineStatusIndicator';
 
 interface EmployeeAttendance extends AttendanceRecord {
   userName: string;
@@ -26,6 +27,7 @@ interface EmployeeAttendance extends AttendanceRecord {
   scheduledEnd?: string | null;
   workSummary?: string | null;
   workReport?: string | null;
+  workLocation?: string;
 }
 
 interface OfficeTiming {
@@ -59,7 +61,7 @@ const AttendanceManager: React.FC = () => {
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendance | null>(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
 const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: string | null }>({ open: false, summary: null });
-  const [locationModal, setLocationModal] = useState<{ open: boolean; location: string | null }>({ open: false, location: null });
+  const [locationModal, setLocationModal] = useState<{ open: boolean; location: EmployeeAttendance | null }>({ open: false, location: null });
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -96,10 +98,33 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     checkInGrace: 15,
     checkOutGrace: 0,
   });
+  const [onlineStatusMap, setOnlineStatusMap] = useState<Record<number, boolean>>({});
  
   const getAuthHeaders = () => {
     const token = localStorage.getItem('token');
     return token ? { Authorization: token } : {};
+  };
+
+  const fetchAllOnlineStatus = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://staffly.space/attendance/current-online-status', {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const statusMap: Record<number, boolean> = {};
+        Object.keys(data).forEach(userId => {
+          statusMap[parseInt(userId)] = data[userId].is_online;
+        });
+        setOnlineStatusMap(statusMap);
+      }
+    } catch (error) {
+      console.error('Failed to fetch online status:', error);
+    }
   };
 
   const resolveMediaUrl = (url?: string | null) => {
@@ -113,6 +138,11 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     loadAllAttendance();
     fetchSummary();
     loadEmployees();
+    fetchAllOnlineStatus();
+    
+    // Fetch online status every 15 seconds
+    const interval = setInterval(fetchAllOnlineStatus, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -426,6 +456,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             scheduledEnd: scheduledEnd || undefined,
             workSummary: rec.workSummary || rec.work_summary || null,
             workReport: resolveMediaUrl(rec.workReport || rec.work_report),
+            workLocation: rec.workLocation || rec.work_location || 'office',
           };
         });
         
@@ -593,8 +624,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     }
   };
 
-  const openExportModal = (type: 'csv' | 'pdf') => {
-    setExportType(type);
+  const openExportModal = () => {
+    setExportType(null);
     setExportModalOpen(true);
     // Set default dates
     const today = new Date();
@@ -701,13 +732,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     }
   };
 
-  const exportToCSV = () => {
-    openExportModal('csv');
-  };
-  
-  const exportToPDF = () => {
-    openExportModal('pdf');
-  };
+
 
 
   const todayStats = {
@@ -804,32 +829,18 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <p className="text-sm text-muted-foreground mt-1">{t.attendance.monitorTeamAttendance}</p>
             </div>
           </div>
-          <div className="flex gap-2">
-            <Button 
-              onClick={exportToCSV} 
-              variant="outline" 
-              className="gap-2 bg-white dark:bg-gray-900 hover:bg-green-50 dark:hover:bg-green-950 border-2 border-green-600 hover:border-green-700 font-medium shadow-md hover:shadow-lg transition-all"
-              disabled={isExporting}
-              style={{ color: '#15803d' }}
-            >
-              <Download className="h-4 w-4" style={{ color: '#15803d' }} />
-              <span className="font-semibold" style={{ color: '#15803d' }}>
-                {isExporting ? t.attendance.exporting : t.attendance.exportCSV}
-              </span>
-            </Button>
-            <Button 
-              onClick={exportToPDF} 
-              variant="outline" 
-              className="gap-2 bg-white dark:bg-gray-900 hover:bg-red-50 dark:hover:bg-red-950 border-2 border-red-600 hover:border-red-700 font-medium shadow-md hover:shadow-lg transition-all"
-              disabled={isExporting}
-              style={{ color: '#b91c1c' }}
-            >
-              <Download className="h-4 w-4" style={{ color: '#b91c1c' }} />
-              <span className="font-semibold" style={{ color: '#b91c1c' }}>
-                {isExporting ? t.attendance.exporting : t.attendance.exportPDF}
-              </span>
-            </Button>
-          </div>
+          <Button 
+            onClick={() => setExportModalOpen(true)} 
+            variant="outline" 
+            className="gap-2 bg-white dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-950 border-2 border-blue-600 hover:border-blue-700 font-medium shadow-md hover:shadow-lg transition-all"
+            disabled={isExporting}
+            style={{ color: '#2563eb' }}
+          >
+            <Download className="h-4 w-4" style={{ color: '#2563eb' }} />
+            <span className="font-semibold" style={{ color: '#2563eb' }}>
+              {isExporting ? t.attendance.exporting : 'Export'}
+            </span>
+          </Button>
         </div>
       </div>
 
@@ -921,6 +932,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                     <th className="text-left p-3 font-medium">{t.attendance.employee}</th>
                     <th className="text-left p-3 font-medium">{t.attendance.employeeId}</th>
                     <th className="text-left p-3 font-medium">{t.attendance.department}</th>
+                    <th className="text-left p-3 font-medium">Work Location</th>
+                    <th className="text-left p-3 font-medium">Online Status</th>
                     <th className="text-left p-3 font-medium">{t.attendance.checkInTime}</th>
                     <th className="text-left p-3 font-medium">{t.attendance.checkOutTime}</th>
                     <th className="text-left p-3 font-medium">{t.attendance.hours}</th>
@@ -951,6 +964,30 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                           <Badge variant="outline">{record.department}</Badge>
                         </td>
                         <td className="p-3">
+                          {record.workLocation === 'work_from_home' ? (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800">
+                              <div className="h-2 w-2 rounded-full bg-orange-500 animate-pulse"></div>
+                              <span className="text-xs font-medium text-orange-700 dark:text-orange-300">Work from Home</span>
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
+                              <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+                              <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Work from Office</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          {!record.checkOutTime ? (
+                            <OnlineStatusIndicator 
+                              isOnline={onlineStatusMap[parseInt(record.userId)] ?? true} 
+                              size="md"
+                              showLabel={true}
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Checked Out</span>
+                          )}
+                        </td>
+                        <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-green-500" />
                             <span>{formatIST(record.date, record.checkInTime)}</span>
@@ -979,23 +1016,17 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                         </td>
                         <td className="p-3">
                           {record.checkInLocation?.address && record.checkInLocation.address !== '-' ? (
-                            <button
-                              type="button"
-                              onClick={() => setLocationModal({ open: true, location: record.checkInLocation?.address || null })}
-                              className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950 px-2 py-1 rounded-md transition-colors cursor-pointer group"
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setLocationModal({ open: true, location: record })}
+                              className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950 h-8 px-3"
                             >
-                              <MapPin className="h-3 w-3 flex-shrink-0" />
-                              <span className="truncate max-w-[120px] group-hover:underline">
-                                {record.checkInLocation.address.length > 20 
-                                  ? `${record.checkInLocation.address.slice(0, 20)}...` 
-                                  : record.checkInLocation.address}
-                              </span>
-                            </button>
+                              <MapPin className="h-4 w-4 mr-1" />
+                              View
+                            </Button>
                           ) : (
-                            <div className="flex items-center gap-1.8 text-sm text-muted-foreground">
-                              <MapPin className="h-3 w-3" />
-                              <span>-</span>
-                            </div>
+                            <span className="text-xs text-muted-foreground">-</span>
                           )}
                         </td>
                         <td className="p-3">
@@ -1218,7 +1249,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">{t.attendance.address}</p>
                   <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed break-words">
-                    {locationModal.location || t.attendance.locationNotAvailable}
+                    {locationModal.location?.checkInLocation?.address || t.attendance.locationNotAvailable}
                   </p>
                 </div>
               </div>
@@ -1241,13 +1272,57 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
         <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col overflow-visible">
           <DialogHeader>
-            <DialogTitle>{t.attendance.exportReport} ({exportType?.toUpperCase()})</DialogTitle>
+            <DialogTitle>{t.attendance.exportReport}</DialogTitle>
             <DialogDescription>
               {t.attendance.configureExport}
             </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-6 py-4 flex-1 overflow-y-auto overflow-x-visible pr-1">
+            {/* Export Format Selection */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Export Format</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setExportType('csv')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'csv'
+                      ? 'border-green-600 bg-green-50 dark:bg-green-950'
+                      : 'border-gray-200 hover:border-green-300 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <FileSpreadsheet className={`h-8 w-8 ${exportType === 'csv' ? 'text-green-600' : 'text-gray-400'}`} />
+                    <span className={`font-semibold ${exportType === 'csv' ? 'text-green-600' : 'text-gray-600'}`}>
+                      CSV
+                    </span>
+                    <span className="text-xs text-muted-foreground text-center">
+                      Excel compatible
+                    </span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportType('pdf')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'pdf'
+                      ? 'border-red-600 bg-red-50 dark:bg-red-950'
+                      : 'border-gray-200 hover:border-red-300 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <FileText className={`h-8 w-8 ${exportType === 'pdf' ? 'text-red-600' : 'text-gray-400'}`} />
+                    <span className={`font-semibold ${exportType === 'pdf' ? 'text-red-600' : 'text-gray-600'}`}>
+                      PDF
+                    </span>
+                    <span className="text-xs text-muted-foreground text-center">
+                      Print ready
+                    </span>
+                  </div>
+                </button>
+              </div>
+            </div>
             {/* Quick Filter Dropdown */}
             <div className="space-y-2">
               <Label htmlFor="quick-filter" className="text-sm font-medium">Quick Filter</Label>
@@ -1465,9 +1540,10 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             </Button>
             <Button
               onClick={performExport}
-              disabled={isExporting || (!startDate && !endDate) || (employeeFilter === 'specific' && !selectedEmployee)}
+              disabled={isExporting || !exportType || (!startDate && !endDate) || (employeeFilter === 'specific' && !selectedEmployee)}
+              className={exportType === 'csv' ? 'bg-green-600 hover:bg-green-700' : exportType === 'pdf' ? 'bg-red-600 hover:bg-red-700' : ''}
             >
-              {isExporting ? 'Exporting...' : `Export ${exportType?.toUpperCase()}`}
+              {isExporting ? 'Exporting...' : exportType ? `Export ${exportType.toUpperCase()}` : 'Select Format'}
             </Button>
           </DialogFooter>
         </DialogContent>

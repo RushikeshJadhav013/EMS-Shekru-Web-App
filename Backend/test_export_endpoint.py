@@ -6,8 +6,8 @@ import requests
 from datetime import datetime, timedelta
 
 # Configuration
-BASE_URL = "http://localhost:8000"  # Change if your backend runs on different port
-# BASE_URL = "https://staffly.space"  # Uncomment for production
+# BASE_URL = "http://localhost:8000"  # Change if your backend runs on different port
+BASE_URL = "https://staffly.space"  # Uncomment for production
 
 def test_export_endpoint():
     """Test the export endpoint"""
