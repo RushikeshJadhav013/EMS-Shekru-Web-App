@@ -88,3 +88,79 @@ def get_department_managers(
     ]
 
 
+@router.post("/sync-from-users", status_code=status.HTTP_200_OK)
+def sync_departments_from_users(
+    db: Session = Depends(get_db),
+    _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+):
+    """
+    Auto-detect departments from existing users and create department entries.
+    Scans all users, finds unique department names, and creates missing departments.
+    """
+    from app.db.models.department import Department
+    from sqlalchemy import func
+    
+    # Get all unique department names from users (excluding None/empty)
+    user_departments = (
+        db.query(User.department, func.count(User.user_id).label('count'))
+        .filter(User.department.isnot(None))
+        .filter(User.department != '')
+        .group_by(User.department)
+        .all()
+    )
+    
+    # Get existing departments
+    existing_departments = {dept.name.lower(): dept for dept in db.query(Department).all()}
+    
+    created_count = 0
+    updated_count = 0
+    departments_created = []
+    
+    for dept_name, user_count in user_departments:
+        dept_name_lower = dept_name.lower()
+        
+        if dept_name_lower not in existing_departments:
+            # Create new department
+            # Generate a code from the department name
+            code = ''.join(word[0].upper() for word in dept_name.split()[:3])
+            if not code:
+                code = dept_name[:3].upper()
+            
+            # Ensure code is unique
+            base_code = code
+            counter = 1
+            while db.query(Department).filter(Department.code == code).first():
+                code = f"{base_code}{counter}"
+                counter += 1
+            
+            new_dept = Department(
+                name=dept_name,
+                code=code,
+                description=f"Auto-created from user departments",
+                status="active",
+                employee_count=user_count,
+                manager_id=None,
+                budget=None,
+                location=None
+            )
+            db.add(new_dept)
+            departments_created.append(dept_name)
+            created_count += 1
+        else:
+            # Update employee count for existing department
+            existing_dept = existing_departments[dept_name_lower]
+            if existing_dept.employee_count != user_count:
+                existing_dept.employee_count = user_count
+                updated_count += 1
+    
+    db.commit()
+    
+    return {
+        "message": "Department sync completed",
+        "created": created_count,
+        "updated": updated_count,
+        "departments_created": departments_created,
+        "total_departments": len(user_departments)
+    }
+
+

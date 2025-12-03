@@ -66,6 +66,7 @@ const Login: React.FC = () => {
         setOtpSent(true);
         const successMessage = response.data?.message || "OTP sent successfully";
         toast({
+          variant: "success",
           title: "Success",
           description: successMessage,
         });
@@ -120,10 +121,8 @@ const Login: React.FC = () => {
         // Pass the role as-is from backend, AuthContext will handle the mapping
         // Backend returns role like "TeamLead", "Admin", etc. which needs proper mapping
         
-        toast({
-          title: "Success",
-          description: "OTP verified successfully!",
-        });
+        // Note: Toast notification removed here to avoid duplicate notifications
+        // AuthContext will show "Welcome back" message after successful login
 
         // Call the auth context login method with the verified data
         // Role will be properly mapped in AuthContext

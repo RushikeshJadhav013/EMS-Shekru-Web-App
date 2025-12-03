@@ -325,40 +325,77 @@ export default function DepartmentManagement() {
     setFormData((prev) => ({ ...prev, description: e.target.value }));
   }, []);
 
-  useEffect(() => {
-    const loadDepartments = async () => {
-      setIsLoading(true);
-      try {
-        const data = await apiService.getDepartments();
-        const mapped: ExtendedDepartment[] = (data || []).map((dept: ApiDepartment) => ({
-          id: dept.id,
-          name: dept.name,
-          code: dept.code,
-          managerId: dept.manager_id?.toString() ?? '',
-          description: dept.description ?? '',
-          status: (dept.status as 'active' | 'inactive') || 'active',
-          employeeCount: dept.employee_count ?? 0,
-          budget: dept.budget ?? 0,
-          location: dept.location ?? '',
-          createdAt: dept.created_at,
-          updatedAt: dept.updated_at,
-        }));
-        setDepartments(mapped);
-      } catch (error) {
-        console.error('Failed to load departments:', error);
-        toast({
-          title: 'Error',
-          description:
-            error instanceof Error ? error.message : 'Failed to load departments',
-          variant: 'destructive',
-        });
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadDepartments();
+  const loadDepartments = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const data = await apiService.getDepartments();
+      const mapped: ExtendedDepartment[] = (data || []).map((dept: ApiDepartment) => ({
+        id: dept.id,
+        name: dept.name,
+        code: dept.code,
+        managerId: dept.manager_id?.toString() ?? '',
+        description: dept.description ?? '',
+        status: (dept.status as 'active' | 'inactive') || 'active',
+        employeeCount: dept.employee_count ?? 0,
+        budget: dept.budget ?? 0,
+        location: dept.location ?? '',
+        createdAt: dept.created_at,
+        updatedAt: dept.updated_at,
+      }));
+      setDepartments(mapped);
+    } catch (error) {
+      console.error('Failed to load departments:', error);
+      toast({
+        title: 'Error',
+        description:
+          error instanceof Error ? error.message : 'Failed to load departments',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  const handleSyncDepartments = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const result = await apiService.syncDepartmentsFromUsers();
+      
+      // Reload departments after sync
+      await loadDepartments();
+      
+      toast({
+        variant: 'success',
+        title: 'Sync Completed',
+        description: `Created ${result.created} new departments, updated ${result.updated} existing departments.`,
+      });
+    } catch (error) {
+      console.error('Failed to sync departments:', error);
+      toast({
+        title: 'Error',
+        description:
+          error instanceof Error ? error.message : 'Failed to sync departments',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadDepartments]);
+
+  useEffect(() => {
+    // Auto-sync departments from users on mount, then load
+    const initializeDepartments = async () => {
+      try {
+        await apiService.syncDepartmentsFromUsers();
+      } catch (error) {
+        // Silently fail sync, still load existing departments
+        console.warn('Auto-sync failed:', error);
+      }
+      await loadDepartments();
+    };
+    
+    initializeDepartments();
+  }, [loadDepartments]);
 
   // Load all employees for auto-calculation
   useEffect(() => {
@@ -476,10 +513,16 @@ export default function DepartmentManagement() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
-              className="gap-2 border-2 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500 hover:bg-white dark:hover:bg-slate-900"
+              onClick={handleSyncDepartments}
+              disabled={isLoading}
+              className="gap-2 border-2 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
             >
-              <SlidersHorizontal className="h-4 w-4" />
-              Quick Filters
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Users className="h-4 w-4" />
+              )}
+              Sync from Users
             </Button>
             <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
               <DialogTrigger asChild>

@@ -26,8 +26,11 @@ import {
   Edit
 } from 'lucide-react';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/hooks/use-toast';
 import RatingDialog, { EmployeeRating } from '@/components/rating/RatingDialog';
+import ExportDialog from '@/components/reports/ExportDialog';
+import V2Overlay from '@/components/ui/V2Overlay';
 
 interface EmployeePerformance {
   id: string;
@@ -56,6 +59,7 @@ interface DepartmentMetrics {
 
 export default function Reports() {
   const { t } = useLanguage();
+  const { user } = useAuth();
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth().toString());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedDepartment, setSelectedDepartment] = useState('all');
@@ -64,6 +68,8 @@ export default function Reports() {
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeePerformance | null>(null);
   const [employeeRatings, setEmployeeRatings] = useState<Record<string, EmployeeRating>>({});
   const [expandedDepartments, setExpandedDepartments] = useState<Set<string>>(new Set());
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportEmployee, setExportEmployee] = useState<{ id: string; name: string } | null>(null);
   
   // State for API data
   const [employeePerformance, setEmployeePerformance] = useState<EmployeePerformance[]>([]);
@@ -287,50 +293,14 @@ export default function Reports() {
     return { variant: 'destructive' as const, text: 'Poor' };
   };
 
-  const downloadReport = (type: string) => {
-    const data = type === 'performance' ? filteredPerformance : departmentMetrics;
-    const headers = type === 'performance' 
-      ? ['Employee ID', 'Name', 'Department', 'Role', 'Attendance', 'Task Completion', 'Productivity', 'Quality', 'Overall Rating']
-      : ['Department', 'Total Employees', 'Avg Productivity', 'Avg Attendance', 'Tasks Completed', 'Tasks Pending', 'Performance Score'];
-
-    const csvData = type === 'performance'
-      ? filteredPerformance.map(emp => [
-          emp.employeeId,
-          emp.name,
-          emp.department,
-          emp.role,
-          emp.attendanceScore,
-          emp.taskCompletionRate,
-          emp.productivity,
-          emp.qualityScore,
-          emp.overallRating
-        ])
-      : departmentMetrics.map(dept => [
-          dept.department,
-          dept.totalEmployees,
-          dept.avgProductivity,
-          dept.avgAttendance,
-          dept.tasksCompleted,
-          dept.tasksPending,
-          dept.performanceScore
-        ]);
-
-    const csvContent = [headers, ...csvData].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${type}_report_${selectedMonth}_${selectedYear}.csv`;
-    a.click();
-
-    toast({
-      title: 'Success',
-      description: 'Report downloaded successfully'
-    });
+  const openExportDialog = (employee?: { id: string; name: string }) => {
+    setExportEmployee(employee || null);
+    setExportDialogOpen(true);
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 relative">
+      {(user?.role === 'manager' || user?.role === 'team_lead') && <V2Overlay />}
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 space-y-4 sm:space-y-6">
         {/* Header Section */}
         <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-lg rounded-2xl shadow-xl border border-white/20 p-4 sm:p-6 lg:p-8">
@@ -436,11 +406,11 @@ export default function Reports() {
                     <p className="text-sm text-muted-foreground mt-1">Detailed employee performance analysis</p>
                   </div>
                   <Button 
-                    onClick={() => downloadReport('performance')} 
+                    onClick={() => openExportDialog()} 
                     className="w-full sm:w-auto bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 shadow-lg"
                   >
                     <Download className="h-4 w-4 mr-2" />
-                    Export CSV
+                    Export
                   </Button>
                 </div>
               </div>
@@ -562,6 +532,15 @@ export default function Reports() {
                             >
                               <Edit className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
                               {hasRating ? 'Update' : 'Rate'}
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => openExportDialog({ id: employee.employeeId, name: employee.name })}
+                              className="text-xs sm:text-sm shadow-sm hover:shadow-md transition-shadow"
+                            >
+                              <Download className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
+                              Export
                             </Button>
                           </div>
                         </div>
@@ -739,11 +718,11 @@ export default function Reports() {
                     <p className="text-sm text-muted-foreground mt-1">Compare department metrics and performance</p>
                   </div>
                   <Button 
-                    onClick={() => downloadReport('department')} 
+                    onClick={() => openExportDialog()} 
                     className="w-full sm:w-auto bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-lg"
                   >
                     <Download className="h-4 w-4 mr-2" />
-                    Export CSV
+                    Export
                   </Button>
                 </div>
               </div>
@@ -973,6 +952,12 @@ export default function Reports() {
             currentRatings={getEmployeeRating(selectedEmployee.employeeId)}
           />
         )}
+
+        <ExportDialog
+          open={exportDialogOpen}
+          onOpenChange={setExportDialogOpen}
+          selectedEmployee={exportEmployee}
+        />
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/hooks/use-toast';
+import V2Overlay from '@/components/ui/V2Overlay';
 import {
   Plus,
   Edit,
@@ -589,7 +590,8 @@ export default function HiringManagement() {
   const isHR = user?.role === 'hr';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative min-h-screen">
+      <V2Overlay />
       {/* Gradient header */}
       <div className="rounded-3xl border border-slate-200/80 bg-gradient-to-r from-sky-500 via-indigo-500 to-violet-500 px-6 py-5 text-white shadow-sm dark:border-slate-800/80 dark:from-slate-900 dark:via-indigo-900 dark:to-violet-900">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">

@@ -152,8 +152,21 @@ class ApiService {
           errorMessage = response.statusText || `HTTP error! status: ${response.status}`;
         }
         
-        if (response.status === 401 || response.status === 403) {
-          throw new Error(errorMessage || 'Not authenticated');
+        if (response.status === 401) {
+          // Token is invalid or expired - clear auth data and redirect to login
+          if (errorMessage.includes('Invalid or expired token')) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('userId');
+            // Redirect to login page
+            if (window.location.pathname !== '/login') {
+              window.location.href = '/login';
+            }
+          }
+          throw new Error(errorMessage || 'Invalid or expired token');
+        }
+        if (response.status === 403) {
+          throw new Error(errorMessage || 'Access denied');
         }
         throw new Error(errorMessage);
       }
@@ -250,6 +263,18 @@ class ApiService {
     });
   }
 
+  async syncDepartmentsFromUsers(): Promise<{
+    message: string;
+    created: number;
+    updated: number;
+    departments_created: string[];
+    total_departments: number;
+  }> {
+    return this.request('/departments/sync-from-users', {
+      method: 'POST',
+    });
+  }
+
   // Dashboard endpoints
   async getAdminDashboard() {
     return this.request('/dashboard/admin');
@@ -309,67 +334,30 @@ class ApiService {
     // Get auth token from localStorage
     const token = localStorage.getItem('token');
     
-    // Check if there's a file upload
-    const hasFile = employeeData.profile_photo instanceof File;
+    // Backend expects FormData, so always use FormData
+    const formData = new FormData();
     
-    let body: FormData | string;
-    let headers: Record<string, string> = {
+    // Add all fields to FormData
+    Object.entries(employeeData).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        if (key === 'profile_photo' && value instanceof File) {
+          formData.append(key, value);
+        } else if (key !== 'profile_photo') {
+          // Skip profile_photo if it's not a File (e.g., existing URL)
+          formData.append(key, String(value));
+        }
+      }
+    });
+    
+    const headers: Record<string, string> = {
       ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     };
-
-    if (hasFile) {
-      // Use FormData for file uploads
-      const formData = new FormData();
-      
-      Object.entries(employeeData).forEach(([key, value]) => {
-        if (value !== undefined && value !== null) {
-          if (key === 'profile_photo' && value instanceof File) {
-            formData.append(key, value);
-          } else {
-            formData.append(key, String(value));
-          }
-        }
-      });
-      
-      body = formData;
-      // Don't set Content-Type for FormData - browser will set it with boundary
-    } else {
-      // Use JSON for regular updates
-      const requestBody: Record<string, unknown> = {
-        name: employeeData.name,
-        email: employeeData.email,
-        employee_id: employeeData.employee_id,
-        department: employeeData.department || null,
-        designation: employeeData.designation || null,
-        phone: employeeData.phone || null,
-        address: employeeData.address || null,
-        role: employeeData.role || 'Employee',
-        gender: employeeData.gender || null,
-        resignation_date: employeeData.resignation_date || null,
-        pan_card: employeeData.pan_card || null,
-        aadhar_card: employeeData.aadhar_card || null,
-        shift_type: employeeData.shift_type || null,
-        employee_type: employeeData.employee_type || null,
-        is_verified: employeeData.is_verified !== undefined ? employeeData.is_verified : true,
-        profile_photo: employeeData.profile_photo || null,
-        created_at: employeeData.created_at || new Date().toISOString()
-      };
-
-      // Remove undefined/null values
-      Object.keys(requestBody).forEach(key => {
-        if (requestBody[key] === undefined) {
-          delete requestBody[key];
-        }
-      });
-
-      body = JSON.stringify(requestBody);
-      headers['Content-Type'] = 'application/json';
-    }
+    // Don't set Content-Type for FormData - browser will set it with boundary
     
     const response = await fetch(`${this.baseURL}/employees/${userId}`, {
       method: 'PUT',
       headers,
-      body,
+      body: formData,
     });
 
     if (!response.ok) {
@@ -770,11 +758,6 @@ class ApiService {
 
   async getReportDepartments() {
     return this.request('/reports/departments');
-  }
-
-  // Task Comments
-  async getTaskComments(taskId: number) {
-    return this.request(`/tasks/${taskId}/comments`);
   }
 
   // Task Comments

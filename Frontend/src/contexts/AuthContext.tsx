@@ -165,8 +165,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem('userId', user.id.toString()); // Store userId for language persistence
 
       toast({
+        variant: 'success',
         title: 'Login Successful',
-        description: `Welcome back, ${user.name}! (Role: ${user.role})`,
+        description: `Welcome back, ${user.name}!`,
       });
 
       // Redirect to the appropriate dashboard based on role

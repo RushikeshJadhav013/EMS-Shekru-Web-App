@@ -61,6 +61,11 @@ app = FastAPI(
     version="1.0"
 )
 
+# Note: If you get 413 Payload Too Large errors, configure your web server:
+# - nginx: client_max_body_size 50M;
+# - Apache: LimitRequestBody 52428800
+# - Gunicorn: --limit-request-line 8190 --limit-request-field_size 8190
+
 # ✅ Serve static files (profile photos, selfies, etc.)
 os.makedirs("static", exist_ok=True)
 os.makedirs("static/profile_photos", exist_ok=True)

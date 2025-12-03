@@ -580,9 +580,40 @@ const AttendanceWithToggle: React.FC = () => {
     setShowCheckoutDialog(false);
   };
 
+  // Helper function to compress base64 image
+  const compressBase64Image = async (base64: string, maxWidth = 800, quality = 0.7): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        // Calculate new dimensions while maintaining aspect ratio
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        
+        // Convert to compressed base64
+        const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedBase64);
+      };
+      img.src = base64;
+    });
+  };
+
   const handleCameraCapture = async (imageData: string) => {
     setIsLoading(true);
     try {
+      // ✅ Compress the image to reduce payload size (fixes 413 error)
+      const compressedImage = await compressBase64Image(imageData, 800, 0.7);
       if (!location) {
         await refreshLocation();
       }
@@ -610,16 +641,23 @@ const AttendanceWithToggle: React.FC = () => {
         location_data: {
           [isCheckingIn ? 'check_in' : 'check_out']: locationPayload,
         },
-        selfie: imageData,
+        selfie: compressedImage, // ✅ Use compressed image
         work_summary: !isCheckingIn ? todaysWork.trim() : undefined,
         work_report: !isCheckingIn ? workReportBase64 : undefined,
       };
       const endpoint = isCheckingIn
         ? 'https://staffly.space/attendance/check-in/json'
         : 'https://staffly.space/attendance/check-out/json';
+      
+      // ✅ Get token from localStorage for authentication
+      const token = localStorage.getItem('token');
+      
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
