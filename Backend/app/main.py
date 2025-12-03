@@ -5,8 +5,9 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 from app.db import models
-from app.db.database import engine
+from app.db.database import engine, SessionLocal
 from app.routes import (
     user_routes,
     attendance_routes,
@@ -18,7 +19,9 @@ from app.routes import (
     shift_routes,
     department_routes,
     report_routes,
+    super_admin_routes
 )
+from app.db.models.super_admin import SuperAdmin
 import os
 
 
@@ -99,6 +102,31 @@ app = FastAPI(
     ]
 )
 
+@app.on_event("startup")
+def create_initial_super_admin():
+    db: Session = SessionLocal()
+    try:
+        # Check if any SuperAdmin exists
+        existing = db.query(SuperAdmin).first()
+        if existing:
+            return
+
+        # Create default Super Admin
+        default_admin = SuperAdmin(
+            name="Default Super Admin",
+            email="superadmin@example.com",
+            contact_no="9999999999",
+            # if you add a password field later, set hashed_password here
+        )
+        db.add(default_admin)
+        db.commit()
+        db.refresh(default_admin)
+        print("✅ Initial Super Admin created:", default_admin.email)
+    except Exception as e:
+        print("⚠️ Could not create initial Super Admin:", e)
+    finally:
+        db.close()
+
 # ✅ Serve static files (profile photos, selfies, etc.)
 os.makedirs("static", exist_ok=True)
 os.makedirs("static/profile_photos", exist_ok=True)
@@ -147,6 +175,7 @@ app.include_router(hiring_routes.router)
 app.include_router(shift_routes.router)
 app.include_router(department_routes.router)
 app.include_router(report_routes.router)
+app.include_router(super_admin_routes.router)
 
 @app.get("/")
 async def home():

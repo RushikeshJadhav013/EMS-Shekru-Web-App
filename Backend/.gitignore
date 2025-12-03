@@ -1,3 +1,48 @@
+# Bytecode and cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Packaging artifacts
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment and secret files
+.env
+.env.*
+*.env
+
+# Local databases
+*.db
+*.sqlite3
+attendance.db
+
+# Logs
+*.log
+
+# Tooling / IDE
+.vscode/
+.idea/
+.pytest_cache/
+.mypy_cache/
+
+# Alembic cache
+alembic/versions/__pycache__/
+
+# Uploaded/static assets generated at runtime
+static/profile_photos/
+static/selfies/
+static/work_reports/
 **/__pycache__/
 *.py[cod]
 *.so

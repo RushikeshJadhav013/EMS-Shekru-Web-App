@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.crud.super_admin_crud import (
-    get_total_companies,
-    get_total_owners,
-    get_company_employee_counts,
+    # get_total_companies,
+    # get_total_owners,
+    # get_company_employee_counts,
     create_super_admin,
     update_super_admin,
     delete_super_admin,
@@ -12,32 +12,32 @@ from app.crud.super_admin_crud import (
     list_super_admins
 )
 from app.schemas.super_admin_schema import SuperAdminCreate, SuperAdminUpdate
-from app.models.super_admin_model import SuperAdmin
-from app.utils.token_utils import create_token
+from app.db.models.super_admin import SuperAdmin
+from app.core.security import create_token
 from typing import List
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
 
-@router.get("/total-companies")
-def total_companies(db: Session = Depends(get_db)):
-    try:
-        return {"total_companies": get_total_companies(db)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/total-companies")
+# def total_companies(db: Session = Depends(get_db)):
+#     try:
+#         return {"total_companies": get_total_companies(db)}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/total-owners")
-def total_owners(db: Session = Depends(get_db)):
-    try:
-        return {"total_owners": get_total_owners(db)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/total-owners")
+# def total_owners(db: Session = Depends(get_db)):
+#     try:
+#         return {"total_owners": get_total_owners(db)}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/company-employee-counts")
-def company_employee_counts(db: Session = Depends(get_db)):
-    try:
-        return get_company_employee_counts(db)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/company-employee-counts")
+# def company_employee_counts(db: Session = Depends(get_db)):
+#     try:
+#         return get_company_employee_counts(db)
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/create", response_model=SuperAdminCreate)
 def create_super_admin_route(super_admin: SuperAdminCreate, db: Session = Depends(get_db)):
@@ -74,5 +74,5 @@ def login_super_admin(email: str, db: Session = Depends(get_db)):
     if not admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
     # Assuming a token creation process
-    token = create_token({"sub": admin.email})
+    token = create_token({"sub": admin.email, "role": "super_admin"}, timedelta(hours=2))
     return {"access_token": token, "token_type": "bearer"}

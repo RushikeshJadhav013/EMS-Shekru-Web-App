@@ -1,6 +1,54 @@
 # Node dependencies
 node_modules/
 
+# Bun cache
+.bun/
+
+# Build outputs
+dist/
+build/
+.output/
+.nuxt/
+.next/
+.vercel/
+
+# Vite cache
+.vite/
+*-lock.json
+
+# TypeScript / ESLint
+*.tsbuildinfo
+.eslintcache
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Local tooling
+.vscode/
+.idea/
+
+# Coverage / reports
+coverage/
+.nyc_output/
+
+# Python virtualenv accidentally created in frontend
+env/
+.venv/
+
+# Misc OS junk
+.DS_Store
+Thumbs.db
+# Node dependencies
+node_modules/
+
 # Vite build output
 dist/
 build/
