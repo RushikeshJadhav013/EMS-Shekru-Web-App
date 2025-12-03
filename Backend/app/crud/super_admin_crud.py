@@ -12,7 +12,7 @@ def create_super_admin(db: Session, super_admin: SuperAdminCreate):
 
 
 def update_super_admin(db: Session, super_admin_id: int, super_admin: SuperAdminUpdate):
-    db_super_admin = db.query(SuperAdmin).filter(SuperAdmin.id == super_admin_id).first()
+    db_super_admin = db.query(SuperAdmin).filter(SuperAdmin.super_admin_id == super_admin_id).first()
     if not db_super_admin:
         return None
     for key, value in super_admin.dict(exclude_unset=True).items():
@@ -23,7 +23,7 @@ def update_super_admin(db: Session, super_admin_id: int, super_admin: SuperAdmin
 
 
 def delete_super_admin(db: Session, super_admin_id: int):
-    db_super_admin = db.query(SuperAdmin).filter(SuperAdmin.id == super_admin_id).first()
+    db_super_admin = db.query(SuperAdmin).filter(SuperAdmin.super_admin_id == super_admin_id).first()
     if not db_super_admin:
         return None
     db.delete(db_super_admin)
@@ -32,7 +32,7 @@ def delete_super_admin(db: Session, super_admin_id: int):
 
 
 def get_super_admin(db: Session, super_admin_id: int):
-    return db.query(SuperAdmin).filter(SuperAdmin.id == super_admin_id).first()
+    return db.query(SuperAdmin).filter(SuperAdmin.super_admin_id == super_admin_id).first()
 
 
 def list_super_admins(db: Session):
