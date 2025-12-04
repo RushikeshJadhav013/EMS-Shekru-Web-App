@@ -108,7 +108,9 @@ class UserBase(BaseModel):
             'contractual': 'contract',
             'permanent': 'permanent',
             'fulltime': 'permanent',
-            'full-time': 'permanent'
+            'full-time': 'permanent',
+            # Handle legacy/variant value stored in some databases
+            'full time': 'permanent',
         }
         return _normalize_literal(v, mapping=mapping, field_name='employee type')
 
