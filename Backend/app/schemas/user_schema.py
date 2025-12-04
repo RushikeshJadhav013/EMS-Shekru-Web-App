@@ -4,6 +4,16 @@ from datetime import datetime
 from app.enums import RoleEnum
 import re
 
+def _normalize_literal(value: Optional[str], *, mapping: dict[str, str], field_name: str) -> Optional[str]:
+    """Normalize literal inputs (case/alias insensitive)."""
+    if value is None:
+        return value
+    normalized = str(value).strip().lower()
+    if normalized not in mapping:
+        raise ValueError(f"Invalid {field_name}. Supported values: {', '.join(sorted(set(mapping.values())))}")
+    return mapping[normalized]
+
+
 class UserBase(BaseModel):
     name: constr(min_length=2, max_length=255, strip_whitespace=True) = Field(..., description="Full name (2-255 characters)")
     email: EmailStr = Field(..., description="Valid email address")
@@ -43,6 +53,51 @@ class UserBase(BaseModel):
             raise ValueError('Phone number cannot exceed 15 digits')
         return v.strip()
 
+    @field_validator('gender', mode='before')
+    @classmethod
+    def normalize_gender(cls, v: Optional[str]) -> Optional[str]:
+        """Allow case-insensitive gender input."""
+        mapping = {
+            'male': 'male',
+            'm': 'male',
+            'female': 'female',
+            'f': 'female',
+            'other': 'other',
+            'o': 'other'
+        }
+        return _normalize_literal(v, mapping=mapping, field_name='gender')
+
+    @field_validator('shift_type', mode='before')
+    @classmethod
+    def normalize_shift(cls, v: Optional[str]) -> Optional[str]:
+        """Support common aliases for shift types."""
+        mapping = {
+            'general': 'general',
+            'day': 'general',
+            'day shift': 'general',
+            'morning': 'morning',
+            'afternoon': 'afternoon',
+            'evening': 'afternoon',
+            'night': 'night',
+            'night shift': 'night',
+            'rotational': 'rotational',
+            'rotation': 'rotational'
+        }
+        return _normalize_literal(v, mapping=mapping, field_name='shift type')
+
+    @field_validator('employee_type', mode='before')
+    @classmethod
+    def normalize_employee_type(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize employment type."""
+        mapping = {
+            'contract': 'contract',
+            'contractual': 'contract',
+            'permanent': 'permanent',
+            'fulltime': 'permanent',
+            'full-time': 'permanent'
+        }
+        return _normalize_literal(v, mapping=mapping, field_name='employee type')
+
     @field_validator('pan_card')
     @classmethod
     def validate_pan_card(cls, v: Optional[str]) -> Optional[str]:
@@ -54,16 +109,16 @@ class UserBase(BaseModel):
             raise ValueError('Invalid PAN card format. Expected format: ABCDE1234F')
         return v
 
-    @field_validator('aadhar_card')
+    @field_validator('aadhar_card', mode='before')
     @classmethod
     def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
-        """Validate Aadhar card format (1234-5678-9012)"""
+        """Validate Aadhar card format (1234-5678-9012) while allowing raw digits."""
         if v is None:
             return v
-        v = v.strip()
-        if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
-            raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
-        return v
+        digits = re.sub(r'\D', '', v)
+        if len(digits) != 12:
+            raise ValueError('Invalid Aadhar card format. Expected 12 digits (e.g., 1234-5678-9012)')
+        return f"{digits[0:4]}-{digits[4:8]}-{digits[8:12]}"
 
     @field_validator('email')
     @classmethod
