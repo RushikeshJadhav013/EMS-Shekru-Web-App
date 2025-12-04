@@ -29,6 +29,20 @@ class UserBase(BaseModel):
     shift_type: Optional[Literal['general', 'morning', 'afternoon', 'night', 'rotational']] = Field(None, description="Shift type")
     employee_type: Optional[Literal['contract', 'permanent']] = Field(None, description="Employment type")
 
+    @field_validator('department', 'designation', 'phone', 'address', 'pan_card', 'aadhar_card', mode='before')
+    @classmethod
+    def strip_empty_optional_fields(cls, v: Optional[str]) -> Optional[str]:
+        """
+        Normalize blank strings from the database or forms to None for optional fields.
+
+        This prevents Pydantic from treating "" as a real value and failing
+        min_length validations on fields like designation/phone when legacy
+        rows store empty strings instead of NULL.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @field_validator('name')
     @classmethod
     def validate_name(cls, v: str) -> str:
