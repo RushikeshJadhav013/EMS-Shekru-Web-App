@@ -11,7 +11,7 @@ from app.crud.super_admin_crud import (
     get_super_admin,
     list_super_admins
 )
-from app.schemas.super_admin_schema import SuperAdminCreate, SuperAdminUpdate
+from app.schemas.super_admin_schema import SuperAdminCreate, SuperAdminUpdate, SuperAdminOut
 from app.db.models.super_admin import SuperAdmin
 from app.core.security import create_token
 from typing import List
@@ -39,11 +39,11 @@ router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
 #     except Exception as e:
 #         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/create", response_model=SuperAdminCreate)
+@router.post("/create", response_model=SuperAdminOut)
 def create_super_admin_route(super_admin: SuperAdminCreate, db: Session = Depends(get_db)):
     return create_super_admin(db, super_admin)
 
-@router.put("/update/{super_admin_id}", response_model=SuperAdminUpdate)
+@router.put("/update/{super_admin_id}", response_model=SuperAdminOut)
 def update_super_admin_route(super_admin_id: int, super_admin: SuperAdminUpdate, db: Session = Depends(get_db)):
     updated_admin = update_super_admin(db, super_admin_id, super_admin)
     if not updated_admin:
@@ -57,14 +57,14 @@ def delete_super_admin_route(super_admin_id: int, db: Session = Depends(get_db))
         raise HTTPException(status_code=404, detail="Super Admin not found")
     return {"detail": "Super Admin deleted"}
 
-@router.get("/view/{super_admin_id}", response_model=SuperAdminCreate)
+@router.get("/view/{super_admin_id}", response_model=SuperAdminOut)
 def get_super_admin_route(super_admin_id: int, db: Session = Depends(get_db)):
     admin = get_super_admin(db, super_admin_id)
     if not admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
     return admin
 
-@router.get("/list", response_model=List[SuperAdminCreate])
+@router.get("/list", response_model=List[SuperAdminOut])
 def list_super_admins_route(db: Session = Depends(get_db)):
     return list_super_admins(db)
 

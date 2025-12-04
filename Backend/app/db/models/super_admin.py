@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, func
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, func
 from app.db.database import Base
 
 class SuperAdmin(Base):
@@ -16,5 +16,14 @@ class SuperAdmin(Base):
     # Audit fields
     created_on = Column(DateTime(timezone=True), server_default=func.now())
     updated_on = Column(DateTime(timezone=True), onupdate=func.now())
-    created_by = Column(Integer, nullable=True)
-    updated_by = Column(Integer, nullable=True)
+
+    created_by = Column(
+        Integer,
+        ForeignKey("super_admins.super_admin_id", ondelete="SET NULL"),
+        nullable=True
+    )
+    updated_by = Column(
+        Integer,
+        ForeignKey("super_admins.super_admin_id", ondelete="SET NULL"),
+        nullable=True
+    )
