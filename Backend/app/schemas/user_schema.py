@@ -15,9 +15,16 @@ class UserBase(BaseModel):
     gender: Optional[Literal['male', 'female', 'other']] = Field(None, description="Gender")
     resignation_date: Optional[datetime] = Field(None, description="Resignation date if applicable")
     pan_card: Optional[constr(min_length=10, max_length=10, strip_whitespace=True)] = Field(None, description="PAN card number (10 characters)")
-    aadhar_card: Optional[constr(min_length=14, max_length=14, strip_whitespace=True)] = Field(None, description="Aadhar card number (format: 1234-5678-9012)")
-    shift_type: Optional[Literal['general', 'morning', 'afternoon', 'night', 'rotational']] = Field(None, description="Shift type")
-    employee_type: Optional[Literal['contract', 'permanent']] = Field(None, description="Employment type")
+    # Allow both 12-digit and 14-character (with dashes) Aadhaar formats
+    aadhar_card: Optional[constr(min_length=12, max_length=14, strip_whitespace=True)] = Field(
+        None, description="Aadhar card number (123456789012 or 1234-5678-9012)"
+    )
+    shift_type: Optional[Literal['general', 'morning', 'afternoon', 'night', 'rotational']] = Field(
+        None, description="Shift type"
+    )
+    employee_type: Optional[Literal['contract', 'permanent']] = Field(
+        None, description="Employment type"
+    )
 
     @field_validator('name')
     @classmethod
@@ -43,6 +50,42 @@ class UserBase(BaseModel):
             raise ValueError('Phone number cannot exceed 15 digits')
         return v.strip()
 
+    @field_validator('gender', mode='before')
+    @classmethod
+    def normalize_gender(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize gender to expected literals (case-insensitive)."""
+        if v is None:
+            return v
+        v_norm = v.strip().lower()
+        if v_norm in {'male', 'female', 'other'}:
+            return v_norm
+        return v
+
+    @field_validator('shift_type', mode='before')
+    @classmethod
+    def normalize_shift_type(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize common shift type variants to expected literals."""
+        if v is None:
+            return v
+        v_norm = v.strip().lower()
+        # Map legacy/loose values to canonical ones
+        if v_norm in {'day', 'general'}:
+            return 'general'
+        if v_norm in {'morning', 'afternoon', 'night', 'rotational'}:
+            return v_norm
+        return v
+
+    @field_validator('employee_type', mode='before')
+    @classmethod
+    def normalize_employee_type(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize employee type to expected literals (case-insensitive)."""
+        if v is None:
+            return v
+        v_norm = v.strip().lower()
+        if v_norm in {'contract', 'permanent'}:
+            return v_norm
+        return v
+
     @field_validator('pan_card')
     @classmethod
     def validate_pan_card(cls, v: Optional[str]) -> Optional[str]:
@@ -61,9 +104,13 @@ class UserBase(BaseModel):
         if v is None:
             return v
         v = v.strip()
-        if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
-            raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
-        return v
+        # Accept either 12 continuous digits or 4-4-4 pattern with dashes
+        if re.match(r'^\d{4}-\d{4}-\d{4}$', v):
+            return v
+        if re.match(r'^\d{12}$', v):
+            # Optionally normalize to dashed format if you want
+            return f"{v[0:4]}-{v[4:8]}-{v[8:12]}"
+        raise ValueError('Invalid Aadhar card format. Expected 123456789012 or 1234-5678-9012')
 
     @field_validator('email')
     @classmethod
