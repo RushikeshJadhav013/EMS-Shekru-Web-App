@@ -6,6 +6,7 @@ from .task import Task
 from .notification import LeaveNotification, TaskNotification
 from .hiring import Vacancy, Candidate
 from .shift import Shift, ShiftAssignment, ShiftNotification
+from .subscription import SubscriptionPlan, AdminSubscription
 
 # Base import
 from app.db.database import Base

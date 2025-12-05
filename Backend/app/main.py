@@ -19,7 +19,8 @@ from app.routes import (
     shift_routes,
     department_routes,
     report_routes,
-    super_admin_routes
+    super_admin_routes,
+    subscription_routes
 )
 from app.db.models.super_admin import SuperAdmin
 import os
@@ -176,6 +177,7 @@ app.include_router(shift_routes.router)
 app.include_router(department_routes.router)
 app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
+app.include_router(subscription_routes.router)
 
 @app.get("/")
 async def home():

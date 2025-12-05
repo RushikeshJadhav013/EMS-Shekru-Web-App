@@ -4,6 +4,7 @@ from app.db.models.user import User
 from app.enums import RoleEnum
 from passlib.context import CryptContext
 from app.schemas.user_schema import UserCreate, AdminCreate, AdminUpdate
+from app.crud.subscription_crud import check_admin_subscription_limit
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, letter
@@ -73,6 +74,17 @@ def get_user(db: Session, user_id: int):
     return db.query(User).filter(User.user_id == user_id).first()
 
 def create_user(db: Session, user: UserCreate, created_by: int = None):
+    # Check subscription limit if user is being created by an admin
+    if created_by is not None:
+        creator = db.query(User).filter(User.user_id == created_by).first()
+        if creator and creator.role == RoleEnum.ADMIN:
+            can_create, current_count, max_allowed = check_admin_subscription_limit(db, created_by)
+            if not can_create:
+                raise ValueError(
+                    f"Subscription limit reached. You have created {current_count} out of {max_allowed} allowed users. "
+                    "Please upgrade your subscription plan to add more users."
+                )
+    
     db_user = User(
         user_id=None,
         employee_id=user.employee_id,

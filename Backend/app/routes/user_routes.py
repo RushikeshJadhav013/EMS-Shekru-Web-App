@@ -20,6 +20,7 @@ from app.db.database import get_db
 from app.dependencies import require_roles, get_current_user
 from app.enums import RoleEnum
 from app.db.models.user import User
+from app.crud.subscription_crud import check_admin_subscription_limit
 import os
 import shutil
 from datetime import datetime
@@ -158,7 +159,16 @@ def register_employee(
     )
 
     try:
-        created_user = create_user(db, user_in)
+        # Note: This endpoint doesn't require authentication by default
+        # If you want to check subscription limits, make this endpoint require authentication
+        # and pass current_user.user_id as created_by
+        created_user = create_user(db, user_in, created_by=None)
+    except ValueError as e:
+        # Handle subscription limit errors
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -402,3 +412,20 @@ def get_single_employee(user_id: int, db: Session = Depends(get_db),
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return _sanitize_users_response(employee)
+
+
+# ✅ Admin: Check subscription status
+@router.get("/subscription/status")
+def get_subscription_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get subscription status for the current admin user"""
+    if current_user.role != RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can check subscription status"
+        )
+    
+    from app.crud.subscription_crud import get_admin_subscription_info
+    return get_admin_subscription_info(db, current_user.user_id)
