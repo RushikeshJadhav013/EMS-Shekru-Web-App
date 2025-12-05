@@ -2,7 +2,7 @@ from pydantic import BaseModel, EmailStr, constr, validator
 from typing import Optional
 from datetime import datetime
 import re
-from app.enums import RoleEnum
+from app.enums import RoleEnum, GenderEnum
 
 class UserBase(BaseModel):
     name: str
@@ -17,12 +17,21 @@ class UserBase(BaseModel):
         if not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+)*", trimmed):
             raise ValueError("Name must contain only letters and spaces, and not start with a space")
         return trimmed
+    
+    @validator("email")
+    def validate_email(cls, v: str) -> str:
+        """Normalize email to lowercase and strip whitespace."""
+        if not v:
+            raise ValueError("Email cannot be empty")
+        normalized = v.strip().lower()
+        return normalized
+    
     department: Optional[str] = None
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
     role: Optional[RoleEnum] = RoleEnum.EMPLOYEE
-    gender: Optional[str] = None
+    gender: GenderEnum | None = None
     resignation_date: Optional[datetime] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
@@ -43,7 +52,7 @@ class UserOut(UserBase):
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "use_enum_values": True}
 
 class UpdateRoleSchema(BaseModel):
     role: RoleEnum
@@ -60,7 +69,7 @@ class AdminCreate(BaseModel):
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    gender: Optional[str] = None
+    gender: GenderEnum | None = None
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
@@ -75,6 +84,14 @@ class AdminCreate(BaseModel):
         if not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+)*", trimmed):
             raise ValueError("Name must contain only letters and spaces, and not start with a space")
         return trimmed
+    
+    @validator("email")
+    def validate_email(cls, v: str) -> str:
+        """Normalize email to lowercase and strip whitespace."""
+        if not v:
+            raise ValueError("Email cannot be empty")
+        normalized = v.strip().lower()
+        return normalized
 
 
 class AdminUpdate(BaseModel):
@@ -91,13 +108,22 @@ class AdminUpdate(BaseModel):
         if not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+)*", trimmed):
             raise ValueError("Name must contain only letters and spaces, and not start with a space")
         return trimmed
+    
+    @validator("email")
+    def validate_email(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize email to lowercase and strip whitespace."""
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        return normalized
+    
     email: Optional[EmailStr] = None
     employee_id: Optional[str] = None
     department: Optional[str] = None
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    gender: Optional[str] = None
+    gender: GenderEnum | None = None
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None

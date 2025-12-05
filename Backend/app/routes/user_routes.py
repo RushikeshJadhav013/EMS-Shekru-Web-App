@@ -18,7 +18,7 @@ from app.crud.user_crud import (
 )
 from app.db.database import get_db
 from app.dependencies import require_roles, get_current_user
-from app.enums import RoleEnum
+from app.enums import GenderEnum, RoleEnum
 from app.db.models.user import User
 from app.crud.subscription_crud import check_admin_subscription_limit
 import os
@@ -77,10 +77,21 @@ def register_employee(
     db: Session = Depends(get_db)
 ):
 
-    email = email.strip()
+    email = email.strip().lower()
     employee_id = employee_id.strip()
     pan_card = pan_card.strip().upper() if pan_card else None
     aadhar_card = aadhar_card.strip() if aadhar_card else None
+    
+    # Validate and convert gender to GenderEnum
+    gender_enum = None
+    if gender:
+        try:
+            gender_enum = GenderEnum(gender.strip())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
+            )
 
     # Check for duplicate email
     existing_user = get_user_by_email(db, email)
@@ -149,7 +160,7 @@ def register_employee(
         phone=phone,
         address=address,
         role=role,
-        gender=gender,
+        gender=gender_enum,
         resignation_date=resignation_date,
         pan_card=pan_card,
         aadhar_card=aadhar_card,
@@ -301,7 +312,17 @@ def update_employee(
     if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR]:
         employee.role = role
     
-    employee.gender = gender
+    # Validate and convert gender to GenderEnum
+    if gender:
+        try:
+            employee.gender = GenderEnum(gender.strip()).value
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
+            )
+    else:
+        employee.gender = None
     employee.resignation_date = resignation_date
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card

@@ -173,7 +173,8 @@ def create_admin_user_route(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    email = admin.email.strip()
+    # Email is already normalized (lowercase) by AdminCreate schema validator
+    email = admin.email
     employee_id = admin.employee_id.strip()
     pan_card = admin.pan_card.strip().upper() if admin.pan_card else None
     aadhar_card = admin.aadhar_card.strip() if admin.aadhar_card else None
@@ -227,14 +228,13 @@ def update_admin_user_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
     if admin_update.email:
-        normalized_email = admin_update.email.strip()
-        existing = get_user_by_email(db, normalized_email)
+        # Email is already normalized (lowercase) by AdminUpdate schema validator
+        existing = get_user_by_email(db, admin_update.email)
         if existing and existing.user_id != admin_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Another user already uses this email address",
             )
-        admin_update.email = normalized_email
 
     if admin_update.employee_id:
         normalized_emp = admin_update.employee_id.strip()
