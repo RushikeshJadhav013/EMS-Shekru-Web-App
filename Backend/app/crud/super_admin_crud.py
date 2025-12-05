@@ -40,3 +40,14 @@ def get_super_admin(db: Session, super_admin_id: int):
 
 def list_super_admins(db: Session):
     return db.query(SuperAdmin).all()
+
+
+def set_super_admin_status(db: Session, super_admin_id: int, is_active: bool, updated_by: int):
+    db_super_admin = db.query(SuperAdmin).filter(SuperAdmin.super_admin_id == super_admin_id).first()
+    if not db_super_admin:
+        return None
+    db_super_admin.is_active = is_active
+    db_super_admin.updated_by = updated_by
+    db.commit()
+    db.refresh(db_super_admin)
+    return db_super_admin

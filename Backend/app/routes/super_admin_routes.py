@@ -11,9 +11,15 @@ from app.crud.super_admin_crud import (
     update_super_admin,
     delete_super_admin,
     get_super_admin,
-    list_super_admins
+    list_super_admins,
+    set_super_admin_status,
 )
-from app.schemas.super_admin_schema import SuperAdminCreate, SuperAdminUpdate, SuperAdminOut
+from app.schemas.super_admin_schema import (
+    SuperAdminCreate,
+    SuperAdminUpdate,
+    SuperAdminOut,
+    SuperAdminStatusUpdate,
+)
 from app.db.models.super_admin import SuperAdmin
 from app.core.security import create_token
 from app.core.otp_utils import generate_otp, verify_otp, get_environment_info
@@ -98,6 +104,25 @@ def list_super_admins_route(
 ):
     """List all super admins - requires authentication"""
     return list_super_admins(db)
+
+
+@router.patch("/status/{super_admin_id}", response_model=SuperAdminOut)
+def set_super_admin_status_route(
+    super_admin_id: int,
+    status: SuperAdminStatusUpdate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin)
+):
+    """Enable/disable a super admin - requires authentication"""
+    updated_admin = set_super_admin_status(
+        db,
+        super_admin_id,
+        status.is_active,
+        current_super_admin.super_admin_id,
+    )
+    if not updated_admin:
+        raise HTTPException(status_code=404, detail="Super Admin not found")
+    return updated_admin
 
 @router.post("/send-otp")
 def send_otp_super_admin(email: EmailStr, db: Session = Depends(get_db)):
