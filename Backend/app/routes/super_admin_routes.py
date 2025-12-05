@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from pydantic import EmailStr
@@ -20,6 +20,12 @@ from app.schemas.super_admin_schema import (
     SuperAdminOut,
     SuperAdminStatusUpdate,
 )
+from app.schemas.user_schema import (
+    UserOut,
+    UpdateStatusSchema,
+    AdminCreate,
+    AdminUpdate,
+)
 from app.db.models.super_admin import SuperAdmin
 from app.core.security import create_token
 from app.core.otp_utils import generate_otp, verify_otp, get_environment_info
@@ -27,6 +33,16 @@ from app.services.email_service import send_otp_email
 from app.core.config import settings
 from app.dependencies import get_current_super_admin
 from typing import List
+from app.crud.user_crud import (
+    create_admin_user,
+    list_admin_users,
+    get_admin_user,
+    update_admin_user,
+    set_admin_status,
+    delete_admin_user,
+    get_user_by_email,
+    get_user_by_employee_id,
+)
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
 
@@ -123,6 +139,125 @@ def set_super_admin_status_route(
     if not updated_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
     return updated_admin
+
+
+# --------------------------
+# Admin management (users table) – Super Admin only
+# --------------------------
+@router.post("/admins", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_admin_user_route(
+    admin: AdminCreate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    email = admin.email.strip()
+    employee_id = admin.employee_id.strip()
+    pan_card = admin.pan_card.strip().upper() if admin.pan_card else None
+    aadhar_card = admin.aadhar_card.strip() if admin.aadhar_card else None
+
+    if get_user_by_email(db, email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A user already exists with this email address",
+        )
+
+    if get_user_by_employee_id(db, employee_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A user already exists with employee ID '{employee_id}'",
+        )
+
+    payload = admin.model_dump()
+    payload["email"] = email
+    payload["employee_id"] = employee_id
+    payload["pan_card"] = pan_card
+    payload["aadhar_card"] = aadhar_card
+
+    return create_admin_user(db, AdminCreate(**payload))
+
+
+@router.get("/admins", response_model=List[UserOut])
+def list_admin_users_route(
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    return list_admin_users(db)
+
+
+@router.get("/admins/{admin_id}", response_model=UserOut)
+def get_admin_user_route(
+    admin_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    admin = get_admin_user(db, admin_id)
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return admin
+
+
+@router.put("/admins/{admin_id}", response_model=UserOut)
+def update_admin_user_route(
+    admin_id: int,
+    admin_update: AdminUpdate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    if admin_update.email:
+        normalized_email = admin_update.email.strip()
+        existing = get_user_by_email(db, normalized_email)
+        if existing and existing.user_id != admin_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another user already uses this email address",
+            )
+        admin_update.email = normalized_email
+
+    if admin_update.employee_id:
+        normalized_emp = admin_update.employee_id.strip()
+        existing_emp = get_user_by_employee_id(db, normalized_emp)
+        if existing_emp and existing_emp.user_id != admin_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Another user already uses employee ID '{normalized_emp}'",
+            )
+        admin_update.employee_id = normalized_emp
+
+    if admin_update.pan_card:
+        admin_update.pan_card = admin_update.pan_card.strip().upper()
+
+    if admin_update.aadhar_card:
+        admin_update.aadhar_card = admin_update.aadhar_card.strip()
+
+    updated = update_admin_user(db, admin_id, admin_update)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return updated
+
+
+@router.patch("/admins/{admin_id}/status", response_model=UserOut)
+def set_admin_user_status_route(
+    admin_id: int,
+    status: UpdateStatusSchema,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    updated = set_admin_status(db, admin_id, status.is_active)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return updated
+
+
+@router.delete("/admins/{admin_id}")
+def delete_admin_user_route(
+    admin_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    deleted = delete_admin_user(db, admin_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return {"detail": "Admin deleted successfully"}
 
 @router.post("/send-otp")
 def send_otp_super_admin(email: EmailStr, db: Session = Depends(get_db)):

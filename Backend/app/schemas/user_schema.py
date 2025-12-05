@@ -36,3 +36,34 @@ class UpdateRoleSchema(BaseModel):
 
 class UpdateStatusSchema(BaseModel):
     is_active: bool
+
+
+class AdminCreate(BaseModel):
+    name: str
+    email: EmailStr
+    employee_id: str
+    department: Optional[str] = None
+    designation: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    gender: Optional[str] = None
+    shift_type: Optional[str] = None
+    employee_type: Optional[str] = None
+    pan_card: Optional[str] = None
+    aadhar_card: Optional[str] = None
+
+
+class AdminUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    employee_id: Optional[str] = None
+    department: Optional[str] = None
+    designation: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    gender: Optional[str] = None
+    shift_type: Optional[str] = None
+    employee_type: Optional[str] = None
+    pan_card: Optional[str] = None
+    aadhar_card: Optional[str] = None
+    is_active: Optional[bool] = None

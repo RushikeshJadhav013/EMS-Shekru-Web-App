@@ -3,7 +3,7 @@ from sqlalchemy import or_, func
 from app.db.models.user import User
 from app.enums import RoleEnum
 from passlib.context import CryptContext
-from app.schemas.user_schema import UserCreate
+from app.schemas.user_schema import UserCreate, AdminCreate, AdminUpdate
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, letter
@@ -139,6 +139,66 @@ def delete_user(db: Session, user_id: int):
         db.delete(user)
         db.commit()
     return user
+
+
+def create_admin_user(db: Session, admin: AdminCreate):
+    admin_data = admin.model_dump()
+    admin_data["role"] = RoleEnum.ADMIN
+    admin_data["password_hash"] = None
+    db_admin = User(**admin_data)
+    db.add(db_admin)
+    db.commit()
+    db.refresh(db_admin)
+    return db_admin
+
+
+def list_admin_users(db: Session):
+    return db.query(User).filter(User.role == RoleEnum.ADMIN).all()
+
+
+def get_admin_user(db: Session, admin_id: int):
+    return (
+        db.query(User)
+        .filter(User.user_id == admin_id)
+        .filter(User.role == RoleEnum.ADMIN)
+        .first()
+    )
+
+
+def update_admin_user(db: Session, admin_id: int, admin_update: AdminUpdate):
+    admin = get_admin_user(db, admin_id)
+    if not admin:
+        return None
+
+    for key, value in admin_update.model_dump(exclude_unset=True).items():
+        if key == "role":
+            continue
+        setattr(admin, key, value)
+
+    # Enforce role integrity
+    admin.role = RoleEnum.ADMIN
+    db.commit()
+    db.refresh(admin)
+    return admin
+
+
+def set_admin_status(db: Session, admin_id: int, is_active: bool):
+    admin = get_admin_user(db, admin_id)
+    if not admin:
+        return None
+    admin.is_active = is_active
+    db.commit()
+    db.refresh(admin)
+    return admin
+
+
+def delete_admin_user(db: Session, admin_id: int):
+    admin = get_admin_user(db, admin_id)
+    if not admin:
+        return None
+    db.delete(admin)
+    db.commit()
+    return admin
 
 def export_users_pdf(db: Session):
     """Generate a modern, professional PDF with company branding and hierarchical organization"""
