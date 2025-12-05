@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import timedelta
+from pydantic import EmailStr
 from app.db.database import get_db
 from app.crud.super_admin_crud import (
     # get_total_companies,
@@ -99,7 +100,7 @@ def list_super_admins_route(
     return list_super_admins(db)
 
 @router.post("/send-otp")
-def send_otp_super_admin(email: str, db: Session = Depends(get_db)):
+def send_otp_super_admin(email: EmailStr, db: Session = Depends(get_db)):
     """Send OTP to super admin email"""
     super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
     if not super_admin:
@@ -126,14 +127,14 @@ def send_otp_super_admin(email: str, db: Session = Depends(get_db)):
     }
 
 @router.post("/verify-otp")
-def verify_otp_super_admin(email: str, otp: int, db: Session = Depends(get_db)):
+def verify_otp_super_admin(email: EmailStr, otp: int, db: Session = Depends(get_db)):
     """Verify OTP and return JWT token for super admin"""
-    if not verify_otp(email, otp):
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-    
     super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
     if not super_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
+
+    if not verify_otp(email, otp):
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
     
     token = create_token({"sub": super_admin.email, "role": "super_admin"}, timedelta(hours=2))
     return {

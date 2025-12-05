@@ -1,11 +1,22 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+import re
+from pydantic import BaseModel, EmailStr, validator
 
 class SuperAdminBase(BaseModel):
     name: str
     email: EmailStr
     contact_no: str
     gender: str | None = None
+
+    @validator("name")
+    def validate_name(cls, v: str) -> str:
+        """Allow alphabetic characters with internal spaces; no leading/trailing spaces."""
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("Name cannot be empty")
+        if not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+)*", trimmed):
+            raise ValueError("Name must contain only letters and spaces, and not start with a space")
+        return trimmed
 
 class SuperAdminCreate(SuperAdminBase):
     pass
