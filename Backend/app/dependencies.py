@@ -4,6 +4,7 @@ from jose import jwt, JWTError
 from app.db.database import get_db
 from sqlalchemy.orm import Session
 from app.db.models.user import User
+from app.db.models.super_admin import SuperAdmin
 from app.core.config import settings
 from app.enums import RoleEnum
 
@@ -25,6 +26,37 @@ def get_current_user(token: str = Depends(api_key_header), db: Session = Depends
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
+def get_current_super_admin(token: str = Depends(api_key_header), db: Session = Depends(get_db)) -> SuperAdmin:
+    """Verify JWT token and return authenticated super admin"""
+    if token.startswith("Bearer "):
+        token = token.split(" ")[1]
+
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        email: str = payload.get("sub")
+        role: str = payload.get("role")
+        
+        if email is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+        
+        # Verify the role is super_admin
+        if role != "super_admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. Super admin role required."
+            )
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
+    if not super_admin:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Super Admin not found")
+    
+    if not super_admin.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin account is inactive")
+    
+    return super_admin
 
 def require_roles(*roles: RoleEnum):
     def wrapper(current_user: User = Depends(get_current_user)):
