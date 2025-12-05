@@ -222,6 +222,41 @@ def get_admin_counts(db: Session):
         "inactive": inactive_admins
     }
 
+
+def get_users_by_role_created_by_admin(db: Session):
+    """Get counts of users by role where users were created by admins"""
+    # Get all admin user IDs
+    admin_ids = [admin_id[0] for admin_id in db.query(User.user_id).filter(User.role == RoleEnum.ADMIN).all()]
+    
+    if not admin_ids:
+        # No admins exist, return empty counts
+        return {role.value: {"total": 0, "active": 0, "inactive": 0, "resigned": 0} for role in RoleEnum}
+    
+    # Initialize result dictionary
+    result = {}
+    
+    # Process each role
+    for role in RoleEnum:
+        # Users of this role created by admins
+        role_users = db.query(User).filter(
+            User.role == role,
+            User.created_by.in_(admin_ids)
+        ).all()
+        
+        total = len(role_users)
+        active = sum(1 for u in role_users if u.is_active and u.resignation_date is None)
+        inactive = sum(1 for u in role_users if not u.is_active and u.resignation_date is None)
+        resigned = sum(1 for u in role_users if u.resignation_date is not None)
+        
+        result[role.value] = {
+            "total": total,
+            "active": active,
+            "inactive": inactive,
+            "resigned": resigned
+        }
+    
+    return result
+
 def export_users_pdf(db: Session):
     """Generate a modern, professional PDF with company branding and hierarchical organization"""
     buffer = io.BytesIO()

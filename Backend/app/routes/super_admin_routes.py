@@ -43,6 +43,7 @@ from app.crud.user_crud import (
     get_user_by_email,
     get_user_by_employee_id,
     get_admin_counts,
+    get_users_by_role_created_by_admin,
 )
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
@@ -152,6 +153,15 @@ def get_admin_counts_route(
 ):
     """Get admin counts (total, active, inactive) for super admin dashboard"""
     return get_admin_counts(db)
+
+
+@router.get("/dashboard/users-by-role-created-by-admin")
+def get_users_by_role_created_by_admin_route(
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    """Get counts of users by role where users were created by admins (total, active, inactive, resigned)"""
+    return get_users_by_role_created_by_admin(db)
 
 
 # --------------------------
