@@ -264,7 +264,7 @@ def hr_dashboard(db: Session = Depends(get_db)):
             "id": f"join-{joiner.user_id}",
             "type": "join",
             "user": joiner.name,
-            "time": (joiner.joining_date or joiner.created_at or datetime.utcnow()).isoformat(),
+            "time": (joiner.joining_date or joiner.created_on or datetime.utcnow()).isoformat(),
             "status": "new-joiner",
             "description": f"Joined {joiner.department or 'company'}",
         })

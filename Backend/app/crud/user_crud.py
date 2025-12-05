@@ -72,7 +72,7 @@ def get_user_by_employee_id(db: Session, employee_id: str):
 def get_user(db: Session, user_id: int):
     return db.query(User).filter(User.user_id == user_id).first()
 
-def create_user(db: Session, user: UserCreate):
+def create_user(db: Session, user: UserCreate, created_by: int = None):
     db_user = User(
         user_id=None,
         employee_id=user.employee_id,
@@ -90,7 +90,8 @@ def create_user(db: Session, user: UserCreate):
         aadhar_card=user.aadhar_card,
         shift_type=user.shift_type,
         employee_type=user.employee_type,  # ✅ Added employee_type
-        profile_photo=user.profile_photo
+        profile_photo=user.profile_photo,
+        created_by=created_by
     )
     db.add(db_user)
     db.commit()
@@ -116,19 +117,21 @@ def get_employees(db: Session, search: str = None, department: str = None, role:
         query = query.filter(User.role == role)
     return query.all()
 
-def update_user_role(db: Session, user_id: int, role: RoleEnum):
+def update_user_role(db: Session, user_id: int, role: RoleEnum, updated_by: int = None):
     user = db.query(User).filter(User.user_id == user_id).first()
     if user:
         user.role = role
+        user.updated_by = updated_by
         db.commit()
         db.refresh(user)
     return user
 
-def update_user_status(db: Session, user_id: int, is_active: bool):
+def update_user_status(db: Session, user_id: int, is_active: bool, updated_by: int = None):
     """Update user active/inactive status"""
     user = db.query(User).filter(User.user_id == user_id).first()
     if user:
         user.is_active = is_active
+        user.updated_by = updated_by
         db.commit()
         db.refresh(user)
     return user
@@ -141,10 +144,11 @@ def delete_user(db: Session, user_id: int):
     return user
 
 
-def create_admin_user(db: Session, admin: AdminCreate):
+def create_admin_user(db: Session, admin: AdminCreate, created_by: int = None):
     admin_data = admin.model_dump()
     admin_data["role"] = RoleEnum.ADMIN
     admin_data["password_hash"] = None
+    admin_data["created_by"] = created_by
     db_admin = User(**admin_data)
     db.add(db_admin)
     db.commit()
@@ -165,7 +169,7 @@ def get_admin_user(db: Session, admin_id: int):
     )
 
 
-def update_admin_user(db: Session, admin_id: int, admin_update: AdminUpdate):
+def update_admin_user(db: Session, admin_id: int, admin_update: AdminUpdate, updated_by: int = None):
     admin = get_admin_user(db, admin_id)
     if not admin:
         return None
@@ -177,16 +181,18 @@ def update_admin_user(db: Session, admin_id: int, admin_update: AdminUpdate):
 
     # Enforce role integrity
     admin.role = RoleEnum.ADMIN
+    admin.updated_by = updated_by
     db.commit()
     db.refresh(admin)
     return admin
 
 
-def set_admin_status(db: Session, admin_id: int, is_active: bool):
+def set_admin_status(db: Session, admin_id: int, is_active: bool, updated_by: int = None):
     admin = get_admin_user(db, admin_id)
     if not admin:
         return None
     admin.is_active = is_active
+    admin.updated_by = updated_by
     db.commit()
     db.refresh(admin)
     return admin
@@ -199,6 +205,22 @@ def delete_admin_user(db: Session, admin_id: int):
     db.delete(admin)
     db.commit()
     return admin
+
+
+def get_admin_counts(db: Session):
+    """Get counts of total, active, and inactive admin users"""
+    total_admins = db.query(User).filter(User.role == RoleEnum.ADMIN).count()
+    active_admins = db.query(User).filter(
+        User.role == RoleEnum.ADMIN,
+        User.is_active == True
+    ).count()
+    inactive_admins = total_admins - active_admins
+    
+    return {
+        "total": total_admins,
+        "active": active_admins,
+        "inactive": inactive_admins
+    }
 
 def export_users_pdf(db: Session):
     """Generate a modern, professional PDF with company branding and hierarchical organization"""

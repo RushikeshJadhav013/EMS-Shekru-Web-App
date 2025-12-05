@@ -37,8 +37,11 @@ class User(Base):
     profile_photo = Column(String(1024), nullable=True)
     is_active = Column(Boolean, default=True)  # Active/Deactivate status
 
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Timestamps & Audit fields
+    created_on = Column(DateTime(timezone=True), server_default=func.now())
+    updated_on = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    created_by = Column(Integer, nullable=True)  # Can reference super_admin_id or user_id
+    updated_by = Column(Integer, nullable=True)  # Can reference super_admin_id or user_id
 
     # Relationships
     attendances = relationship("Attendance", back_populates="user", cascade="all, delete-orphan")

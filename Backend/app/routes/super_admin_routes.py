@@ -42,6 +42,7 @@ from app.crud.user_crud import (
     delete_admin_user,
     get_user_by_email,
     get_user_by_employee_id,
+    get_admin_counts,
 )
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
@@ -142,6 +143,18 @@ def set_super_admin_status_route(
 
 
 # --------------------------
+# Super Admin Dashboard
+# --------------------------
+@router.get("/dashboard/admin-counts")
+def get_admin_counts_route(
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    """Get admin counts (total, active, inactive) for super admin dashboard"""
+    return get_admin_counts(db)
+
+
+# --------------------------
 # Admin management (users table) – Super Admin only
 # --------------------------
 @router.post("/admins", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -173,7 +186,7 @@ def create_admin_user_route(
     payload["pan_card"] = pan_card
     payload["aadhar_card"] = aadhar_card
 
-    return create_admin_user(db, AdminCreate(**payload))
+    return create_admin_user(db, AdminCreate(**payload), created_by=current_super_admin.super_admin_id)
 
 
 @router.get("/admins", response_model=List[UserOut])
@@ -229,7 +242,7 @@ def update_admin_user_route(
     if admin_update.aadhar_card:
         admin_update.aadhar_card = admin_update.aadhar_card.strip()
 
-    updated = update_admin_user(db, admin_id, admin_update)
+    updated = update_admin_user(db, admin_id, admin_update, updated_by=current_super_admin.super_admin_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Admin not found")
     return updated
@@ -242,7 +255,7 @@ def set_admin_user_status_route(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    updated = set_admin_status(db, admin_id, status.is_active)
+    updated = set_admin_status(db, admin_id, status.is_active, updated_by=current_super_admin.super_admin_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Admin not found")
     return updated

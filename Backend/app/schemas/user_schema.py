@@ -27,7 +27,10 @@ class UserOut(UserBase):
     employee_id: str
     is_active: bool
     profile_photo: Optional[str] = None
-    created_at: datetime
+    created_on: datetime
+    updated_on: Optional[datetime] = None
+    created_by: Optional[int] = None
+    updated_by: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
