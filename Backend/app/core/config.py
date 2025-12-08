@@ -3,8 +3,8 @@ import os
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
-    # DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
-    DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
+    DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
+    #DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
     JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 30
@@ -45,5 +45,8 @@ class Settings(BaseSettings):
     def should_send_email(self) -> bool:
         """Send email only in production or when explicitly enabled"""
         return self.is_production or self.ENABLE_EMAIL_OTP
+    
+    class Config:
+        env_file = ".env.production"
 
 settings = Settings()
