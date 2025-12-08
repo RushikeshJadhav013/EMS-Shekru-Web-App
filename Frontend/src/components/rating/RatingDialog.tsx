@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Star } from 'lucide-react';
+import { nowIST, formatIST } from '@/utils/timezone';
 import { toast } from '@/hooks/use-toast';
 
 interface RatingDialogProps {
@@ -70,14 +71,14 @@ export default function RatingDialog({
       return;
     }
 
-    const now = new Date();
+    const now = nowIST();
     const rating: EmployeeRating = {
       employeeId,
       productivityRating,
       productivityDescription: productivityDescription.trim(),
       qualityRating,
       qualityDescription: qualityDescription.trim(),
-      month: now.toLocaleString('default', { month: 'long' }),
+      month: formatIST(now, 'MMMM'),
       year: now.getFullYear(),
       ratedBy: 'Current User', // This should come from auth context
       ratedAt: now.toISOString()

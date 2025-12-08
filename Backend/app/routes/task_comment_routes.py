@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime
+import os
+import shutil
+from pathlib import Path
 
 from app.db.database import get_db
 from app.db.models.task import Task
@@ -12,6 +15,10 @@ from pydantic import BaseModel
 
 
 router = APIRouter(prefix="/tasks", tags=["Task Comments"])
+
+# Create uploads directory if it doesn't exist
+UPLOAD_DIR = Path("static/task_comments")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # Schemas
@@ -25,7 +32,11 @@ class TaskCommentOut(BaseModel):
     user_id: int
     user_name: str
     user_role: str
-    comment: str
+    comment: Optional[str] = None
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    file_type: Optional[str] = None
+    file_size: Optional[int] = None
     created_at: datetime
     updated_at: datetime | None
 
@@ -85,6 +96,10 @@ def get_task_comments(
             user_name=user.name if user else "Unknown User",
             user_role=user.role.value if user and hasattr(user.role, 'value') else str(user.role) if user else "Unknown",
             comment=comment.comment,
+            file_url=comment.file_url,
+            file_name=comment.file_name,
+            file_type=comment.file_type,
+            file_size=comment.file_size,
             created_at=comment.created_at,
             updated_at=comment.updated_at
         ))
@@ -93,16 +108,24 @@ def get_task_comments(
 
 
 @router.post("/{task_id}/comments", response_model=TaskCommentOut, status_code=status.HTTP_201_CREATED)
-def create_task_comment(
+async def create_task_comment(
     task_id: int,
-    comment_data: TaskCommentCreate,
+    comment: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Add a comment to a task.
+    Add a comment to a task with optional file attachment.
     Only accessible by task assignee, assigned_to, or users involved in task passing.
     """
+    # Validate that at least comment or file is provided
+    if not comment and not file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either comment text or file must be provided"
+        )
+    
     # Get the task
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
@@ -126,11 +149,37 @@ def create_task_comment(
             detail="You don't have access to comment on this task"
         )
     
+    # Handle file upload
+    file_url = None
+    file_name = None
+    file_type = None
+    file_size = None
+    
+    if file:
+        # Generate unique filename
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        file_extension = Path(file.filename).suffix
+        unique_filename = f"task_{task_id}_user_{user_id}_{timestamp}{file_extension}"
+        file_path = UPLOAD_DIR / unique_filename
+        
+        # Save file
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        file_url = f"/static/task_comments/{unique_filename}"
+        file_name = file.filename
+        file_type = file.content_type
+        file_size = file_path.stat().st_size
+    
     # Create the comment
     new_comment = TaskComment(
         task_id=task_id,
         user_id=user_id,
-        comment=comment_data.comment.strip()
+        comment=comment.strip() if comment else None,
+        file_url=file_url,
+        file_name=file_name,
+        file_type=file_type,
+        file_size=file_size
     )
     
     db.add(new_comment)
@@ -145,6 +194,10 @@ def create_task_comment(
         user_name=current_user.name,
         user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
         comment=new_comment.comment,
+        file_url=new_comment.file_url,
+        file_name=new_comment.file_name,
+        file_type=new_comment.file_type,
+        file_size=new_comment.file_size,
         created_at=new_comment.created_at,
         updated_at=new_comment.updated_at
     )

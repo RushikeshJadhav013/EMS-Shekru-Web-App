@@ -27,4 +27,5 @@ class OfficeTimingCreate(OfficeTimingBase):
 class OfficeTimingOut(OfficeTimingBase):
     id: int
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True

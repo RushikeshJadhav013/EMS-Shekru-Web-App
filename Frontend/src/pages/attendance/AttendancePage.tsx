@@ -12,6 +12,7 @@ import AttendanceCamera from '@/components/attendance/AttendanceCamera';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatTimeIST, formatDateIST, todayIST, formatDateTimeComponentsIST, parseToIST, nowIST } from '@/utils/timezone';
 import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast, getCurrentLocationWithContinuousImprovement } from '@/utils/geolocation';
 
 type GeoLocation = {
@@ -430,32 +431,9 @@ const AttendancePage: React.FC = () => {
     return null;
   };
 
-  const formatIST = (dateString: string, timeString?: string) => {
+  const formatAttendanceTime = (dateString: string, timeString?: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string (HH:MM:SS), assume UTC and combine with date
-      date = new Date(`${dateString}T${timeString}Z`);
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    return formatDateTimeComponentsIST(dateString, timeString, 'hh:mm a');
   };
 
   if (showCamera) {
@@ -556,7 +534,9 @@ const AttendancePage: React.FC = () => {
                   </>
                 ) : (
                   'Refresh'
-           
+                )}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="pt-6">
@@ -666,7 +646,7 @@ const AttendancePage: React.FC = () => {
                       {getStatusBadge(currentAttendance.status, currentAttendance.checkInTime)}
                     </div>
                     <p className="text-lg font-semibold">
-                      {formatIST(currentAttendance.date, currentAttendance.checkInTime)}
+                      {formatAttendanceTime(currentAttendance.date, currentAttendance.checkInTime)}
                     </p>
                   </div>
                   
@@ -679,7 +659,7 @@ const AttendancePage: React.FC = () => {
                     </div>
                     <p className="text-lg font-semibold">
                       {currentAttendance.checkOutTime 
-                        ? formatIST(currentAttendance.date, currentAttendance.checkOutTime)
+                        ? formatAttendanceTime(currentAttendance.date, currentAttendance.checkOutTime)
                         : '-'}
                     </p>
                   </div>
@@ -690,7 +670,7 @@ const AttendancePage: React.FC = () => {
                         <Clock className="h-4 w-4 text-blue-500" />
                         <span className="text-sm font-medium">Total Work Hours</span>
                       </div>
-                      <p className="text-lg font-semibold">{currentAttendance.workHours} hours</p>
+                      <p className="text-lg font-semibold">{currentAttendance.workHours} Hrs</p>
                     </div>
                   )}
                 </>
@@ -742,11 +722,11 @@ const AttendancePage: React.FC = () => {
                       <Calendar className="h-6 w-6 text-white" />
                     </div>
                     <div>
-                      <p className="font-medium">{format(new Date(record.date), 'dd MMM yyyy')}</p>
+                      <p className="font-medium">{formatDateIST(record.date, 'dd MMM yyyy')}</p>
                       <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        <span>In: {formatIST(record.date, record.checkInTime)}</span>
-                        <span>Out: {formatIST(record.date, record.checkOutTime)}</span>
-                        {record.workHours && <span>{record.workHours}h</span>}
+                        <span>In: {formatAttendanceTime(record.date, record.checkInTime)}</span>
+                        <span>Out: {formatAttendanceTime(record.date, record.checkOutTime)}</span>
+                        {record.workHours && <span>{record.workHours} Hrs</span>}
                       </div>
                     </div>
                   </div>

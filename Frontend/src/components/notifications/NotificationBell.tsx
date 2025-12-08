@@ -13,7 +13,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useNotifications } from '@/contexts/NotificationContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNowIST } from '@/utils/timezone';
 
 export const NotificationBell: React.FC = () => {
   const navigate = useNavigate();
@@ -168,23 +168,7 @@ export const NotificationBell: React.FC = () => {
                         <p className="text-[10px] text-muted-foreground">
                           {(() => {
                             try {
-                              // Parse the timestamp and ensure it's treated as UTC
-                              const timestamp = notification.createdAt;
-                              let date: Date;
-                              
-                              // If timestamp doesn't end with 'Z', it's likely UTC without the indicator
-                              if (timestamp && !timestamp.endsWith('Z') && !timestamp.includes('+')) {
-                                date = new Date(timestamp + 'Z');
-                              } else {
-                                date = new Date(timestamp);
-                              }
-                              
-                              // Check if date is valid
-                              if (isNaN(date.getTime())) {
-                                return 'Just now';
-                              }
-                              
-                              return formatDistanceToNow(date, { addSuffix: true });
+                              return formatDistanceToNowIST(notification.createdAt);
                             } catch (error) {
                               console.error('Error formatting notification time:', error);
                               return 'Just now';

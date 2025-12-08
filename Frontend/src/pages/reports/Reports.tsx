@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { nowIST } from '@/utils/timezone';
 import { toast } from '@/hooks/use-toast';
 import RatingDialog, { EmployeeRating } from '@/components/rating/RatingDialog';
 import ExportDialog from '@/components/reports/ExportDialog';
@@ -60,8 +61,8 @@ interface DepartmentMetrics {
 export default function Reports() {
   const { t } = useLanguage();
   const { user } = useAuth();
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth().toString());
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const [selectedMonth, setSelectedMonth] = useState(nowIST().getMonth().toString());
+  const [selectedYear, setSelectedYear] = useState(nowIST().getFullYear().toString());
   const [selectedDepartment, setSelectedDepartment] = useState('all');
   
   // Check URL for tab parameter
@@ -109,9 +110,10 @@ export default function Reports() {
 
   const loadDepartments = async () => {
     try {
+      const token = localStorage.getItem('token');
       const response = await fetch('https://staffly.space/reports/departments', {
         headers: {
-          'Authorization': localStorage.getItem('token') || '',
+          'Authorization': token ? `Bearer ${token}` : '',
         },
       });
       if (response.ok) {
@@ -126,8 +128,9 @@ export default function Reports() {
   const loadReportData = async () => {
     setIsLoading(true);
     try {
+      const token = localStorage.getItem('token');
       const headers = {
-        'Authorization': localStorage.getItem('token') || '',
+        'Authorization': token ? `Bearer ${token}` : '',
       };
 
       const month = parseInt(selectedMonth);
@@ -300,6 +303,65 @@ export default function Reports() {
   const openExportDialog = (employee?: { id: string; name: string }) => {
     setExportEmployee(employee || null);
     setExportDialogOpen(true);
+  };
+
+  const handleQuickExport = async (format: 'csv' | 'pdf' = 'csv') => {
+    try {
+      // Generate full report with current filters
+      const startDate = new Date(parseInt(selectedYear), parseInt(selectedMonth), 1);
+      const endDate = new Date(parseInt(selectedYear), parseInt(selectedMonth) + 1, 0);
+      
+      const params = new URLSearchParams({
+        format: format,
+        start_date: `${selectedYear}-${String(parseInt(selectedMonth) + 1).padStart(2, '0')}-01`,
+        end_date: `${selectedYear}-${String(parseInt(selectedMonth) + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`,
+      });
+
+      if (selectedDepartment !== 'all') {
+        // If department filter is applied, we need to get all employees from that department
+        // The backend will filter by employee_id, so we'll let it handle all employees
+      }
+
+      const token = localStorage.getItem('token');
+      const response = await fetch(`https://staffly.space/reports/export?${params}`, {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        console.error('Export failed:', response.status, errorText);
+        throw new Error(`Export failed: ${response.status}`);
+      }
+
+      // Download the file
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      const monthName = new Date(parseInt(selectedYear), parseInt(selectedMonth)).toLocaleString('default', { month: 'long' });
+      const filename = `performance_report_${monthName}_${selectedYear}.${format}`;
+      
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Success',
+        description: `Full report generated successfully as ${format.toUpperCase()}`,
+      });
+    } catch (error) {
+      console.error('Export error:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to generate report. Please try again.',
+        variant: 'destructive',
+      });
+    }
   };
 
   return (
@@ -811,112 +873,243 @@ export default function Reports() {
                 <p className="mt-4 text-muted-foreground">Loading executive summary...</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-                <div className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl shadow-lg border border-green-200 dark:border-green-800 p-6 hover:shadow-xl transition-all duration-300">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="p-3 bg-green-500 rounded-xl shadow-lg">
-                      <TrendingUp className="h-6 w-6 text-white" />
+              <>
+                {/* Quick Stats - Mobile Optimized */}
+                <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-6">
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl sm:rounded-2xl shadow-lg border border-blue-200 dark:border-blue-800 p-4 sm:p-6 hover:shadow-xl transition-all duration-300">
+                    <div className="flex items-center justify-between mb-3 sm:mb-4">
+                      <div className="p-2 sm:p-3 bg-blue-500 rounded-lg sm:rounded-xl shadow-lg">
+                        <Activity className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-xs sm:text-sm font-medium text-muted-foreground mb-1">Avg Performance</p>
+                    <p className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.avgPerformance || 0}%</p>
+                    <p className="text-xs sm:text-sm text-muted-foreground">All Employees</p>
+                  </div>
+                  
+                  <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-xl sm:rounded-2xl shadow-lg border border-purple-200 dark:border-purple-800 p-4 sm:p-6 hover:shadow-xl transition-all duration-300">
+                    <div className="flex items-center justify-between mb-3 sm:mb-4">
+                      <div className="p-2 sm:p-3 bg-purple-500 rounded-lg sm:rounded-xl shadow-lg">
+                        <Target className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-xs sm:text-sm font-medium text-muted-foreground mb-1">Tasks Completed</p>
+                    <p className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.totalTasksCompleted || 0}</p>
+                    <p className="text-xs sm:text-sm text-muted-foreground">This month</p>
+                  </div>
+                  
+                  <div className="bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 rounded-xl sm:rounded-2xl shadow-lg border border-amber-200 dark:border-amber-800 p-4 sm:p-6 hover:shadow-xl transition-all duration-300">
+                    <div className="flex items-center justify-between mb-3 sm:mb-4">
+                      <div className="p-2 sm:p-3 bg-amber-500 rounded-lg sm:rounded-xl shadow-lg">
+                        <Award className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-xs sm:text-sm font-medium text-muted-foreground mb-1">Best Department</p>
+                    <p className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white mb-1 truncate">{executiveSummary?.bestDepartment?.name || 'N/A'}</p>
+                    <p className="text-xs sm:text-sm font-semibold text-amber-600">{executiveSummary?.bestDepartment?.score || 0}% Score</p>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 rounded-xl sm:rounded-2xl shadow-lg border border-emerald-200 dark:border-emerald-800 p-4 sm:p-6 hover:shadow-xl transition-all duration-300">
+                    <div className="flex items-center justify-between mb-3 sm:mb-4">
+                      <div className="p-2 sm:p-3 bg-emerald-500 rounded-lg sm:rounded-xl shadow-lg">
+                        <Users className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+                      </div>
+                    </div>
+                    <p className="text-xs sm:text-sm font-medium text-muted-foreground mb-1">Employees Analyzed</p>
+                    <p className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.totalEmployeesAnalyzed || 0}</p>
+                    <p className="text-xs sm:text-sm text-muted-foreground">Active staff</p>
+                  </div>
+                </div>
+
+                {/* Top 5 Performers Section - Mobile Optimized */}
+                <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-lg rounded-xl sm:rounded-2xl shadow-xl border border-white/20 overflow-hidden">
+                  <div className="p-3 sm:p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20">
+                    <div className="flex items-center gap-2 sm:gap-3">
+                      <div className="p-2 sm:p-3 bg-gradient-to-br from-green-500 to-emerald-600 rounded-lg sm:rounded-xl shadow-lg">
+                        <TrendingUp className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h2 className="text-lg sm:text-xl md:text-2xl font-bold text-slate-800 dark:text-white">Top 5 Performers</h2>
+                        <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1 truncate">Based on comprehensive performance metrics</p>
+                      </div>
                     </div>
                   </div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Top Performer</p>
-                  <p className="text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.topPerformer?.name || 'N/A'}</p>
-                  <p className="text-sm font-semibold text-green-600">{executiveSummary?.topPerformer?.score || 0}% Overall</p>
-                </div>
-                
-                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-2xl shadow-lg border border-blue-200 dark:border-blue-800 p-6 hover:shadow-xl transition-all duration-300">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="p-3 bg-blue-500 rounded-xl shadow-lg">
-                      <Activity className="h-6 w-6 text-white" />
-                    </div>
+                  <div className="p-3 sm:p-4 md:p-6">
+                    {executiveSummary?.topPerformers && executiveSummary.topPerformers.length > 0 ? (
+                      <div className="space-y-3 sm:space-y-4">
+                        {executiveSummary.topPerformers.map((performer: any, index: number) => {
+                          const rankColors = [
+                            'from-yellow-400 to-amber-500',
+                            'from-gray-300 to-gray-400',
+                            'from-orange-400 to-amber-600',
+                            'from-blue-400 to-indigo-500',
+                            'from-purple-400 to-pink-500'
+                          ];
+                          const rankIcons = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+                          
+                          return (
+                            <div 
+                              key={performer.employeeId}
+                              className="bg-gradient-to-br from-white to-green-50 dark:from-slate-800 dark:to-slate-900 rounded-lg sm:rounded-xl shadow-lg border-2 border-green-200 dark:border-green-800 p-3 sm:p-4 md:p-6 hover:shadow-2xl transition-all duration-300 hover:scale-[1.01]"
+                            >
+                              <div className="flex flex-col gap-4">
+                                {/* Top: Rank & Employee Info + Overall Score */}
+                                <div className="flex flex-col xs:flex-row items-start xs:items-center justify-between gap-3">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    <div className={`w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 rounded-full bg-gradient-to-br ${rankColors[index]} flex items-center justify-center text-2xl sm:text-3xl shadow-lg flex-shrink-0`}>
+                                      {rankIcons[index]}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <h3 className="font-bold text-base sm:text-lg text-slate-800 dark:text-white truncate">{performer.name}</h3>
+                                      <p className="text-xs sm:text-sm text-muted-foreground truncate">ID: {performer.employeeId}</p>
+                                      <p className="text-xs sm:text-sm text-muted-foreground truncate">{performer.department} • {performer.role}</p>
+                                    </div>
+                                  </div>
+
+                                  {/* Overall Score - Mobile Optimized */}
+                                  <div className="w-full xs:w-auto flex xs:flex-col items-center justify-between xs:justify-center gap-2 bg-gradient-to-br from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-xl p-3 sm:p-4 border-2 border-green-300 dark:border-green-700">
+                                    <div className="text-center">
+                                      <p className="text-xs font-semibold text-muted-foreground mb-1">Overall Score</p>
+                                      <p className="text-3xl sm:text-4xl font-bold text-green-600">{performer.score}</p>
+                                      <p className="text-xs text-muted-foreground hidden xs:block">out of 100</p>
+                                    </div>
+                                    <div className="w-24 xs:w-full">
+                                      <Progress value={performer.score} className="h-2" />
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Performance Metrics - Fully Responsive Grid */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
+                                  <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-2 sm:p-3 border border-blue-200 dark:border-blue-800">
+                                    <p className="text-xs text-muted-foreground mb-1 truncate">Early Check-ins</p>
+                                    <p className="text-base sm:text-lg font-bold text-blue-600">{performer.earlyCheckinScore}%</p>
+                                    <Progress value={performer.earlyCheckinScore} className="h-1.5 mt-1" />
+                                  </div>
+                                  <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-2 sm:p-3 border border-green-200 dark:border-green-800">
+                                    <p className="text-xs text-muted-foreground mb-1 truncate">Task Completion</p>
+                                    <p className="text-base sm:text-lg font-bold text-green-600">{performer.taskCompletionScore}%</p>
+                                    <Progress value={performer.taskCompletionScore} className="h-1.5 mt-1" />
+                                  </div>
+                                  <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-2 sm:p-3 border border-purple-200 dark:border-purple-800">
+                                    <p className="text-xs text-muted-foreground mb-1 truncate">Attendance</p>
+                                    <p className="text-base sm:text-lg font-bold text-purple-600">{performer.attendanceScore}%</p>
+                                    <Progress value={performer.attendanceScore} className="h-1.5 mt-1" />
+                                  </div>
+                                  <div className="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-2 sm:p-3 border border-amber-200 dark:border-amber-800">
+                                    <p className="text-xs text-muted-foreground mb-1 truncate">On-time Checkout</p>
+                                    <p className="text-base sm:text-lg font-bold text-amber-600">{performer.checkoutScore}%</p>
+                                    <Progress value={performer.checkoutScore} className="h-1.5 mt-1" />
+                                  </div>
+                                  <div className="bg-pink-50 dark:bg-pink-900/20 rounded-lg p-2 sm:p-3 border border-pink-200 dark:border-pink-800">
+                                    <p className="text-xs text-muted-foreground mb-1 truncate">Leave Score</p>
+                                    <p className="text-base sm:text-lg font-bold text-pink-600">{performer.leaveScore}%</p>
+                                    <Progress value={performer.leaveScore} className="h-1.5 mt-1" />
+                                  </div>
+                                  <div className="bg-slate-50 dark:bg-slate-700 rounded-lg p-2 sm:p-3 border border-slate-200 dark:border-slate-600">
+                                    <p className="text-xs text-muted-foreground mb-1 truncate">Task Efficiency</p>
+                                    <p className="text-base sm:text-lg font-bold text-slate-600 dark:text-slate-300">{performer.taskEfficiency}</p>
+                                    <p className="text-xs text-muted-foreground">tasks/day</p>
+                                  </div>
+                                </div>
+
+                                {/* Bottom: Additional Stats - Responsive Grid */}
+                                <div className="pt-3 border-t border-slate-200 dark:border-slate-700 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+                                  <div className="text-center bg-slate-50 dark:bg-slate-800/50 rounded-lg p-2">
+                                    <p className="text-xs text-muted-foreground mb-1">Tasks Completed</p>
+                                    <p className="text-sm sm:text-base font-bold text-slate-800 dark:text-white">{performer.completedTasks}/{performer.totalTasks}</p>
+                                  </div>
+                                  <div className="text-center bg-slate-50 dark:bg-slate-800/50 rounded-lg p-2">
+                                    <p className="text-xs text-muted-foreground mb-1">Attendance Days</p>
+                                    <p className="text-sm sm:text-base font-bold text-slate-800 dark:text-white">{performer.attendanceDays}/{performer.workingDays}</p>
+                                  </div>
+                                  <div className="text-center bg-slate-50 dark:bg-slate-800/50 rounded-lg p-2">
+                                    <p className="text-xs text-muted-foreground mb-1">Early Check-ins</p>
+                                    <p className="text-sm sm:text-base font-bold text-slate-800 dark:text-white">{performer.earlyCheckins}</p>
+                                  </div>
+                                  <div className="text-center bg-slate-50 dark:bg-slate-800/50 rounded-lg p-2">
+                                    <p className="text-xs text-muted-foreground mb-1">Leave Days</p>
+                                    <p className="text-sm sm:text-base font-bold text-slate-800 dark:text-white">{performer.totalLeaveDays}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-center py-12">
+                        <div className="mx-auto w-16 h-16 bg-slate-100 dark:bg-slate-700 rounded-full flex items-center justify-center mb-4">
+                          <TrendingUp className="h-8 w-8 text-slate-400" />
+                        </div>
+                        <p className="text-lg font-medium text-slate-700 dark:text-slate-300">No performance data available</p>
+                        <p className="text-sm text-muted-foreground mt-2">Performance data will appear once employees have attendance and task records.</p>
+                      </div>
+                    )}
                   </div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Avg Performance</p>
-                  <p className="text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.avgPerformance || 0}%</p>
-                  <p className="text-sm text-muted-foreground">All Employees</p>
                 </div>
-                
-                <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-2xl shadow-lg border border-purple-200 dark:border-purple-800 p-6 hover:shadow-xl transition-all duration-300">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="p-3 bg-purple-500 rounded-xl shadow-lg">
-                      <Target className="h-6 w-6 text-white" />
-                    </div>
-                  </div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Tasks Completed</p>
-                  <p className="text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.totalTasksCompleted || 0}</p>
-                  <p className="text-sm text-muted-foreground">This month</p>
-                </div>
-                
-                <div className="bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 rounded-2xl shadow-lg border border-amber-200 dark:border-amber-800 p-6 hover:shadow-xl transition-all duration-300">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="p-3 bg-amber-500 rounded-xl shadow-lg">
-                      <Award className="h-6 w-6 text-white" />
-                    </div>
-                  </div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Best Department</p>
-                  <p className="text-2xl font-bold text-slate-800 dark:text-white mb-1">{executiveSummary?.bestDepartment?.name || 'N/A'}</p>
-                  <p className="text-sm font-semibold text-amber-600">{executiveSummary?.bestDepartment?.score || 0}% Score</p>
-                </div>
-              </div>
+              </>
             )}
 
-            <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-lg rounded-2xl shadow-xl border border-white/20 overflow-hidden">
-              <div className="p-4 sm:p-6 border-b border-slate-200 dark:border-slate-700 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-slate-800 dark:to-slate-700">
-                <h2 className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white">Executive Summary</h2>
-                <p className="text-sm text-muted-foreground mt-1">Insights and recommendations</p>
+            <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-lg rounded-xl sm:rounded-2xl shadow-xl border border-white/20 overflow-hidden">
+              <div className="p-3 sm:p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-slate-800 dark:to-slate-700">
+                <h2 className="text-lg sm:text-xl md:text-2xl font-bold text-slate-800 dark:text-white">Executive Summary</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">Insights and recommendations</p>
               </div>
-              <div className="p-4 sm:p-6 space-y-6">
+              <div className="p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
                 {isLoading ? (
                   <div className="text-center py-8">
                     <div className="animate-spin rounded-full h-8 w-8 border-4 border-emerald-500 border-t-transparent mx-auto"></div>
                     <p className="mt-4 text-muted-foreground">Loading summary...</p>
                   </div>
                 ) : executiveSummary ? (
-                  <div className="space-y-6">
-                    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl p-4 sm:p-6 border border-blue-200 dark:border-blue-800">
-                      <div className="flex items-center gap-2 mb-4">
-                        <div className="p-2 bg-blue-500 rounded-lg">
-                          <BarChart3 className="h-5 w-5 text-white" />
+                  <div className="space-y-4 sm:space-y-6">
+                    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg sm:rounded-xl p-3 sm:p-4 md:p-6 border border-blue-200 dark:border-blue-800">
+                      <div className="flex items-center gap-2 mb-3 sm:mb-4">
+                        <div className="p-1.5 sm:p-2 bg-blue-500 rounded-lg">
+                          <BarChart3 className="h-4 w-4 sm:h-5 sm:w-5 text-white" />
                         </div>
-                        <h3 className="text-lg font-bold text-slate-800 dark:text-white">Key Findings</h3>
+                        <h3 className="text-base sm:text-lg font-bold text-slate-800 dark:text-white">Key Findings</h3>
                       </div>
                       <ul className="space-y-2">
                         {executiveSummary.keyFindings?.map((finding: string, index: number) => (
-                          <li key={index} className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
-                            <span className="text-blue-500 mt-1">•</span>
-                            <span>{finding}</span>
+                          <li key={index} className="flex items-start gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
+                            <span className="text-blue-500 mt-1 flex-shrink-0">•</span>
+                            <span className="flex-1">{finding}</span>
                           </li>
                         ))}
                       </ul>
                     </div>
 
-                    <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-xl p-4 sm:p-6 border border-purple-200 dark:border-purple-800">
-                      <div className="flex items-center gap-2 mb-4">
-                        <div className="p-2 bg-purple-500 rounded-lg">
-                          <Target className="h-5 w-5 text-white" />
+                    <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-lg sm:rounded-xl p-3 sm:p-4 md:p-6 border border-purple-200 dark:border-purple-800">
+                      <div className="flex items-center gap-2 mb-3 sm:mb-4">
+                        <div className="p-1.5 sm:p-2 bg-purple-500 rounded-lg">
+                          <Target className="h-4 w-4 sm:h-5 sm:w-5 text-white" />
                         </div>
-                        <h3 className="text-lg font-bold text-slate-800 dark:text-white">Recommendations</h3>
+                        <h3 className="text-base sm:text-lg font-bold text-slate-800 dark:text-white">Recommendations</h3>
                       </div>
                       <ul className="space-y-2">
                         {executiveSummary.recommendations?.map((rec: string, index: number) => (
-                          <li key={index} className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
-                            <span className="text-purple-500 mt-1">•</span>
-                            <span>{rec}</span>
+                          <li key={index} className="flex items-start gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
+                            <span className="text-purple-500 mt-1 flex-shrink-0">•</span>
+                            <span className="flex-1">{rec}</span>
                           </li>
                         ))}
                       </ul>
                     </div>
 
-                    <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 rounded-xl p-4 sm:p-6 border border-emerald-200 dark:border-emerald-800">
-                      <div className="flex items-center gap-2 mb-4">
-                        <div className="p-2 bg-emerald-500 rounded-lg">
-                          <FileText className="h-5 w-5 text-white" />
+                    <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 rounded-lg sm:rounded-xl p-3 sm:p-4 md:p-6 border border-emerald-200 dark:border-emerald-800">
+                      <div className="flex items-center gap-2 mb-3 sm:mb-4">
+                        <div className="p-1.5 sm:p-2 bg-emerald-500 rounded-lg">
+                          <FileText className="h-4 w-4 sm:h-5 sm:w-5 text-white" />
                         </div>
-                        <h3 className="text-lg font-bold text-slate-800 dark:text-white">Action Items</h3>
+                        <h3 className="text-base sm:text-lg font-bold text-slate-800 dark:text-white">Action Items</h3>
                       </div>
                       <ul className="space-y-2">
                         {executiveSummary.actionItems?.map((item: string, index: number) => (
-                          <li key={index} className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
-                            <span className="text-emerald-500 mt-1">•</span>
-                            <span>{item}</span>
+                          <li key={index} className="flex items-start gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
+                            <span className="text-emerald-500 mt-1 flex-shrink-0">•</span>
+                            <span className="flex-1">{item}</span>
                           </li>
                         ))}
                       </ul>
@@ -931,14 +1124,29 @@ export default function Reports() {
                   </div>
                 )}
 
-                <div className="flex flex-col sm:flex-row justify-end gap-2 sm:gap-3 pt-4 border-t border-slate-200 dark:border-slate-700">
-                  <Button variant="outline" className="w-full sm:w-auto shadow-sm">
-                    <FileSpreadsheet className="h-4 w-4 mr-2" />
-                    Generate Full Report
+                <div className="flex flex-col sm:flex-row justify-end gap-2 sm:gap-3 pt-3 sm:pt-4 border-t border-slate-200 dark:border-slate-700">
+                  <Button 
+                    variant="outline" 
+                    className="w-full sm:w-auto shadow-sm text-xs sm:text-sm"
+                    onClick={() => handleQuickExport('csv')}
+                  >
+                    <FileSpreadsheet className="h-3 w-3 sm:h-4 sm:w-4 mr-2" />
+                    <span className="truncate">Generate Full Report (CSV)</span>
                   </Button>
-                  <Button className="w-full sm:w-auto bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg">
-                    <Download className="h-4 w-4 mr-2" />
-                    Download Summary
+                  <Button 
+                    variant="outline" 
+                    className="w-full sm:w-auto shadow-sm text-xs sm:text-sm"
+                    onClick={() => handleQuickExport('pdf')}
+                  >
+                    <FileText className="h-3 w-3 sm:h-4 sm:w-4 mr-2" />
+                    <span className="truncate">Generate Full Report (PDF)</span>
+                  </Button>
+                  <Button 
+                    className="w-full sm:w-auto bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg text-xs sm:text-sm"
+                    onClick={() => openExportDialog()}
+                  >
+                    <Download className="h-3 w-3 sm:h-4 sm:w-4 mr-2" />
+                    <span className="truncate">Custom Export</span>
                   </Button>
                 </div>
               </div>

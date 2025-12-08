@@ -19,6 +19,7 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatTimeIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 type HRActivity = {
@@ -80,17 +81,8 @@ const HRDashboard: React.FC = () => {
 
   const formatActivityTime = (value?: string) => {
     if (!value) return '—';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.valueOf())) {
-      return value;
-    }
-    return parsed.toLocaleString(undefined, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    // Parse the ISO string and convert to IST, then format time only
+    return formatTimeIST(value, 'hh:mm a');
   };
 
   const formatActivityDescription = (activity: HRActivity) => {

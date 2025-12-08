@@ -54,6 +54,8 @@ const Login: React.FC = () => {
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
   const [otpExpiryTime, setOtpExpiryTime] = useState<number>(0); // Countdown in seconds
   const [canResend, setCanResend] = useState(false);
+  const [lastShownError, setLastShownError] = useState<string>('');
+  const [lastOtpAttempt, setLastOtpAttempt] = useState<string>('');
 
   // Check for session message from navigation state
   useEffect(() => {
@@ -93,6 +95,13 @@ const Login: React.FC = () => {
     }
   }, [otpExpiryTime]);
 
+  // Reset error tracking when OTP value changes
+  useEffect(() => {
+    if (otp !== lastOtpAttempt) {
+      setLastShownError('');
+    }
+  }, [otp, lastOtpAttempt]);
+
   // Prevent back navigation to authenticated pages after logout
   useEffect(() => {
     const handlePopState = () => {
@@ -123,8 +132,8 @@ const Login: React.FC = () => {
       // Handle successful response
       if (response.status === 200 || response.status === 201) {
         setOtpSent(true);
-        // Set OTP expiry time from backend response in seconds
-        const expirySeconds = response.data?.expires_in_seconds || 30;
+        // Set OTP expiry time to 120 seconds (2 minutes)
+        const expirySeconds = 120; // Force 120 seconds regardless of backend response
         setOtpExpiryTime(expirySeconds);
         setCanResend(false);
         const successMessage = response.data?.message || "OTP sent successfully";
@@ -180,8 +189,8 @@ const Login: React.FC = () => {
       const response = await axios.post(`${API_ENDPOINTS.sendOtp}?email=${encodeURIComponent(email)}`);
       
       if (response.status === 200 || response.status === 201) {
-        // Reset OTP expiry time from backend response in seconds
-        const expirySeconds = response.data?.expires_in_seconds || 30;
+        // Reset OTP expiry time to 120 seconds (2 minutes)
+        const expirySeconds = 120; // Force 120 seconds regardless of backend response
         setOtpExpiryTime(expirySeconds);
         setCanResend(false);
         setOtp(''); // Clear previous OTP
@@ -221,6 +230,9 @@ const Login: React.FC = () => {
     e.preventDefault();
     if (!email || !otp) return;
     
+    // Prevent duplicate submissions while already loading
+    if (isLoading) return;
+    
     setIsLoading(true);
     setError('');
     
@@ -234,6 +246,10 @@ const Login: React.FC = () => {
       if (response.status === 200 || response.status === 201) {
         const userData = response.data;
         console.log('Verify OTP Response:', userData); // Debug log
+        
+        // Clear error tracking on success
+        setLastShownError('');
+        setLastOtpAttempt('');
         
         // Pass the role as-is from backend, AuthContext will handle the mapping
         // Backend returns role like "TeamLead", "Admin", etc. which needs proper mapping
@@ -273,11 +289,23 @@ const Login: React.FC = () => {
       }
       
       setError(errorMessage);
-      toast({
-        variant: "destructive",
-        title: "Verification Failed",
-        description: errorMessage,
-      });
+      
+      // Only show toast notification if:
+      // 1. The error message is different from the last shown error, OR
+      // 2. The OTP value has changed since the last attempt
+      const shouldShowToast = lastShownError !== errorMessage || lastOtpAttempt !== otp;
+      
+      if (shouldShowToast) {
+        toast({
+          variant: "destructive",
+          title: "Verification Failed",
+          description: errorMessage,
+        });
+        
+        // Update tracking variables
+        setLastShownError(errorMessage);
+        setLastOtpAttempt(otp);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -461,15 +489,19 @@ const Login: React.FC = () => {
                         <p className="text-slate-500">
                           OTP sent to <span className="font-medium text-slate-700">{email}</span>
                         </p>
-                        {otpExpiryTime > 0 && (
+                        {otpExpiryTime > 0 ? (
                           <p className="text-blue-600 font-medium">
                             {formatTime(otpExpiryTime)}
                           </p>
-                        )}
-                        {otpExpiryTime === 0 && (
-                          <p className="text-red-600 font-medium">
-                            Expired
-                          </p>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleResendOtp}
+                            disabled={isLoading}
+                            className="text-red-600 font-semibold hover:text-red-700 hover:underline transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isLoading ? 'Resending...' : 'Resend OTP'}
+                          </button>
                         )}
                       </div>
                     </div>
@@ -494,25 +526,6 @@ const Login: React.FC = () => {
                         t.auth.verifyOtp
                       )}
                     </Button>
-
-                    {canResend && otpExpiryTime === 0 && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full h-12 border-2 border-blue-600 text-blue-600 hover:bg-blue-50 font-medium rounded-xl"
-                        onClick={handleResendOtp}
-                        disabled={isLoading}
-                      >
-                        {isLoading ? (
-                          <>
-                            <div className="h-5 w-5 rounded-full border-2 border-blue-600 border-t-transparent animate-spin mr-2" />
-                            Resending...
-                          </>
-                        ) : (
-                          '🔄 Resend OTP'
-                        )}
-                      </Button>
-                    )}
 
                     <Button
                       type="button"

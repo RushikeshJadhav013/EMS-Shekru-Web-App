@@ -15,7 +15,7 @@ export const V2Overlay: React.FC<V2OverlayProps> = ({
   const navigate = useNavigate();
 
   return (
-    <div className="absolute inset-0 z-[50] flex items-center justify-center">
+    <div className="absolute inset-0 z-[30] flex items-center justify-center">
       {/* Blurred backdrop - only covers content area */}
       <div className="absolute inset-0 bg-white/60 dark:bg-slate-900/60 backdrop-blur-2xl" />
       
@@ -70,8 +70,11 @@ export const V2Overlay: React.FC<V2OverlayProps> = ({
           {/* Back button */}
           <div className="flex justify-center mt-8">
             <Button
-              onClick={() => navigate(-1)}
-              className="group relative overflow-hidden bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl px-6 py-2.5"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(-1);
+              }}
+              className="group relative overflow-hidden bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl px-6 py-2.5 cursor-pointer z-10"
             >
               <div className="flex items-center gap-2">
                 <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />

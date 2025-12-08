@@ -19,6 +19,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatTimeIST, formatIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 interface TeamMemberStatus {
@@ -181,7 +182,7 @@ const ManagerDashboard: React.FC = () => {
             {t.common.welcome}, Manager!
           </h1>
           <p className="text-teal-100 mt-2 ml-15">
-            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatIST(nowIST(), 'EEEE, MMMM dd, yyyy')}
           </p>
         </div>
         <Button onClick={() => navigate('/manager/tasks')} className="gap-2 bg-white text-teal-700 hover:bg-teal-50">
@@ -319,7 +320,7 @@ const ManagerDashboard: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-muted-foreground">
-                    {new Date(activity.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {formatTimeIST(activity.time, 'hh:mm a')}
                   </p>
                   <Badge 
                     variant={

@@ -18,6 +18,7 @@ import {
   Target,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 const EmployeeDashboard: React.FC = () => {
@@ -106,7 +107,7 @@ const EmployeeDashboard: React.FC = () => {
             {t.common.welcome}, {user?.name}!
           </h1>
           <p className="text-rose-100 mt-2 ml-15">
-            {new Date().toLocaleDateString(language === 'en' ? 'en-US' : language === 'hi' ? 'hi-IN' : 'mr-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatIST(nowIST(), 'EEEE, MMMM dd, yyyy')}
           </p>
         </div>
         <Button onClick={() => navigate('/employee/attendance')} className="gap-2 bg-white text-rose-700 hover:bg-rose-50">

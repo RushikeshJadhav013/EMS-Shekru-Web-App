@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from datetime import datetime, timedelta
 from typing import Optional, List
+from app.utils.timezone import now_ist, get_date_bounds_ist, utc_to_ist
 import traceback
 import io
 import csv
@@ -277,7 +278,13 @@ def get_executive_summary(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Get executive summary with top performers and key metrics.
+    Get executive summary with top 5 performers and comprehensive metrics.
+    Performance calculation includes:
+    - Early check-ins (25% weight) - Higher weight for punctuality
+    - Task completion rate (30% weight) - Highest weight for productivity
+    - Attendance consistency (20% weight)
+    - On-time check-outs (15% weight)
+    - Leave patterns (10% weight)
     """
     
     # Calculate date range
@@ -309,21 +316,26 @@ def get_executive_summary(
             total_working_days += 1
         current += timedelta(days=1)
     
-    # Calculate metrics for each employee
+    # Calculate comprehensive metrics for each employee
     employee_scores = []
     total_performance = 0
     
     for emp in employees:
-        # Attendance score
-        attendance_count = db.query(Attendance).filter(
+        # Get attendance records for the month
+        attendance_records = db.query(Attendance).filter(
             Attendance.user_id == emp.user_id,
             Attendance.check_in >= start_date,
             Attendance.check_in < end_date
-        ).count()
-        attendance_score = (attendance_count / total_working_days) * 100 if total_working_days > 0 else 0
-        attendance_score = min(attendance_score, 100)
+        ).all()
         
-        # Task completion
+        attendance_count = len(attendance_records)
+        
+        # 1. Early Check-in Score (25% weight) - Higher weight for punctuality
+        # Consider check-ins before 9:00 AM as early
+        early_checkins = sum(1 for att in attendance_records if att.check_in.time() < datetime.strptime('09:00', '%H:%M').time())
+        early_checkin_score = (early_checkins / attendance_count * 100) if attendance_count > 0 else 0
+        
+        # 2. Task Completion Rate (30% weight) - Highest weight for productivity
         total_tasks = db.query(Task).filter(
             Task.assigned_to == emp.user_id
         ).count()
@@ -333,24 +345,74 @@ def get_executive_summary(
             Task.status == str(TaskStatus.COMPLETED)
         ).count()
         
-        task_score = (completed_tasks / total_tasks) * 100 if total_tasks > 0 else 0
+        task_completion_score = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0  # 0 if no tasks assigned
         
-        # Overall score (average of attendance and tasks)
-        overall_score = (attendance_score + task_score) / 2
+        # 3. Attendance Consistency (20% weight)
+        attendance_consistency_score = (attendance_count / total_working_days * 100) if total_working_days > 0 else 0
+        attendance_consistency_score = min(attendance_consistency_score, 100)
+        
+        # 4. On-time Check-out Score (15% weight)
+        # Consider check-outs after 6:00 PM as on-time
+        on_time_checkouts = sum(1 for att in attendance_records if att.check_out and att.check_out.time() >= datetime.strptime('18:00', '%H:%M').time())
+        checkout_score = (on_time_checkouts / attendance_count * 100) if attendance_count > 0 else 0
+        
+        # 5. Leave Pattern Score (10% weight) - Lower leaves = better score
+        leaves = db.query(Leave).filter(
+            Leave.user_id == emp.user_id,
+            Leave.start_date >= start_date,
+            Leave.end_date < end_date,
+            Leave.status == 'approved'
+        ).all()
+        
+        total_leave_days = sum((l.end_date - l.start_date).days + 1 for l in leaves)
+        # Inverse scoring: fewer leaves = higher score
+        leave_score = max(0, 100 - (total_leave_days / total_working_days * 100)) if total_working_days > 0 else 100
+        
+        # Skip employees with absolutely no data (no attendance AND no tasks)
+        if attendance_count == 0 and total_tasks == 0:
+            continue
+        
+        # Calculate weighted overall score with updated weights
+        overall_score = (
+            early_checkin_score * 0.25 +
+            task_completion_score * 0.30 +
+            attendance_consistency_score * 0.20 +
+            checkout_score * 0.15 +
+            leave_score * 0.10
+        )
+        
+        # Calculate task efficiency (tasks per day)
+        task_efficiency = (completed_tasks / attendance_count) if attendance_count > 0 else 0
         
         employee_scores.append({
+            "employeeId": emp.employee_id or str(emp.user_id),
             "name": emp.name,
-            "score": round(overall_score),
-            "department": emp.department
+            "department": emp.department or "N/A",
+            "role": emp.role.value if hasattr(emp.role, 'value') else str(emp.role),
+            "score": round(overall_score, 2),
+            "earlyCheckinScore": round(early_checkin_score, 1),
+            "taskCompletionScore": round(task_completion_score, 1),
+            "attendanceScore": round(attendance_consistency_score, 1),
+            "checkoutScore": round(checkout_score, 1),
+            "leaveScore": round(leave_score, 1),
+            "totalTasks": total_tasks,
+            "completedTasks": completed_tasks,
+            "attendanceDays": attendance_count,
+            "workingDays": total_working_days,
+            "totalLeaveDays": total_leave_days,
+            "earlyCheckins": early_checkins,
+            "onTimeCheckouts": on_time_checkouts,
+            "taskEfficiency": round(task_efficiency, 2)
         })
         
         total_performance += overall_score
     
-    # Find top performer
-    top_performer = max(employee_scores, key=lambda x: x['score']) if employee_scores else {"name": "N/A", "score": 0}
+    # Sort by score and get top 5 performers
+    employee_scores.sort(key=lambda x: x['score'], reverse=True)
+    top_performers = employee_scores[:5] if len(employee_scores) >= 5 else employee_scores
     
     # Calculate average performance
-    avg_performance = round(total_performance / len(employees)) if employees else 0
+    avg_performance = round(total_performance / len(employee_scores)) if employee_scores else 0
     
     # Total tasks completed
     total_tasks_completed = db.query(Task).filter(
@@ -373,27 +435,32 @@ def get_executive_summary(
             best_dept = {"name": dept, "score": round(avg_score)}
     
     return {
-        "topPerformer": top_performer,
+        "topPerformers": top_performers,
         "avgPerformance": avg_performance,
         "totalTasksCompleted": total_tasks_completed,
         "bestDepartment": best_dept,
+        "topPerformer": top_performers[0] if top_performers else None,  # For backward compatibility
+        "totalEmployeesAnalyzed": len(employee_scores),
         "keyFindings": [
             f"Average employee performance is {avg_performance}%",
-            f"Top performer: {top_performer['name']} with {top_performer['score']}% score",
+            f"Top performer: {top_performers[0]['name']} with {top_performers[0]['score']}% score" if top_performers else "No performance data available",
             f"Total tasks completed: {total_tasks_completed}",
-            f"Best performing department: {best_dept['name']} ({best_dept['score']}%)"
+            f"Best performing department: {best_dept['name']} ({best_dept['score']}%)",
+            f"Top 5 performers maintain an average score of {round(sum(p['score'] for p in top_performers) / len(top_performers), 1)}%" if top_performers else "No top performers data"
         ],
         "recommendations": [
             "Recognize top performers to maintain motivation",
             "Provide additional support for underperforming employees",
             "Share best practices from high-performing departments",
-            "Review task allocation for better efficiency"
+            "Review task allocation for better efficiency",
+            "Implement peer learning sessions with top performers"
         ],
         "actionItems": [
             "Schedule performance review meetings",
             "Plan recognition program for top performers",
             "Conduct training needs assessment",
-            "Implement weekly progress tracking"
+            "Implement weekly progress tracking",
+            "Create mentorship program pairing top performers with others"
         ]
     }
 

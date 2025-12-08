@@ -7,6 +7,7 @@ from app.core.otp_utils import generate_otp, verify_otp, get_environment_info, g
 from app.services.email_service import send_otp_email, test_email_configuration
 from app.core.security import create_token
 from app.core.config import settings
+from app.utils.timezone import now_ist
 import logging
 
 logger = logging.getLogger(__name__)

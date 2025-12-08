@@ -531,31 +531,35 @@ export default function DepartmentManagement() {
                   New Department
                 </Button>
               </DialogTrigger>
-              <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] overflow-y-auto border-2 shadow-2xl">
-                <DialogHeader>
-                  <DialogTitle className="text-xl font-semibold">
-                    Create New Department
-                  </DialogTitle>
-                </DialogHeader>
-                <DepartmentForm
-                  mode="create"
-                  formData={formData}
-                  managers={managers}
-                  managerLoadError={managerLoadError}
-                  isManagersLoading={isManagersLoading}
-                  isSaving={isSaving}
-                  selectedDepartment={selectedDepartment}
-                  onNameChange={handleNameChange}
-                  onCodeChange={handleCodeChange}
-                  onManagerChange={handleManagerChange}
-                  onStatusChange={handleStatusChange}
-                  onEmployeeCountChange={handleEmployeeCountChange}
-                  onBudgetChange={handleBudgetChange}
-                  onLocationChange={handleLocationChange}
-                  onDescriptionChange={handleDescriptionChange}
-                  onCancel={handleCreateCancel}
-                  onSubmit={handleCreateDepartment}
-                />
+              <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] p-0 border-2 shadow-2xl flex flex-col">
+                <div className="px-6 pt-6 pb-2">
+                  <DialogHeader>
+                    <DialogTitle className="text-xl font-semibold">
+                      Create New Department
+                    </DialogTitle>
+                  </DialogHeader>
+                </div>
+                <div className="overflow-y-auto px-6 pb-6 flex-1">
+                  <DepartmentForm
+                    mode="create"
+                    formData={formData}
+                    managers={managers}
+                    managerLoadError={managerLoadError}
+                    isManagersLoading={isManagersLoading}
+                    isSaving={isSaving}
+                    selectedDepartment={selectedDepartment}
+                    onNameChange={handleNameChange}
+                    onCodeChange={handleCodeChange}
+                    onManagerChange={handleManagerChange}
+                    onStatusChange={handleStatusChange}
+                    onEmployeeCountChange={handleEmployeeCountChange}
+                    onBudgetChange={handleBudgetChange}
+                    onLocationChange={handleLocationChange}
+                    onDescriptionChange={handleDescriptionChange}
+                    onCancel={handleCreateCancel}
+                    onSubmit={handleCreateDepartment}
+                  />
+                </div>
               </DialogContent>
             </Dialog>
           </div>
@@ -635,7 +639,7 @@ export default function DepartmentManagement() {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search by name, code, or location..."
+                    placeholder="Search by name, code, or location"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="pl-9 h-10 text-sm"
@@ -700,7 +704,7 @@ export default function DepartmentManagement() {
                   <TableHead>Budget</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead className="text-center">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -769,11 +773,11 @@ export default function DepartmentManagement() {
                                 : 'bg-slate-400 text-white border-0 px-2 py-0.5 shadow-sm'
                             }
                           >
-                            {department.status}
+                            {department.status.charAt(0).toUpperCase() + department.status.slice(1)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1.5">
+                        <TableCell className="text-center">
+                          <div className="flex justify-center gap-1.5">
                             <Button
                               size="sm"
                               variant="ghost"
@@ -854,29 +858,33 @@ export default function DepartmentManagement() {
 
       {/* Edit Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Department</DialogTitle>
-          </DialogHeader>
-          <DepartmentForm
-            mode="edit"
-            formData={formData}
-            managers={managers}
-            managerLoadError={managerLoadError}
-            isManagersLoading={isManagersLoading}
-            isSaving={isSaving}
-            selectedDepartment={selectedDepartment}
-            onNameChange={handleNameChange}
-            onCodeChange={handleCodeChange}
-            onManagerChange={handleManagerChange}
-            onStatusChange={handleStatusChange}
-            onEmployeeCountChange={handleEmployeeCountChange}
-            onBudgetChange={handleBudgetChange}
-            onLocationChange={handleLocationChange}
-            onDescriptionChange={handleDescriptionChange}
-            onCancel={handleEditCancel}
-            onSubmit={handleUpdateDepartment}
-          />
+        <DialogContent className="w-[95vw] max-w-2xl max-h-[80vh] p-0 flex flex-col">
+          <div className="px-6 pt-6 pb-2">
+            <DialogHeader>
+              <DialogTitle>Edit Department</DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="overflow-y-auto px-6 pb-6 flex-1">
+            <DepartmentForm
+              mode="edit"
+              formData={formData}
+              managers={managers}
+              managerLoadError={managerLoadError}
+              isManagersLoading={isManagersLoading}
+              isSaving={isSaving}
+              selectedDepartment={selectedDepartment}
+              onNameChange={handleNameChange}
+              onCodeChange={handleCodeChange}
+              onManagerChange={handleManagerChange}
+              onStatusChange={handleStatusChange}
+              onEmployeeCountChange={handleEmployeeCountChange}
+              onBudgetChange={handleBudgetChange}
+              onLocationChange={handleLocationChange}
+              onDescriptionChange={handleDescriptionChange}
+              onCancel={handleEditCancel}
+              onSubmit={handleUpdateDepartment}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

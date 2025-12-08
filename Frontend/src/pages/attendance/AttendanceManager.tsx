@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,6 +13,7 @@ import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCi
 import { toast } from '@/hooks/use-toast';
 import { AttendanceRecord } from '@/types';
 import { format, subMonths, subDays } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatTimeIST, formatDateIST, todayIST, formatDateTimeComponentsIST, parseToIST, nowIST } from '@/utils/timezone';
 import { DatePicker } from '@/components/ui/date-picker';
 import OnlineStatusIndicator from '@/components/attendance/OnlineStatusIndicator';
 
@@ -64,8 +65,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
   const [locationModal, setLocationModal] = useState<{ open: boolean; location: EmployeeAttendance | null }>({ open: false, location: null });
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
-  const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [filterDate, setFilterDate] = useState(todayIST());
+  const [selectedDate, setSelectedDate] = useState<Date>(nowIST());
   const [isExporting, setIsExporting] = useState(false);
   const [summary, setSummary] = useState<{ total_employees: number; present_today: number; late_arrivals: number; early_departures: number; absent_today: number }>({ total_employees: 0, present_today: 0, late_arrivals: 0, early_departures: 0, absent_today: 0 });
   
@@ -99,6 +100,9 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     checkOutGrace: 0,
   });
   const [onlineStatusMap, setOnlineStatusMap] = useState<Record<number, boolean>>({});
+  
+  // Ref for scrolling to department form when editing
+  const departmentFormRef = useRef<HTMLDivElement>(null);
  
   const getAuthHeaders = () => {
     const token = localStorage.getItem('token');
@@ -345,6 +349,28 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       checkInGrace: timing.check_in_grace_minutes ?? 0,
       checkOutGrace: timing.check_out_grace_minutes ?? 0,
     });
+    
+    // Scroll to the form and provide visual feedback
+    setTimeout(() => {
+      if (departmentFormRef.current) {
+        departmentFormRef.current.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+        
+        // Add a brief highlight effect
+        departmentFormRef.current.classList.add('ring-4', 'ring-purple-400', 'ring-opacity-50');
+        setTimeout(() => {
+          departmentFormRef.current?.classList.remove('ring-4', 'ring-purple-400', 'ring-opacity-50');
+        }, 2000);
+      }
+    }, 100);
+    
+    // Show toast notification
+    toast({
+      title: 'Editing Department Timing',
+      description: `Form populated with settings for ${timing.department || 'All Departments'}. Scroll up to edit.`,
+    });
   };
 
   const handleDepartmentTimingDelete = async (timing: OfficeTiming) => {
@@ -438,7 +464,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             userEmail: rec.userEmail || rec.email || '',
             employeeId: rec.employee_id || rec.employeeId || String(rec.user_id || rec.userId || ''),
             department: rec.department || 'N/A',
-            date: checkInDate ? format(checkInDate, 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+            date: checkInDate ? formatDateIST(checkInDate) : todayIST(),
             checkInTime: checkIn || undefined,
             checkOutTime: checkOut || undefined,
             checkInLocation: { 
@@ -572,32 +598,9 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     return badges;
   };
 
-  const formatIST = (dateString: string, timeString?: string) => {
+  const formatAttendanceTime = (dateString: string, timeString?: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string (HH:MM:SS), assume UTC and combine with date
-      date = new Date(`${dateString}T${timeString}Z`);
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    return formatDateTimeComponentsIST(dateString, timeString, 'hh:mm a');
   };
 
   const handleQuickFilter = (filter: string) => {
@@ -990,7 +993,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                         <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-green-500" />
-                            <span>{formatIST(record.date, record.checkInTime)}</span>
+                            <span>{formatAttendanceTime(record.date, record.checkInTime)}</span>
                           </div>
                           {record.scheduledStart && (
                             <div className="text-xs text-muted-foreground">
@@ -1001,7 +1004,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                         <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-red-500" />
-                            <span>{formatIST(record.date, record.checkOutTime)}</span>
+                            <span>{formatAttendanceTime(record.date, record.checkOutTime)}</span>
                           </div>
                           {record.scheduledEnd && (
                             <div className="text-xs text-muted-foreground">
@@ -1118,6 +1121,9 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <User className="h-5 w-5" />
               {selectedRecord?.userName}'s Attendance
             </DialogTitle>
+            <DialogDescription>
+              View check-in and check-out selfies with location and time information
+            </DialogDescription>
           </DialogHeader>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-4">
@@ -1150,7 +1156,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatIST(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
+                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatAttendanceTime(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
                   <p className="text-sm opacity-80">{selectedRecord?.checkInLocation?.address || 'Location not available'}</p>
                 </div>
               </div>
@@ -1187,7 +1193,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 )}
                 {selectedRecord?.checkOutTime && (
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                    <p className="font-medium">Check-out: {formatIST(selectedRecord.date, selectedRecord.checkOutTime)}</p>
+                    <p className="font-medium">Check-out: {formatAttendanceTime(selectedRecord.date, selectedRecord.checkOutTime)}</p>
                     <p className="text-sm opacity-80">{selectedRecord.checkOutLocation?.address || 'Location not available'}</p>
                   </div>
                 )}
@@ -1686,7 +1692,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </CardContent>
       </Card>
 
-        <Card className="shadow-xl border border-purple-100 dark:border-slate-800">
+        <Card ref={departmentFormRef} className="shadow-xl border border-purple-100 dark:border-slate-800 transition-all duration-300">
           <CardHeader className="space-y-1 pb-4">
             <CardTitle className="text-xl font-semibold">Department Overrides</CardTitle>
             <CardDescription>

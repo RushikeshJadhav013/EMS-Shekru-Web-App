@@ -20,6 +20,7 @@ import {
   Award,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatIST, formatDateTimeIST, formatTimeIST, todayIST, parseToIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 const AdminDashboard: React.FC = () => {
@@ -80,35 +81,8 @@ const AdminDashboard: React.FC = () => {
 
   const formatActivityTime = (timeString: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string or date string, try to parse it
-      date = new Date(timeString);
-      // If no timezone info, assume it's UTC
-      if (!timeString.includes('Z') && !timeString.includes('+')) {
-        const isoString = date.toISOString();
-        date = new Date(isoString);
-      }
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    // Parse the ISO string and convert to IST, then format time only
+    return formatTimeIST(timeString, 'hh:mm a');
   };
 
   return (
@@ -123,7 +97,7 @@ const AdminDashboard: React.FC = () => {
             {t.common.welcome}, Admin!
           </h1>
           <p className="text-blue-100 mt-2 ml-15">
-            {new Date().toLocaleDateString(language === 'en' ? 'en-US' : language === 'hi' ? 'hi-IN' : 'mr-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatIST(nowIST(), 'EEEE, MMMM dd, yyyy')}
           </p>
         </div>
         <Button onClick={() => navigate('/admin/employees/new')} className="gap-2 bg-white text-blue-700 hover:bg-blue-50">

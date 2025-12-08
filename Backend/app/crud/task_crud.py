@@ -74,7 +74,7 @@ def _record_history(
         user_id=user_id,
         action=action.value,
         details=json.dumps(details or {}, default=_json_default),
-        created_at=datetime.utcnow(),
+        created_at=ist_to_utc(now_ist()),
     )
     db.add(entry)
     return entry
@@ -219,11 +219,18 @@ def pass_task(
         return None
 
     previous_assignee = task.assigned_to
+    previous_status = task.status
+    
+    # Update task assignment
     task.assigned_to = new_assignee_id
     task.last_passed_by = current_user_id
     task.last_passed_to = new_assignee_id
     task.last_pass_note = note
-    task.last_passed_at = datetime.utcnow()
+    task.last_passed_at = ist_to_utc(now_ist())
+    
+    # Reset status to Pending when task is passed to a new assignee
+    # This ensures the new assignee starts fresh with the task
+    task.status = TaskStatus.PENDING
 
     new_assignee = db.query(User).filter(User.user_id == new_assignee_id).first()
     _record_history(
@@ -236,6 +243,8 @@ def pass_task(
             "to": new_assignee_id,
             "to_name": new_assignee.name if new_assignee else None,
             "note": note,
+            "previous_status": previous_status,
+            "new_status": TaskStatus.PENDING.value,
         },
     )
 

@@ -38,6 +38,7 @@ import { addDays, isSameDay } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatDateIST, todayIST, parseToIST, nowIST } from '@/utils/timezone';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiService } from '@/lib/api';
 import { 
@@ -59,7 +60,7 @@ interface LeaveRequest {
   employeeId: string;
   employeeName: string;
   department: string;
-  type: 'annual' | 'sick' | 'casual' | 'maternity' | 'paternity' | 'unpaid' | 'work_from_home';
+  type: 'annual' | 'sick' | 'casual' | 'maternity' | 'paternity' | 'unpaid';
   startDate: Date;
   endDate: Date;
   reason: string;
@@ -872,7 +873,6 @@ export default function LeaveManagement() {
       case 'maternity': return 'bg-purple-100 text-purple-800';
       case 'paternity': return 'bg-indigo-100 text-indigo-800';
       case 'unpaid': return 'bg-gray-100 text-gray-800';
-      case 'work_from_home': return 'bg-orange-100 text-orange-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -1032,14 +1032,29 @@ export default function LeaveManagement() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className={`grid w-full ${colsClass} h-12 bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 border`}>
-          {canApply && <TabsTrigger value="request">Apply Leave</TabsTrigger>}
+        <TabsList className={`grid w-full ${colsClass} h-14 bg-gradient-to-r from-slate-100 to-gray-100 dark:from-slate-800 dark:to-gray-800 border-2 border-slate-200 dark:border-slate-700 rounded-lg p-1 gap-1 shadow-sm`}>
+          {canApply && (
+            <TabsTrigger 
+              value="request" 
+              className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-600 data-[state=active]:to-indigo-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+            >
+              Apply Leave
+            </TabsTrigger>
+          )}
           {(canApproveLeaves || canViewTeamLeaves) && (
-            <TabsTrigger value="approvals">
+            <TabsTrigger 
+              value="approvals"
+              className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-green-600 data-[state=active]:to-emerald-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+            >
               {canApproveLeaves ? 'Approvals' : 'Team Leaves'}
             </TabsTrigger>
           )}
-          <TabsTrigger value="calendar">Leave Calendar</TabsTrigger>
+          <TabsTrigger 
+            value="calendar"
+            className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-600 data-[state=active]:to-pink-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+          >
+            Leave Calendar
+          </TabsTrigger>
         </TabsList>
 
         {canApply && (
@@ -1125,7 +1140,7 @@ export default function LeaveManagement() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
+                <div className="space-y-2">
                   <Label>Leave Type</Label>
                   <Select
                     value={formData.type}
@@ -1141,11 +1156,10 @@ export default function LeaveManagement() {
                       <SelectItem value="maternity">Maternity Leave</SelectItem>
                       <SelectItem value="paternity">Paternity Leave</SelectItem>
                       <SelectItem value="unpaid">Unpaid Leave</SelectItem>
-                      <SelectItem value="work_from_home">Work from Home</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <div>
+                <div className="space-y-2">
                   <Label>Duration</Label>
                   <div className="flex gap-2">
                     <DatePicker
@@ -1161,7 +1175,7 @@ export default function LeaveManagement() {
                   </div>
                 </div>
               </div>
-              <div>
+              <div className="space-y-2">
                 <Label>Reason</Label>
                 <Textarea
                   value={formData.reason}

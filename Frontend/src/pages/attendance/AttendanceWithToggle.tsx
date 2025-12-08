@@ -4,7 +4,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -17,6 +17,7 @@ import OnlineStatusIndicator from '@/components/attendance/OnlineStatusIndicator
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X, Download, Search, Loader2 } from 'lucide-react';
 import { AttendanceRecord, UserRole } from '@/types';
 import { format, subMonths } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatTimeIST, formatDateIST, todayIST, formatDateTimeComponentsIST, parseToIST } from '@/utils/timezone';
 import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast } from '@/utils/geolocation';
 import { DatePicker } from '@/components/ui/date-picker';
 
@@ -63,7 +64,7 @@ const AttendanceWithToggle: React.FC = () => {
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
   const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [selectedDate, setSelectedDate] = useState(todayIST());
   const [filterRole, setFilterRole] = useState<'all' | UserRole>('all');
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendanceRecord | null>(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
@@ -375,7 +376,7 @@ const AttendanceWithToggle: React.FC = () => {
         data.map((rec: any) => ({
           id: String(rec.attendance_id),
           userId: String(rec.user_id),
-          date: format(new Date(rec.check_in), 'yyyy-MM-dd'),
+          date: formatDateIST(rec.check_in),
           checkInTime: rec.check_in,
           checkOutTime: rec.check_out || undefined,
           checkInLocation: {
@@ -396,18 +397,17 @@ const AttendanceWithToggle: React.FC = () => {
           workReport: resolveStaticUrl(rec.workReport || rec.work_report),
         }))
       );
-      const today = format(new Date(), 'yyyy-MM-dd');
+      const today = todayIST();
       const todayRecord = data.find((rec: any) => {
-        const recordDate = format(new Date(rec.check_in), 'yyyy-MM-dd');
+        const recordDate = formatDateIST(rec.check_in);
         return recordDate === today;
       });
 
       if (todayRecord) {
-        const checkInDate = new Date(todayRecord.check_in);
         const attendance: AttendanceRecord = {
           id: todayRecord.attendance_id.toString(),
           userId: todayRecord.user_id.toString(),
-          date: format(checkInDate, 'yyyy-MM-dd'),
+          date: formatDateIST(todayRecord.check_in),
           checkInTime: todayRecord.check_in, // Use ISO datetime string
           checkOutTime: todayRecord.check_out || undefined, // Use ISO datetime string
           checkInLocation: {
@@ -465,7 +465,7 @@ const AttendanceWithToggle: React.FC = () => {
         .map((rec: any) => ({
           id: String(rec.attendance_id || rec.id || ''),
           userId: String(rec.user_id || rec.employee_id || ''),
-          date: rec.check_in ? (rec.check_in.includes('T') ? rec.check_in.slice(0,10) : format(new Date(rec.check_in), 'yyyy-MM-dd')) : selectedDate,
+          date: rec.check_in ? formatDateIST(rec.check_in) : selectedDate,
           checkInTime: rec.check_in || undefined, // Use ISO datetime string if available
           checkOutTime: rec.check_out || undefined, // Use ISO datetime string if available
           checkInLocation: {
@@ -842,32 +842,9 @@ const AttendanceWithToggle: React.FC = () => {
     return null;
   };
 
-  const formatIST = (dateString: string, timeString?: string) => {
+  const formatAttendanceTime = (dateString: string, timeString?: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string (HH:MM:SS), assume UTC and combine with date
-      date = new Date(`${dateString}T${timeString}Z`);
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    return formatDateTimeComponentsIST(dateString, timeString, 'hh:mm a');
   };
 
   if (showCamera) {
@@ -893,26 +870,37 @@ const AttendanceWithToggle: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">{t.navigation.attendance}</h2>
-        <div className="flex items-center gap-4">
-          {canViewEmployeeAttendance && (
-            <div className="flex items-center space-x-2">
-              <Switch
-                id="view-mode"
-                checked={viewMode === 'employee'}
-                onCheckedChange={(checked) => setViewMode(checked ? 'employee' : 'self')}
-              />
-              <Label htmlFor="view-mode" className="cursor-pointer">
-                {viewMode === 'self' ? 'Self Attendance' : 'Employee Attendance'}
-              </Label>
-            </div>
-          )}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold">{t.navigation.attendance}</h2>
           <Badge variant="outline" className="text-lg px-3 py-1">
             <Calendar className="h-4 w-4 mr-2" />
             {format(new Date(), 'dd MMM yyyy')}
           </Badge>
         </div>
+        
+        {canViewEmployeeAttendance && (
+          <div className="flex justify-center w-full">
+            <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as 'self' | 'employee')} className="w-full sm:w-auto">
+              <TabsList className="grid grid-cols-2 h-14 w-full sm:w-[500px] bg-gradient-to-r from-slate-100 to-gray-100 dark:from-slate-800 dark:to-gray-800 border-2 border-slate-200 dark:border-slate-700 rounded-lg p-1 gap-1 shadow-sm">
+              <TabsTrigger 
+                value="self"
+                className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-600 data-[state=active]:to-indigo-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+              >
+                <User className="h-4 w-4 mr-2" />
+                Self Attendance
+              </TabsTrigger>
+              <TabsTrigger 
+                value="employee"
+                className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-green-600 data-[state=active]:to-emerald-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+              >
+                <Users className="h-4 w-4 mr-2" />
+                Employee Attendance
+              </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        )}
       </div>
 
       {canExportAttendance && viewMode === 'employee' && (
@@ -975,7 +963,7 @@ const AttendanceWithToggle: React.FC = () => {
                           {getStatusBadge(currentAttendance.status, currentAttendance.checkInTime)}
                         </div>
                         <p className="text-lg font-semibold">
-                          {formatIST(currentAttendance.date, currentAttendance.checkInTime)}
+                          {formatAttendanceTime(currentAttendance.date, currentAttendance.checkInTime)}
                         </p>
                       </div>
                       
@@ -988,7 +976,7 @@ const AttendanceWithToggle: React.FC = () => {
                         </div>
                         <p className="text-lg font-semibold">
                           {currentAttendance.checkOutTime 
-                            ? formatIST(currentAttendance.date, currentAttendance.checkOutTime)
+                            ? formatAttendanceTime(currentAttendance.date, currentAttendance.checkOutTime)
                             : '-'}
                         </p>
                       </div>
@@ -1061,10 +1049,10 @@ const AttendanceWithToggle: React.FC = () => {
                           <Calendar className="h-5 w-5 text-primary" />
                         </div>
                         <div>
-                          <p className="font-medium">{format(new Date(record.date), 'dd MMM yyyy')}</p>
+                          <p className="font-medium">{formatDateIST(record.date, 'dd MMM yyyy')}</p>
                           <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                            <span>In: {formatIST(record.date, record.checkInTime)}</span>
-                            <span>Out: {formatIST(record.date, record.checkOutTime)}</span>
+                            <span>In: {formatAttendanceTime(record.date, record.checkInTime)}</span>
+                            <span>Out: {formatAttendanceTime(record.date, record.checkOutTime)}</span>
                             {record.workHours && <span>{record.workHours}h</span>}
                           </div>
                         </div>
@@ -1165,8 +1153,8 @@ const AttendanceWithToggle: React.FC = () => {
                                 <span className="text-xs text-muted-foreground">Checked Out</span>
                               )}
                             </TableCell>
-                            <TableCell>{formatIST(record.date, record.checkInTime)}</TableCell>
-                            <TableCell>{formatIST(record.date, record.checkOutTime)}</TableCell>
+                            <TableCell>{formatAttendanceTime(record.date, record.checkInTime)}</TableCell>
+                            <TableCell>{formatAttendanceTime(record.date, record.checkOutTime)}</TableCell>
                             <TableCell>{record.workHours || '-'} h</TableCell>
                             <TableCell>
                               {record.checkInLocation?.address && record.checkInLocation.address !== 'N/A' ? (
@@ -1539,7 +1527,7 @@ const AttendanceWithToggle: React.FC = () => {
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatIST(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
+                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatAttendanceTime(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
                   <p className="text-sm opacity-80">{selectedRecord?.checkInLocation?.address || 'Location not available'}</p>
                 </div>
               </div>
@@ -1567,7 +1555,7 @@ const AttendanceWithToggle: React.FC = () => {
                 )}
                 {selectedRecord?.checkOutTime && (
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                    <p className="font-medium">Check-out: {formatIST(selectedRecord.date, selectedRecord.checkOutTime)}</p>
+                    <p className="font-medium">Check-out: {formatAttendanceTime(selectedRecord.date, selectedRecord.checkOutTime)}</p>
                     <p className="text-sm opacity-80">{selectedRecord?.checkOutLocation?.address || 'Location not available'}</p>
                   </div>
                 )}
@@ -1634,7 +1622,7 @@ const AttendanceWithToggle: React.FC = () => {
                   <MapPin className="h-5 w-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
                   <div className="flex-1">
                     <p className="text-sm font-medium text-green-900 dark:text-green-100 mb-1">
-                      {formatIST(selectedRecord?.date || '', selectedRecord?.checkInTime)}
+                      {formatAttendanceTime(selectedRecord?.date || '', selectedRecord?.checkInTime)}
                     </p>
                     <p className="text-sm text-green-700 dark:text-green-300 leading-relaxed">
                       {selectedRecord?.checkInLocation?.address || 'Location not available'}
@@ -1656,7 +1644,7 @@ const AttendanceWithToggle: React.FC = () => {
                     <MapPin className="h-5 w-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
                     <div className="flex-1">
                       <p className="text-sm font-medium text-red-900 dark:text-red-100 mb-1">
-                        {formatIST(selectedRecord?.date || '', selectedRecord?.checkOutTime)}
+                        {formatAttendanceTime(selectedRecord?.date || '', selectedRecord?.checkOutTime)}
                       </p>
                       <p className="text-sm text-red-700 dark:text-red-300 leading-relaxed">
                         {selectedRecord?.checkOutLocation?.address || 'Location not available'}

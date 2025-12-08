@@ -798,12 +798,31 @@ class ApiService {
     return this.request(`/tasks/${taskId}/comments`);
   }
 
-  async addTaskComment(taskId: number, comment: string) {
-    return this.request(`/tasks/${taskId}/comments`, {
+  async addTaskComment(taskId: number, comment?: string, file?: File) {
+    const token = localStorage.getItem('token');
+    const formData = new FormData();
+    
+    if (comment) {
+      formData.append('comment', comment);
+    }
+    if (file) {
+      formData.append('file', file);
+    }
+
+    const response = await fetch(`${this.baseURL}/tasks/${taskId}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ comment }),
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: formData,
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
   }
 
   async deleteTaskComment(taskId: number, commentId: number) {

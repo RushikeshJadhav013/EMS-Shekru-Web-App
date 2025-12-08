@@ -23,6 +23,7 @@ import logging
 import json
 from ..utils.geolocation import location_service
 from app.schemas.office_timing_schema import OfficeTimingOut, OfficeTimingCreate
+from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_ist, utc_to_ist, ist_to_utc
 
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
@@ -817,21 +818,8 @@ async def employee_check_in_route(
             return _prepare_attendance_payload(existing_attendance)
 
         # Check if user has approved work from home leave for today
-        from app.db.models.leave import Leave
-        today_date = datetime.utcnow().date()
-        work_from_home_leave = (
-            db.query(Leave)
-            .filter(
-                Leave.user_id == user_id,
-                Leave.leave_type == 'work_from_home',
-                Leave.status == 'Approved',
-                Leave.start_date <= today_date,
-                Leave.end_date >= today_date
-            )
-            .first()
-        )
-        
-        work_location = 'work_from_home' if work_from_home_leave else 'office'
+        # Set work location to office (WFH option removed)
+        work_location = 'office'
 
         # Create new check-in with location data
         attendance = Attendance(
@@ -905,20 +893,8 @@ async def employee_check_in_json(
 
         # Check if user has approved work from home leave for today
         from app.db.models.leave import Leave
-        today_date = datetime.utcnow().date()
-        work_from_home_leave = (
-            db.query(Leave)
-            .filter(
-                Leave.user_id == payload.user_id,
-                Leave.leave_type == 'work_from_home',
-                Leave.status == 'Approved',
-                Leave.start_date <= today_date,
-                Leave.end_date >= today_date
-            )
-            .first()
-        )
-        
-        work_location = 'work_from_home' if work_from_home_leave else 'office'
+        # Set work location to office (WFH option removed)
+        work_location = 'office'
 
         # Create new check-in with location data
         attendance = Attendance(

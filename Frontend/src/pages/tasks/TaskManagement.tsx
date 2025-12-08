@@ -61,9 +61,12 @@ import {
   Download,
   FileSpreadsheet,
   FileDown,
-  Send
+  Send,
+  Image as ImageIcon,
+  File as FileIcon
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatDateIST, todayIST, parseToIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://staffly.space';
@@ -101,6 +104,7 @@ type BackendEmployee = {
   email: string;
   role: string;
   department?: string;
+  photo_url?: string | null;
 };
 
 type EmployeeSummary = {
@@ -110,6 +114,7 @@ type EmployeeSummary = {
   email: string;
   role: UserRole;
   department?: string;
+  photo_url?: string;
 };
 
 type TaskHistoryEntry = {
@@ -216,9 +221,9 @@ const mapBackendTaskToFrontend = (task: BackendTask): TaskWithPassMeta => {
 
 const formatDisplayDate = (date?: string | null) => {
   if (!date) return 'No deadline';
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return 'No deadline';
-  return format(parsed, 'MMM dd, yyyy');
+  const parsed = parseToIST(date);
+  if (!parsed) return 'No deadline';
+  return formatDateIST(parsed, 'MMM dd, yyyy');
 };
 
 const formatDateForInput = (date?: string | null) => {
@@ -260,6 +265,7 @@ const TaskManagement: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [taskOwnershipFilter, setTaskOwnershipFilter] = useState<'all' | 'received' | 'created'>('received');
+  const [selectedDepartmentFilter, setSelectedDepartmentFilter] = useState<string>('all');
   const [newTask, setNewTask] = useState({
     title: '',
     description: '',
@@ -292,12 +298,20 @@ const TaskManagement: React.FC = () => {
   const [taskHistory, setTaskHistory] = useState<Record<string, TaskHistoryEntry[]>>({});
   const [isFetchingHistory, setIsFetchingHistory] = useState<string | null>(null);
   
+  // Pass History Dialog State
+  const [isPassHistoryDialogOpen, setIsPassHistoryDialogOpen] = useState(false);
+  const [passHistoryTask, setPassHistoryTask] = useState<TaskWithPassMeta | null>(null);
+  
   // Task Comments State
   const [taskComments, setTaskComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [isPostingComment, setIsPostingComment] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const commentsEndRef = React.useRef<HTMLDivElement>(null);
+  const emojiPickerRef = React.useRef<HTMLDivElement>(null);
 
   // Export states
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
@@ -324,12 +338,18 @@ const TaskManagement: React.FC = () => {
   useEffect(() => {
     if (user?.role === 'admin') {
       setTaskOwnershipFilter('created');
+    } else if (user?.role === 'hr' || user?.role === 'manager') {
+      setTaskOwnershipFilter('created');
+      // Set manager's department as default filter
+      if (user?.role === 'manager' && user?.department) {
+        setSelectedDepartmentFilter(user.department);
+      }
     } else {
       setTaskOwnershipFilter((prev) =>
         prev === 'received' || prev === 'created' ? prev : 'received'
       );
     }
-  }, [user?.role]);
+  }, [user?.role, user?.department]);
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token') || '';
@@ -402,6 +422,7 @@ const TaskManagement: React.FC = () => {
         email: emp.email,
         department: emp.department ?? undefined,
         role: normalizeRole(emp.role),
+        photo_url: emp.photo_url ?? undefined,
       }));
       setEmployees(formatted);
 
@@ -452,9 +473,15 @@ const TaskManagement: React.FC = () => {
       }
       const data: BackendTask[] = await response.json();
       const converted = data.map(mapBackendTaskToFrontend);
-      setTasks(converted);
+      // Sort tasks by creation date - newest first
+      const sortedTasks = converted.sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateB - dateA; // Descending order (newest first)
+      });
+      setTasks(sortedTasks);
       setTaskHistory({});
-      await Promise.all(converted.map((task) => fetchAndStoreHistory(task.id)));
+      await Promise.all(sortedTasks.map((task) => fetchAndStoreHistory(task.id)));
     } catch (error) {
       console.error('Failed to fetch tasks', error);
       toast({
@@ -524,16 +551,57 @@ const TaskManagement: React.FC = () => {
     if (!user || !userId) return [] as EmployeeSummary[];
     const currentIndex = ROLE_ORDER.indexOf(user.role);
     return extendedEmployees.filter((emp) => {
-      if (emp.userId === userId) return false;
+      // Filter out current user (self)
+      if (emp.userId === userId || String(emp.userId) === String(userId)) return false;
+      
       const targetIndex = ROLE_ORDER.indexOf(emp.role);
       if (targetIndex === -1) return false;
+      
+      // Can only pass to lower hierarchy (higher index in ROLE_ORDER)
       if (targetIndex <= currentIndex) return false;
+      
+      // Non-admin users can only pass within their department
       if (user.role !== 'admin' && user.department && emp.department && emp.department !== user.department) {
         return false;
       }
       return true;
     });
   }, [extendedEmployees, user, userId]);
+
+  // Group pass eligible employees by department with role hierarchy
+  const passEligibleByDepartment = useMemo(() => {
+    const grouped = new Map<string, EmployeeSummary[]>();
+    
+    passEligibleEmployees.forEach((emp) => {
+      const dept = emp.department || 'No Department';
+      if (!grouped.has(dept)) {
+        grouped.set(dept, []);
+      }
+      grouped.get(dept)!.push(emp);
+    });
+    
+    // Sort employees within each department by role hierarchy
+    // Include 'admin' in the role order for proper sorting
+    const roleOrder: UserRole[] = ['admin', 'hr', 'manager', 'team_lead', 'employee'];
+    grouped.forEach((employees, dept) => {
+      employees.sort((a, b) => {
+        const aIndex = roleOrder.indexOf(a.role);
+        const bIndex = roleOrder.indexOf(b.role);
+        // Handle roles not in the list (put them at the end)
+        const aPos = aIndex === -1 ? roleOrder.length : aIndex;
+        const bPos = bIndex === -1 ? roleOrder.length : bIndex;
+        
+        if (aPos !== bPos) {
+          return aPos - bPos;
+        }
+        // If same role, sort alphabetically by name
+        return a.name.localeCompare(b.name);
+      });
+    });
+    
+    // Sort departments alphabetically
+    return new Map([...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+  }, [passEligibleEmployees]);
 
   const assignableDepartments = useMemo(() => {
     if (!user || !userId) return departments;
@@ -654,16 +722,31 @@ const TaskManagement: React.FC = () => {
   }, [filteredTasks, userId]);
 
   const visibleTasks = useMemo(() => {
+    let baseTasks: TaskWithPassMeta[] = [];
+    
     if (taskOwnershipFilter === 'all') {
-      return filteredTasks;
+      baseTasks = filteredTasks;
+    } else if (taskOwnershipFilter === 'created') {
+      baseTasks = filteredCreatedTasks;
+    } else {
+      baseTasks = filteredReceivedTasks;
     }
 
-    if (taskOwnershipFilter === 'created') {
-      return filteredCreatedTasks;
+    // Apply department filter for "All Tasks" view
+    if (taskOwnershipFilter === 'all' && selectedDepartmentFilter !== 'all') {
+      return baseTasks.filter(task => {
+        // Get task creator and assignee info
+        const creator = employees.find(emp => emp.userId === task.assignedBy);
+        const assignees = task.assignedTo.map(id => employees.find(emp => emp.userId === id));
+        
+        // Check if task belongs to selected department
+        return creator?.department === selectedDepartmentFilter || 
+               assignees.some(assignee => assignee?.department === selectedDepartmentFilter);
+      });
     }
 
-    return filteredReceivedTasks;
-  }, [filteredCreatedTasks, filteredReceivedTasks, filteredTasks, taskOwnershipFilter]);
+    return baseTasks;
+  }, [filteredCreatedTasks, filteredReceivedTasks, filteredTasks, taskOwnershipFilter, selectedDepartmentFilter, employees]);
 
   const selectedTaskAssignerInfo = useMemo(() => {
     if (!selectedTask) return null;
@@ -674,6 +757,22 @@ const TaskManagement: React.FC = () => {
     if (!selectedTask) return [];
     return taskHistory[selectedTask.id] ?? [];
   }, [selectedTask, taskHistory]);
+
+  // Get pass history entries for a specific task
+  const getPassHistoryEntries = useCallback((taskId: string) => {
+    const history = taskHistory[taskId] ?? [];
+    return history.filter(entry => entry.action === 'passed').reverse(); // Most recent first
+  }, [taskHistory]);
+
+  // Open pass history dialog
+  const openPassHistoryDialog = useCallback((task: TaskWithPassMeta) => {
+    setPassHistoryTask(task);
+    setIsPassHistoryDialogOpen(true);
+    // Ensure history is loaded
+    if (!taskHistory[task.id]) {
+      fetchAndStoreHistory(task.id);
+    }
+  }, [fetchAndStoreHistory, taskHistory]);
 
   // Create new task
   const canAssignToSelection = useMemo(() => {
@@ -738,7 +837,8 @@ const TaskManagement: React.FC = () => {
       const createdTask: BackendTask = await response.json();
       const convertedTask = mapBackendTaskToFrontend(createdTask);
 
-      setTasks((prev) => [...prev, convertedTask]);
+      // Add new task at the beginning of the list (newest first)
+      setTasks((prev) => [convertedTask, ...prev]);
 
       if (convertedTask.assignedTo[0] && userId && convertedTask.assignedTo[0] !== userId) {
         addNotification({
@@ -887,16 +987,34 @@ const TaskManagement: React.FC = () => {
   }, [toast]);
 
   const handlePostComment = useCallback(async () => {
-    if (!newComment.trim() || !selectedTask) return;
+    if ((!newComment.trim() && attachedFiles.length === 0) || !selectedTask) return;
     
     setIsPostingComment(true);
     try {
-      const comment = await apiService.addTaskComment(
-        Number(selectedTask.id),
-        newComment.trim()
-      );
-      setTaskComments(prev => [...prev, comment]);
+      // If there are files, send them one by one with the comment
+      if (attachedFiles.length > 0) {
+        for (let i = 0; i < attachedFiles.length; i++) {
+          const file = attachedFiles[i];
+          const commentText = i === 0 ? newComment.trim() : undefined; // Only send text with first file
+          const comment = await apiService.addTaskComment(
+            Number(selectedTask.id),
+            commentText,
+            file
+          );
+          setTaskComments(prev => [...prev, comment]);
+        }
+      } else {
+        // Just text comment
+        const comment = await apiService.addTaskComment(
+          Number(selectedTask.id),
+          newComment.trim()
+        );
+        setTaskComments(prev => [...prev, comment]);
+      }
+      
       setNewComment('');
+      setAttachedFiles([]);
+      setShowEmojiPicker(false);
       toast({
         title: 'Success',
         description: 'Comment posted successfully',
@@ -915,7 +1033,37 @@ const TaskManagement: React.FC = () => {
     } finally {
       setIsPostingComment(false);
     }
-  }, [newComment, selectedTask, toast]);
+  }, [newComment, attachedFiles, selectedTask, toast]);
+
+  const handleEmojiSelect = useCallback((emoji: string) => {
+    setNewComment(prev => prev + emoji);
+  }, []);
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      const newFiles = Array.from(files);
+      setAttachedFiles(prev => [...prev, ...newFiles]);
+    }
+  }, []);
+
+  const removeAttachedFile = useCallback((index: number) => {
+    setAttachedFiles(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // Close emoji picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target as Node)) {
+        setShowEmojiPicker(false);
+      }
+    };
+
+    if (showEmojiPicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showEmojiPicker]);
 
   const handleDeleteComment = useCallback(async (commentId: number) => {
     if (!selectedTask) return;
@@ -1147,6 +1295,46 @@ const TaskManagement: React.FC = () => {
     }
   }, [authToken, authorizedHeaders, toast]);
 
+  // Helper function to check if a status transition is allowed
+  const isStatusTransitionAllowed = useCallback((currentStatus: BaseTask['status'], newStatus: BaseTask['status']): boolean => {
+    // Define status hierarchy
+    const statusHierarchy: BaseTask['status'][] = ['todo', 'in-progress', 'review', 'completed', 'cancelled'];
+    const currentIndex = statusHierarchy.indexOf(currentStatus);
+    const newIndex = statusHierarchy.indexOf(newStatus);
+    
+    // Special rules:
+    // 1. Can move from 'todo' to 'in-progress' and back
+    if (currentStatus === 'todo' || (currentStatus === 'in-progress' && newStatus === 'todo')) {
+      return true;
+    }
+    
+    // 2. Once in 'review' or beyond, cannot go back to 'in-progress' or 'todo'
+    if (currentIndex >= 2 && newIndex < 2) {
+      return false;
+    }
+    
+    // 3. Can always move forward or stay at current status
+    if (newIndex >= currentIndex) {
+      return true;
+    }
+    
+    return false;
+  }, []);
+
+  // Check if task can be deleted/cancelled
+  // Task can only be deleted by creator if status is 'todo' (not started)
+  // Once assignee changes status to 'in-progress' or beyond, creator cannot delete
+  const canDeleteTask = useCallback((task: TaskWithPassMeta): boolean => {
+    if (!userId) return false;
+    
+    // Only the creator can delete
+    const isCreator = task.assignedBy === userId;
+    if (!isCreator) return false;
+    
+    // Can only delete if task is still in 'todo' status (not started)
+    return task.status === 'todo';
+  }, [userId]);
+
   // Update task status
   const updateTaskStatus = async (taskId: string, newStatus: BaseTask['status']) => {
     setUpdatingTaskId(taskId);
@@ -1165,12 +1353,16 @@ const TaskManagement: React.FC = () => {
       const updatedTask: BackendTask = await response.json();
       const convertedTask = mapBackendTaskToFrontend(updatedTask);
 
+      // Update tasks list immediately
       setTasks((prev) => prev.map((task) => (task.id === taskId ? convertedTask : task)));
+      
+      // Update selected task if it's the one being updated
+      setSelectedTask((prev) => (prev && prev.id === taskId ? convertedTask : prev));
 
       await fetchAndStoreHistory(convertedTask.id);
 
       toast({
-        title: 'Task status updated',
+        title: 'Status updated successfully',
         description: `Task marked as ${newStatus.replace('-', ' ')}`,
       });
     } catch (err: unknown) {
@@ -1300,9 +1492,9 @@ const TaskManagement: React.FC = () => {
         task.priority.toUpperCase(),
         assigner?.name || 'Unknown',
         assignee?.name || 'Unknown',
-        task.createdAt ? format(new Date(task.createdAt), 'MMM dd, yyyy HH:mm') : '',
-        task.deadline ? format(new Date(task.deadline), 'MMM dd, yyyy') : '',
-        task.completedDate ? format(new Date(task.completedDate), 'MMM dd, yyyy HH:mm') : '',
+        task.createdAt ? formatDateTimeIST(task.createdAt, 'MMM dd, yyyy HH:mm') : '',
+        task.deadline ? formatDateIST(parseToIST(task.deadline) || new Date(), 'MMM dd, yyyy') : '',
+        task.completedDate ? formatDateTimeIST(task.completedDate, 'MMM dd, yyyy HH:mm') : '',
         assignee?.department || assigner?.department || 'Unknown',
         lastPassedBy?.name || '',
         lastPassedTo?.name || '',
@@ -1364,9 +1556,9 @@ const TaskManagement: React.FC = () => {
           <td><span class="priority-${task.priority}">${task.priority.toUpperCase()}</span></td>
           <td>${assigner?.name || 'Unknown'}</td>
           <td>${assignee?.name || 'Unknown'}</td>
-          <td>${task.createdAt ? format(new Date(task.createdAt), 'MMM dd, yyyy HH:mm') : ''}</td>
-          <td>${task.deadline ? format(new Date(task.deadline), 'MMM dd, yyyy') : ''}</td>
-          <td>${task.completedDate ? format(new Date(task.completedDate), 'MMM dd, yyyy HH:mm') : ''}</td>
+          <td>${task.createdAt ? formatDateTimeIST(task.createdAt, 'MMM dd, yyyy HH:mm') : ''}</td>
+          <td>${task.deadline ? formatDateIST(parseToIST(task.deadline) || new Date(), 'MMM dd, yyyy') : ''}</td>
+          <td>${task.completedDate ? formatDateTimeIST(task.completedDate, 'MMM dd, yyyy HH:mm') : ''}</td>
           <td>${assignee?.department || assigner?.department || 'Unknown'}</td>
           <td>${lastPassedBy?.name || ''}</td>
           <td>${lastPassedTo?.name || ''}</td>
@@ -1676,7 +1868,7 @@ const TaskManagement: React.FC = () => {
                   <Button 
                     variant="outline" 
                     onClick={() => setIsCreateDialogOpen(false)}
-                    className="h-11 px-6 border-2 hover:bg-slate-50 dark:hover:bg-slate-900"
+                    className="h-11 px-6 border-2 hover:shadow-lg hover:border-slate-400 dark:hover:border-slate-600 transition-all"
                   >
                     Cancel
                   </Button>
@@ -1793,7 +1985,7 @@ const TaskManagement: React.FC = () => {
               </Select>
 
               <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-1">
-                {user?.role !== 'admin' && (
+                {!['admin', 'hr', 'manager'].includes(user?.role || '') && (
                   <Button
                     size="sm"
                     variant={taskOwnershipFilter === 'received' ? 'default' : 'outline'}
@@ -1811,7 +2003,47 @@ const TaskManagement: React.FC = () => {
                 >
                   Created
                 </Button>
+                {['admin', 'hr', 'manager'].includes(user?.role || '') && (
+                  <Button
+                    size="sm"
+                    variant={taskOwnershipFilter === 'all' ? 'default' : 'outline'}
+                    onClick={() => {
+                      setTaskOwnershipFilter('all');
+                      // Reset department filter when switching to All Tasks
+                      if (user?.role === 'manager' && user?.department) {
+                        setSelectedDepartmentFilter(user.department);
+                      } else {
+                        setSelectedDepartmentFilter('all');
+                      }
+                    }}
+                    className={taskOwnershipFilter === 'all' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
+                  >
+                    All Tasks
+                  </Button>
+                )}
               </div>
+
+              {/* Department Filter - Show when viewing All Tasks for HR/Manager */}
+              {taskOwnershipFilter === 'all' && ['admin', 'hr', 'manager'].includes(user?.role || '') && (
+                <Select 
+                  value={selectedDepartmentFilter} 
+                  onValueChange={setSelectedDepartmentFilter}
+                >
+                  <SelectTrigger className="w-full sm:w-[180px] h-10 bg-white dark:bg-gray-950">
+                    <SelectValue placeholder="Select Department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {user?.role !== 'manager' && (
+                      <SelectItem value="all">All Departments</SelectItem>
+                    )}
+                    {departments.map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
 
               <div className="flex gap-1">
                 <Button
@@ -1876,22 +2108,24 @@ const TaskManagement: React.FC = () => {
                   ) : visibleTasks.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
-                        {user?.role !== 'admin' && taskOwnershipFilter === 'created'
-                          ? 'No created tasks found'
-                          : user?.role !== 'admin' && taskOwnershipFilter === 'received'
-                            ? 'No received tasks found'
-                            : 'No tasks found'}
+                        {taskOwnershipFilter === 'all'
+                          ? 'No tasks found in the system'
+                          : taskOwnershipFilter === 'created'
+                            ? 'No created tasks found'
+                            : 'No received tasks found'}
                       </TableCell>
                     </TableRow>
                   ) : (
                     visibleTasks.map((task) => {
                       const assignedByInfo = getAssignedByInfo(task.assignedBy);
-                      const canManageTask = Boolean((user?.role === 'admin') || (userId && task.assignedBy === userId));
+                      // In "All Tasks" view, admin can only manage tasks they created
+                      const canManageTask = Boolean(userId && task.assignedBy === userId);
                       const isReceivedTask = Boolean(userId && task.assignedTo.includes(userId));
-                      const canPassTask = isReceivedTask && task.assignedTo[0] === userId && passEligibleEmployees.length > 0;
+                      // Don't allow passing completed or cancelled tasks
+                      const canPassTask = isReceivedTask && task.assignedTo[0] === userId && passEligibleEmployees.length > 0 && task.status !== 'completed' && task.status !== 'cancelled';
                       const lastPassByLabel = task.lastPassedBy ? getAssigneeLabel(task.lastPassedBy) : null;
                       const lastPassToLabel = task.lastPassedTo ? getAssigneeLabel(task.lastPassedTo) : null;
-                      const lastPassTimestamp = task.lastPassedAt ? format(new Date(task.lastPassedAt), 'MMM dd, yyyy HH:mm') : null;
+                      const lastPassTimestamp = task.lastPassedAt ? formatDateTimeIST(task.lastPassedAt, 'MMM dd, yyyy HH:mm') : null;
                       return (
                         <TableRow key={task.id} className="hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors">
                           <TableCell>
@@ -1937,77 +2171,93 @@ const TaskManagement: React.FC = () => {
                           <TableCell>
                             <Select
                               value={task.status}
-                              onValueChange={(value: BaseTask['status']) => 
-                                updateTaskStatus(task.id, value)
-                              }
+                              onValueChange={(value: BaseTask['status']) => {
+                                if (isStatusTransitionAllowed(task.status, value)) {
+                                  updateTaskStatus(task.id, value);
+                                } else {
+                                  toast({
+                                    title: 'Invalid Status Change',
+                                    description: 'Cannot move back to this status once the task has progressed further.',
+                                    variant: 'destructive',
+                                  });
+                                }
+                              }}
                               disabled={updatingTaskId === task.id}
                             >
                               <SelectTrigger className="w-[170px] h-10 bg-white dark:bg-gray-950 border-2 hover:border-violet-300 dark:hover:border-violet-700 transition-all duration-300 hover:shadow-md">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent className="border-2 shadow-2xl min-w-[200px]">
-                                <SelectItem value="todo" className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors py-2.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-3 w-3 rounded-full bg-gradient-to-br from-slate-400 to-slate-600 shadow-md animate-pulse flex-shrink-0" />
-                                    <span className="font-medium text-sm">To Do</span>
-                                  </div>
-                                </SelectItem>
-                                <SelectItem value="in-progress" className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors py-2.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-3 w-3 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 shadow-md animate-pulse flex-shrink-0" />
-                                    <span className="font-medium text-sm">In Progress</span>
-                                  </div>
-                                </SelectItem>
-                                <SelectItem value="review" className="cursor-pointer hover:bg-yellow-50 dark:hover:bg-yellow-950 transition-colors py-2.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-3 w-3 rounded-full bg-gradient-to-br from-yellow-400 to-amber-600 shadow-md animate-pulse flex-shrink-0" />
-                                    <span className="font-medium text-sm">Review</span>
-                                  </div>
-                                </SelectItem>
-                                <SelectItem value="completed" className="cursor-pointer hover:bg-green-50 dark:hover:bg-green-950 transition-colors py-2.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-3 w-3 rounded-full bg-gradient-to-br from-green-400 to-emerald-600 shadow-md flex-shrink-0" />
-                                    <span className="font-medium text-sm flex-1">Completed</span>
-                                    <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
-                                  </div>
-                                </SelectItem>
-                                <SelectItem value="cancelled" className="cursor-pointer hover:bg-red-50 dark:hover:bg-red-950 transition-colors py-2.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="h-3 w-3 rounded-full bg-gradient-to-br from-red-400 to-rose-600 shadow-md flex-shrink-0" />
-                                    <span className="font-medium text-sm flex-1">Cancelled</span>
-                                    <XCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0" />
-                                  </div>
-                                </SelectItem>
+                                {/* Show "To Do" only if allowed */}
+                                {isStatusTransitionAllowed(task.status, 'todo') && (
+                                  <SelectItem value="todo" className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors py-2.5">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-3 w-3 rounded-full bg-gradient-to-br from-slate-400 to-slate-600 shadow-md animate-pulse flex-shrink-0" />
+                                      <span className="font-medium text-sm">To Do</span>
+                                    </div>
+                                  </SelectItem>
+                                )}
+                                {/* Show "In Progress" only if allowed */}
+                                {isStatusTransitionAllowed(task.status, 'in-progress') && (
+                                  <SelectItem value="in-progress" className="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-950 transition-colors py-2.5">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-3 w-3 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 shadow-md animate-pulse flex-shrink-0" />
+                                      <span className="font-medium text-sm">In Progress</span>
+                                    </div>
+                                  </SelectItem>
+                                )}
+                                {/* Show "Review" only if allowed */}
+                                {isStatusTransitionAllowed(task.status, 'review') && (
+                                  <SelectItem value="review" className="cursor-pointer hover:bg-yellow-50 dark:hover:bg-yellow-950 transition-colors py-2.5">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-3 w-3 rounded-full bg-gradient-to-br from-yellow-400 to-amber-600 shadow-md animate-pulse flex-shrink-0" />
+                                      <span className="font-medium text-sm">Review</span>
+                                    </div>
+                                  </SelectItem>
+                                )}
+                                {/* Show "Completed" only if allowed */}
+                                {isStatusTransitionAllowed(task.status, 'completed') && (
+                                  <SelectItem value="completed" className="cursor-pointer hover:bg-green-50 dark:hover:bg-green-950 transition-colors py-2.5">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-3 w-3 rounded-full bg-gradient-to-br from-green-400 to-emerald-600 shadow-md flex-shrink-0" />
+                                      <span className="font-medium text-sm flex-1">Completed</span>
+                                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                                    </div>
+                                  </SelectItem>
+                                )}
+                                {/* Only show Cancel option to task creator and only if status is 'todo' */}
+                                {canDeleteTask(task) && (
+                                  <SelectItem value="cancelled" className="cursor-pointer hover:bg-red-50 dark:hover:bg-red-950 transition-colors py-2.5">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-3 w-3 rounded-full bg-gradient-to-br from-red-400 to-rose-600 shadow-md flex-shrink-0" />
+                                      <span className="font-medium text-sm flex-1">Cancelled</span>
+                                      <XCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0" />
+                                    </div>
+                                  </SelectItem>
+                                )}
                               </SelectContent>
                             </Select>
                           </TableCell>
                           <TableCell>
                             {task.lastPassedBy && task.lastPassedTo ? (
-                              <div className="flex flex-col gap-1 text-sm">
-                                <div className="flex items-center gap-2">
-                                  <Share2 className="h-3.5 w-3.5 text-violet-600" />
-                                  <span>
-                                    <span className="font-medium text-foreground">{lastPassByLabel}</span>
-                                    <span className="text-muted-foreground"> → </span>
-                                    <span className="font-medium text-foreground">{lastPassToLabel}</span>
-                                  </span>
-                                </div>
-                                {task.lastPassNote && (
-                                  <span className="text-xs italic text-muted-foreground">“{task.lastPassNote}”</span>
-                                )}
-                                {lastPassTimestamp && (
-                                  <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                    <Clock className="h-3 w-3" />
-                                    {lastPassTimestamp}
-                                  </span>
-                                )}
-                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openPassHistoryDialog(task);
+                                }}
+                                className="h-8 px-3 gap-2 text-xs border-violet-200 dark:border-violet-800 hover:bg-violet-50 dark:hover:bg-violet-950 hover:border-violet-300 dark:hover:border-violet-700 transition-all"
+                              >
+                                <Share2 className="h-3.5 w-3.5 text-violet-600" />
+                                View History
+                              </Button>
                             ) : (
                               <span className="text-xs text-muted-foreground">—</span>
                             )}
                           </TableCell>
                           <TableCell>
-                            <div className="flex flex-wrap items-center gap-2">
+                            <div className={`flex flex-wrap items-center gap-2 ${task.status === 'completed' ? 'justify-center' : ''}`}>
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -2017,7 +2267,7 @@ const TaskManagement: React.FC = () => {
                                 View
                                 <ChevronRight className="h-4 w-4 ml-1" />
                               </Button>
-                              {canPassTask && (
+                              {task.status !== 'completed' && canPassTask && (
                                 <Button
                                   variant="outline"
                                   size="sm"
@@ -2028,7 +2278,7 @@ const TaskManagement: React.FC = () => {
                                   Pass
                                 </Button>
                               )}
-                              {canManageTask && (
+                              {task.status !== 'completed' && canManageTask && (
                                 <>
                                   <Button
                                     variant="outline"
@@ -2043,8 +2293,9 @@ const TaskManagement: React.FC = () => {
                                     variant="destructive"
                                     size="sm"
                                     onClick={() => handleDeleteTask(task.id)}
-                                    disabled={deletingTaskId === task.id}
+                                    disabled={deletingTaskId === task.id || !canDeleteTask(task)}
                                     className="flex items-center gap-1"
+                                    title={!canDeleteTask(task) ? 'Cannot delete task once work has started' : ''}
                                   >
                                     <Trash2 className="h-4 w-4" />
                                     {deletingTaskId === task.id ? 'Deleting...' : 'Delete'}
@@ -2064,9 +2315,11 @@ const TaskManagement: React.FC = () => {
             <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
               {visibleTasks.map((task) => {
                 const assignedByInfo = getAssignedByInfo(task.assignedBy);
-                const canManageTask = Boolean((user?.role === 'admin') || (userId && task.assignedBy === userId));
+                // In "All Tasks" view, admin can only manage tasks they created
+                const canManageTask = Boolean(userId && task.assignedBy === userId);
                 const isReceivedTask = Boolean(userId && task.assignedTo.includes(userId));
-                const canPassTask = isReceivedTask && task.assignedTo[0] === userId && passEligibleEmployees.length > 0;
+                // Don't allow passing completed or cancelled tasks
+                const canPassTask = isReceivedTask && task.assignedTo[0] === userId && passEligibleEmployees.length > 0 && task.status !== 'completed' && task.status !== 'cancelled';
                 const lastPassByLabel = task.lastPassedBy ? getAssigneeLabel(task.lastPassedBy) : null;
                 const lastPassToLabel = task.lastPassedTo ? getAssigneeLabel(task.lastPassedTo) : null;
                 return (
@@ -2120,32 +2373,25 @@ const TaskManagement: React.FC = () => {
                           Pass History
                         </div>
                         {task.lastPassedBy && task.lastPassedTo ? (
-                          <div className="mt-2 p-3 rounded-lg border bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950/40 dark:to-purple-950/40 flex flex-col gap-2">
-                            <div className="flex items-center gap-2 text-sm">
-                              <Share2 className="h-4 w-4 text-violet-600" />
-                              <span>
-                                <span className="font-semibold text-foreground">{lastPassByLabel}</span>
-                                <span className="text-muted-foreground"> → </span>
-                                <span className="font-semibold text-foreground">{lastPassToLabel}</span>
-                              </span>
-                            </div>
-                            {task.lastPassNote && (
-                              <div className="text-xs italic text-muted-foreground">“{task.lastPassNote}”</div>
-                            )}
-                            {task.lastPassedAt && (
-                              <div className="text-xs text-muted-foreground flex items-center gap-1">
-                                <Clock className="h-3 w-3" />
-                                {format(new Date(task.lastPassedAt), 'MMM dd, yyyy HH:mm')}
-                              </div>
-                            )}
-                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openPassHistoryDialog(task);
+                            }}
+                            className="mt-2 h-8 px-3 gap-2 text-xs border-violet-200 dark:border-violet-800 hover:bg-violet-50 dark:hover:bg-violet-950 hover:border-violet-300 dark:hover:border-violet-700 transition-all"
+                          >
+                            <Share2 className="h-4 w-4 text-violet-600" />
+                            View History
+                          </Button>
                         ) : (
                           <div className="mt-2 text-xs text-muted-foreground">
                             No pass actions recorded yet.
                           </div>
                         )}
                       </div>
-                      {canManageTask && (
+                      {task.status !== 'completed' && canManageTask && (
                         <div className="flex items-center gap-2 pt-2">
                           <Button
                             variant="outline"
@@ -2166,15 +2412,16 @@ const TaskManagement: React.FC = () => {
                               event.stopPropagation();
                               handleDeleteTask(task.id);
                             }}
-                            disabled={deletingTaskId === task.id}
+                            disabled={deletingTaskId === task.id || !canDeleteTask(task)}
                             className="flex items-center gap-1"
+                            title={!canDeleteTask(task) ? 'Cannot delete task once work has started' : ''}
                           >
                             <Trash2 className="h-4 w-4" />
                             {deletingTaskId === task.id ? 'Deleting...' : 'Delete'}
                           </Button>
                         </div>
                       )}
-                      {canPassTask && (
+                      {task.status !== 'completed' && canPassTask && (
                         <div className="flex items-center gap-2 pt-2">
                           <Button
                             variant="outline"
@@ -2235,19 +2482,40 @@ const TaskManagement: React.FC = () => {
                 <SelectTrigger className="h-11 border-2 bg-white dark:bg-gray-950">
                   <SelectValue placeholder="Choose team member" />
                 </SelectTrigger>
-                <SelectContent className="border-2 shadow-xl max-h-72 overflow-auto">
+                <SelectContent className="border-2 shadow-xl max-h-96 overflow-auto">
                   {passEligibleEmployees.length === 0 && (
                     <div className="py-3 px-4 text-sm text-muted-foreground">
                       No eligible team members found.
                     </div>
                   )}
-                  {passEligibleEmployees.map((emp) => (
-                      <SelectItem key={emp.userId} value={emp.userId} className="cursor-pointer">
-                        {emp.name}
-                        {emp.department ? ` • ${emp.department}` : ''}
-                        {emp.employeeId ? ` (${emp.employeeId})` : ''}
-                      </SelectItem>
-                    ))}
+                  {Array.from(passEligibleByDepartment.entries()).map(([department, employees]) => (
+                    <div key={department}>
+                      <div className="px-2 py-2 text-xs font-semibold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/30 sticky top-0 z-10 border-b">
+                        {department}
+                      </div>
+                      {employees.map((emp) => (
+                        <SelectItem 
+                          key={emp.userId} 
+                          value={emp.userId} 
+                          className="cursor-pointer pl-6"
+                        >
+                          <div className="flex items-center justify-between w-full gap-2">
+                            <span className="font-medium">{emp.name}</span>
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 font-medium">
+                                {formatRoleLabel(emp.role)}
+                              </span>
+                              {emp.employeeId && (
+                                <span className="text-muted-foreground">
+                                  {emp.employeeId}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </div>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -2270,7 +2538,7 @@ const TaskManagement: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={closePassDialog}
-                className="h-11 px-6 border-2 hover:bg-slate-50 dark:hover:bg-slate-900"
+                className="h-11 px-6 border-2 hover:shadow-lg hover:border-slate-400 dark:hover:border-slate-600 transition-all"
               >
                 Cancel
               </Button>
@@ -2396,7 +2664,7 @@ const TaskManagement: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={resetEditState}
-                className="h-11 px-6 border-2 hover:bg-slate-50 dark:hover:bg-slate-900"
+                className="h-11 px-6 border-2 hover:shadow-lg hover:border-slate-400 dark:hover:border-slate-600 transition-all"
               >
                 Cancel
               </Button>
@@ -2531,7 +2799,7 @@ const TaskManagement: React.FC = () => {
                     selectedTaskHistory.map((entry) => {
                       const actor = employeesById.get(String(entry.user_id));
                       const actorName = actor?.name ?? (entry.user_id ? `User #${entry.user_id}` : 'Unknown');
-                      const entryTime = format(new Date(entry.created_at), 'MMM dd, yyyy HH:mm');
+                      const entryTime = formatDateTimeIST(entry.created_at, 'MMM dd, yyyy HH:mm');
                       const details = entry.details || {};
 
                       const renderDetails = () => {
@@ -2652,10 +2920,10 @@ const TaskManagement: React.FC = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="comments" className="mt-6 space-y-4">
+              <TabsContent value="comments" className="mt-4 flex flex-col h-[calc(100vh-280px)] min-h-[500px]">
                 {/* Comments Header */}
-                <div className="p-4 rounded-lg border bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950">
-                  <h3 className="font-semibold text-sm flex items-center gap-2">
+                <div className="p-3 rounded-lg border bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950 flex-shrink-0">
+                  <h3 className="font-semibold text-base flex items-center gap-2">
                     <MessageSquare className="h-4 w-4 text-violet-600" />
                     Task Discussion
                   </h3>
@@ -2664,70 +2932,155 @@ const TaskManagement: React.FC = () => {
                   </p>
                 </div>
 
-                {/* Comments List with Scrolling */}
-                <div className="overflow-y-auto max-h-[500px] space-y-3 p-4 bg-slate-50/50 dark:bg-slate-900/50 rounded-lg border" style={{ scrollbarWidth: 'thin', scrollbarColor: '#a78bfa #e2e8f0' }}>
+                {/* Comments List with Scrolling - WhatsApp Style */}
+                <div className="flex-1 overflow-y-auto space-y-3 p-4 bg-[#efeae2] dark:bg-slate-900 rounded-lg my-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#a78bfa #e2e8f0', backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M0 0h100v100H0z\' fill=\'%23efeae2\' fill-opacity=\'0.4\'/%3E%3Cpath d=\'M50 0L0 50M100 0L50 50M100 50L50 100M50 50L0 100\' stroke=\'%23d1ccc0\' stroke-width=\'0.5\' opacity=\'0.3\'/%3E%3C/svg%3E")' }}>
                     {isLoadingComments ? (
-                      <div className="text-center py-8">
-                        <Loader2 className="h-8 w-8 animate-spin mx-auto text-violet-600" />
-                        <p className="text-sm text-muted-foreground mt-2">Loading comments...</p>
+                      <div className="text-center py-12">
+                        <Loader2 className="h-10 w-10 animate-spin mx-auto text-violet-600" />
+                        <p className="text-base text-muted-foreground mt-3">Loading comments...</p>
                       </div>
                     ) : taskComments.length === 0 ? (
-                      <div className="text-center py-12">
-                        <div className="h-16 w-16 rounded-full bg-gradient-to-br from-violet-100 to-purple-100 dark:from-violet-900 dark:to-purple-900 flex items-center justify-center mx-auto mb-3">
-                          <MessageSquare className="h-8 w-8 text-violet-600 dark:text-violet-400" />
+                      <div className="text-center py-16">
+                        <div className="h-20 w-20 rounded-full bg-gradient-to-br from-violet-100 to-purple-100 dark:from-violet-900 dark:to-purple-900 flex items-center justify-center mx-auto mb-4">
+                          <MessageSquare className="h-10 w-10 text-violet-600 dark:text-violet-400" />
                         </div>
-                        <p className="text-sm text-muted-foreground font-medium">No comments yet</p>
-                        <p className="text-xs text-muted-foreground mt-1">Start the conversation!</p>
+                        <p className="text-base text-muted-foreground font-medium">No comments yet</p>
+                        <p className="text-sm text-muted-foreground mt-2">Start the conversation!</p>
                       </div>
                     ) : (
                       <>
                         {taskComments.map((comment) => {
                           const isOwnComment = comment.user_id === user?.id;
+                          const commentUser = employeesById.get(String(comment.user_id));
+                          const userPhotoUrl = commentUser?.photo_url;
+                          const userInitials = comment.user_name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?';
+                          
+                          // Parse the timestamp correctly and format in IST
+                          const commentDate = parseToIST(comment.created_at);
+                          const formattedTime = commentDate ? formatDateTimeIST(commentDate, 'hh:mm a') : '';
+                          
                           return (
                             <div
                               key={comment.id}
-                              className={`flex ${isOwnComment ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2`}
+                              className={`flex gap-2 ${isOwnComment ? 'flex-row-reverse' : 'flex-row'} animate-in slide-in-from-bottom-2`}
                             >
-                              <div
-                                className={`max-w-[80%] rounded-lg p-3 shadow-sm ${
-                                  isOwnComment
-                                    ? 'bg-gradient-to-r from-violet-500 to-purple-600 text-white'
-                                    : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'
-                                }`}
-                              >
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className={`font-semibold text-xs ${isOwnComment ? 'text-white' : 'text-slate-900 dark:text-slate-100'}`}>
-                                    {comment.user_name}
-                                  </span>
-                                  <Badge 
-                                    variant="outline" 
-                                    className={`text-xs h-4 px-1.5 ${isOwnComment ? 'border-white/30 text-white' : ''}`}
-                                  >
-                                    {comment.user_role}
-                                  </Badge>
-                                </div>
-                                <p className={`text-sm ${isOwnComment ? 'text-white' : 'text-slate-700 dark:text-slate-300'}`}>
-                                  {comment.comment}
-                                </p>
-                                <div className="flex items-center justify-between mt-2 gap-2">
-                                  <span className={`text-xs ${isOwnComment ? 'text-white/75' : 'text-muted-foreground'}`}>
-                                    {new Date(comment.created_at).toLocaleString('en-US', {
-                                      month: 'short',
-                                      day: 'numeric',
-                                      hour: '2-digit',
-                                      minute: '2-digit'
-                                    })}
-                                  </span>
+                              {/* Profile Photo */}
+                              <div className="flex-shrink-0">
+                                {userPhotoUrl ? (
+                                  <img 
+                                    src={userPhotoUrl} 
+                                    alt={comment.user_name}
+                                    className="w-8 h-8 rounded-full object-cover border-2 border-white dark:border-slate-700 shadow-sm"
+                                  />
+                                ) : (
+                                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold shadow-sm border-2 border-white dark:border-slate-700">
+                                    {userInitials}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Message Bubble */}
+                              <div className={`max-w-[70%] ${isOwnComment ? 'items-end' : 'items-start'} flex flex-col`}>
+                                {/* Name & Role (only for others' messages) */}
+                                {!isOwnComment && (
+                                  <div className="flex items-center gap-2 mb-1 px-2">
+                                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                      {comment.user_name}
+                                    </span>
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900 text-violet-700 dark:text-violet-300 font-medium">
+                                      {comment.user_role}
+                                    </span>
+                                  </div>
+                                )}
+                                
+                                {/* Message Content */}
+                                <div
+                                  className={`rounded-lg px-3 py-2 shadow-sm ${
+                                    isOwnComment
+                                      ? 'bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-tr-none'
+                                      : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-tl-none'
+                                  }`}
+                                >
+                                  {/* Role badge for own messages (inside bubble) */}
                                   {isOwnComment && (
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      onClick={() => handleDeleteComment(comment.id)}
-                                      className="h-5 w-5 p-0 hover:bg-white/20"
-                                    >
-                                      <Trash2 className="h-3 w-3" />
-                                    </Button>
+                                    <div className="flex items-center gap-1.5 mb-1">
+                                      <span className="text-xs font-semibold text-white/90">You</span>
+                                      <span className="text-xs px-1.5 py-0.5 rounded bg-white/20 text-white font-medium">
+                                        {comment.user_role}
+                                      </span>
+                                    </div>
                                   )}
+                                  
+                                  {/* File Attachment */}
+                                  {comment.file_url && (
+                                    <a
+                                      href={`${API_BASE_URL}${comment.file_url}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      download={comment.file_name}
+                                      className={`flex items-center gap-2 p-2 rounded-lg mb-2 transition-colors ${
+                                        isOwnComment 
+                                          ? 'bg-white/10 hover:bg-white/20' 
+                                          : 'bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600'
+                                      }`}
+                                    >
+                                      {comment.file_type?.startsWith('image/') ? (
+                                        <div className="flex flex-col gap-1">
+                                          <img 
+                                            src={`${API_BASE_URL}${comment.file_url}`} 
+                                            alt={comment.file_name || 'Attachment'}
+                                            className="max-w-[200px] max-h-[200px] rounded-lg object-cover"
+                                          />
+                                          <span className={`text-xs ${isOwnComment ? 'text-white/80' : 'text-slate-600 dark:text-slate-400'}`}>
+                                            {comment.file_name}
+                                          </span>
+                                        </div>
+                                      ) : (
+                                        <>
+                                          {comment.file_type?.includes('pdf') ? (
+                                            <FileText className={`h-5 w-5 ${isOwnComment ? 'text-white' : 'text-red-500'}`} />
+                                          ) : comment.file_type?.includes('spreadsheet') || comment.file_type?.includes('excel') || comment.file_name?.endsWith('.csv') ? (
+                                            <FileSpreadsheet className={`h-5 w-5 ${isOwnComment ? 'text-white' : 'text-green-500'}`} />
+                                          ) : comment.file_type?.includes('word') || comment.file_name?.endsWith('.doc') || comment.file_name?.endsWith('.docx') ? (
+                                            <FileText className={`h-5 w-5 ${isOwnComment ? 'text-white' : 'text-blue-500'}`} />
+                                          ) : (
+                                            <FileIcon className={`h-5 w-5 ${isOwnComment ? 'text-white' : 'text-slate-500'}`} />
+                                          )}
+                                          <div className="flex-1 min-w-0">
+                                            <p className={`text-sm font-medium truncate ${isOwnComment ? 'text-white' : 'text-slate-800 dark:text-slate-200'}`}>
+                                              {comment.file_name}
+                                            </p>
+                                            {comment.file_size && (
+                                              <p className={`text-xs ${isOwnComment ? 'text-white/70' : 'text-slate-500 dark:text-slate-400'}`}>
+                                                {(comment.file_size / 1024).toFixed(1)} KB
+                                              </p>
+                                            )}
+                                          </div>
+                                          <Download className={`h-4 w-4 ${isOwnComment ? 'text-white/70' : 'text-slate-400'}`} />
+                                        </>
+                                      )}
+                                    </a>
+                                  )}
+                                  
+                                  {/* Text Comment */}
+                                  {comment.comment && (
+                                    <p className={`text-sm leading-relaxed whitespace-pre-wrap break-words ${isOwnComment ? 'text-white' : 'text-slate-800 dark:text-slate-200'}`}>
+                                      {comment.comment}
+                                    </p>
+                                  )}
+                                  <div className="flex items-center justify-end gap-2 mt-1">
+                                    <span className={`text-xs ${isOwnComment ? 'text-white/80' : 'text-slate-500 dark:text-slate-400'}`}>
+                                      {formattedTime}
+                                    </span>
+                                    {isOwnComment && (
+                                      <button
+                                        onClick={() => handleDeleteComment(comment.id)}
+                                        className="opacity-0 group-hover:opacity-100 hover:bg-white/20 rounded p-0.5 transition-all"
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -2738,40 +3091,107 @@ const TaskManagement: React.FC = () => {
                     )}
                   </div>
 
-                {/* Comment Input */}
-                <div className="p-4 rounded-lg border bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900 sticky bottom-0 bg-white dark:bg-slate-950 z-10">
-                  <div className="flex gap-3 items-start">
-                    <Textarea
-                      placeholder="Type your message..."
-                      value={newComment}
-                      onChange={(e) => setNewComment(e.target.value)}
-                      onKeyPress={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handlePostComment();
-                        }
-                      }}
-                      rows={3}
-                      className="flex-1 resize-none bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 focus:ring-2 focus:ring-violet-500 transition-all"
-                    />
-                    <Button
-                      onClick={handlePostComment}
-                      disabled={!newComment.trim() || isPostingComment}
-                      className="gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 shadow-lg px-6 py-6"
-                    >
-                      {isPostingComment ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <div className="flex flex-col items-center gap-1">
-                          <Send className="h-5 w-5" />
-                          <span className="text-sm font-semibold">Post</span>
+                {/* WhatsApp-style Comment Input */}
+                <div className="p-2 bg-slate-50 dark:bg-slate-900 flex-shrink-0">
+                  {/* Attached Files Preview */}
+                  {attachedFiles.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2 px-2">
+                      {attachedFiles.map((file, index) => (
+                        <div key={index} className="flex items-center gap-1.5 bg-white dark:bg-slate-800 px-2 py-1 rounded-lg border text-xs shadow-sm">
+                          <Paperclip className="h-3 w-3 text-violet-600" />
+                          <span className="font-medium truncate max-w-[100px]">{file.name}</span>
+                          <button
+                            onClick={() => removeAttachedFile(index)}
+                            className="hover:bg-red-100 dark:hover:bg-red-900 rounded-full p-0.5"
+                          >
+                            <XCircle className="h-3 w-3 text-red-500" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* WhatsApp-style Input Row */}
+                  <div className="flex items-center gap-2">
+                    {/* Emoji Picker Button */}
+                    <div className="relative" ref={emojiPickerRef}>
+                      <button
+                        type="button"
+                        onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                        className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors"
+                        title="Add emoji"
+                      >
+                        <span className="text-xl">😊</span>
+                      </button>
+                      
+                      {/* Emoji Picker Popup */}
+                      {showEmojiPicker && (
+                        <div className="absolute bottom-full left-0 mb-2 p-3 bg-white dark:bg-slate-900 border-2 rounded-2xl shadow-2xl z-50 w-80 max-h-64 overflow-y-auto">
+                          <div className="grid grid-cols-8 gap-1">
+                            {['😊', '😂', '❤️', '👍', '👎', '🎉', '🔥', '✨', '💯', '👏', '🙏', '💪', '✅', '❌', '⚠️', '📌', '📝', '💡', '🚀', '⭐', '🎯', '📊', '💼', '📅', '⏰', '🔔', '📧', '📞', '💬', '🤝', '👥', '🏆'].map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleEmojiSelect(emoji)}
+                                className="text-2xl hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg p-1.5 transition-colors"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
-                    </Button>
+                    </div>
+
+                    {/* File Upload Button */}
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors"
+                      title="Attach file"
+                    >
+                      <Paperclip className="h-5 w-5 text-slate-600 dark:text-slate-400" />
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      onChange={handleFileSelect}
+                      className="hidden"
+                      accept="image/*,.pdf,.doc,.docx,.txt,.csv,.xlsx,.xls,.ppt,.pptx,.zip,.rar"
+                    />
+
+                    {/* Input Field */}
+                    <div className="flex-1 bg-white dark:bg-slate-800 rounded-full px-4 py-2 border border-slate-300 dark:border-slate-700 focus-within:border-violet-500 transition-colors">
+                      <input
+                        type="text"
+                        placeholder="Type a message"
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handlePostComment();
+                          }
+                        }}
+                        className="w-full bg-transparent outline-none text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                      />
+                    </div>
+
+                    {/* Send Button */}
+                    <button
+                      onClick={handlePostComment}
+                      disabled={(!newComment.trim() && attachedFiles.length === 0) || isPostingComment}
+                      className="p-2.5 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                      title="Send message"
+                    >
+                      {isPostingComment ? (
+                        <Loader2 className="h-5 w-5 text-white animate-spin" />
+                      ) : (
+                        <Send className="h-5 w-5 text-white" />
+                      )}
+                    </button>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Press Enter to send • Shift+Enter for new line
-                  </p>
                 </div>
               </TabsContent>
             </Tabs>
@@ -2914,7 +3334,7 @@ const TaskManagement: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={() => setIsExportDialogOpen(false)}
-                className="h-11 px-6 border-2 hover:bg-slate-50 dark:hover:bg-slate-900"
+                className="h-11 px-6 border-2 hover:shadow-lg hover:border-slate-400 dark:hover:border-slate-600 transition-all"
               >
                 Cancel
               </Button>
@@ -2936,6 +3356,120 @@ const TaskManagement: React.FC = () => {
                 )}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pass History Dialog */}
+      <Dialog open={isPassHistoryDialogOpen} onOpenChange={(open) => {
+        // Only allow closing via the Close button, not the X button
+        if (!open) {
+          setIsPassHistoryDialogOpen(false);
+        }
+      }}>
+        <DialogContent className="max-w-3xl max-h-[85vh] border-2 shadow-2xl [&>button]:hidden">
+          <DialogHeader className="pb-4 border-b bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950 dark:to-purple-950 -m-6 mb-0 p-6 rounded-t-lg">
+            <div className="flex items-center gap-3">
+              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg">
+                <Share2 className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <DialogTitle className="text-2xl font-bold">Pass History</DialogTitle>
+                <DialogDescription className="mt-1">
+                  Complete history of task reassignments
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="mt-6 max-h-[calc(85vh-180px)] overflow-y-auto pr-2">
+            {passHistoryTask && (() => {
+              const passEntries = getPassHistoryEntries(passHistoryTask.id);
+              
+              if (passEntries.length === 0) {
+                return (
+                  <div className="text-center py-12">
+                    <div className="h-20 w-20 rounded-full bg-gradient-to-br from-slate-100 to-gray-200 dark:from-slate-800 dark:to-gray-900 flex items-center justify-center mx-auto mb-4">
+                      <Share2 className="h-10 w-10 text-muted-foreground" />
+                    </div>
+                    <p className="text-muted-foreground text-lg">No pass history available</p>
+                    <p className="text-sm text-muted-foreground mt-2">This task has not been passed yet</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-4">
+                  {passEntries.map((entry, index) => {
+                    const details = entry.details as Record<string, unknown> | undefined;
+                    const fromLabel = details?.from ? getAssigneeLabel(String(details.from)) : 'Unknown';
+                    const toLabel = details?.to ? getAssigneeLabel(String(details.to)) : 'Unknown';
+                    const toName = typeof details?.to_name === 'string' ? details.to_name : toLabel;
+                    const note = typeof details?.note === 'string' && details.note.trim().length > 0 ? details.note : null;
+                    const actor = employeesById.get(String(entry.user_id));
+                    const actorName = actor?.name ?? (entry.user_id ? `User #${entry.user_id}` : 'Unknown');
+                    const timestamp = formatDateTimeIST(entry.created_at, 'MMM dd, yyyy HH:mm');
+
+                    return (
+                      <div 
+                        key={entry.id} 
+                        className="p-4 rounded-lg border-2 bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950/40 dark:to-purple-950/40 hover:shadow-md transition-shadow"
+                      >
+                        <div className="flex items-start justify-between gap-4 mb-3">
+                          <div className="flex items-center gap-2">
+                            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow-md">
+                              {passEntries.length - index}
+                            </div>
+                            <div>
+                              <div className="font-semibold text-foreground">Pass #{passEntries.length - index}</div>
+                              <div className="text-xs text-muted-foreground">by {actorName}</div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {timestamp}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="flex-1 p-3 rounded-md bg-white dark:bg-gray-900 border">
+                            <div className="text-xs text-muted-foreground mb-1">From</div>
+                            <div className="font-medium text-sm">{fromLabel}</div>
+                          </div>
+                          <div className="flex-shrink-0">
+                            <ChevronRight className="h-5 w-5 text-violet-600" />
+                          </div>
+                          <div className="flex-1 p-3 rounded-md bg-white dark:bg-gray-900 border">
+                            <div className="text-xs text-muted-foreground mb-1">To</div>
+                            <div className="font-medium text-sm">{toName}</div>
+                          </div>
+                        </div>
+
+                        {note && (
+                          <div className="mt-3 p-3 rounded-md bg-white dark:bg-gray-900 border">
+                            <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                              <MessageSquare className="h-3 w-3" />
+                              Note
+                            </div>
+                            <div className="text-sm italic text-foreground">"{note}"</div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="flex justify-end gap-3 pt-6 border-t mt-6">
+            <Button
+              variant="outline"
+              onClick={() => setIsPassHistoryDialogOpen(false)}
+              className="h-11 px-6 border-2 hover:shadow-lg hover:border-slate-400 dark:hover:border-slate-600 transition-all"
+            >
+              Close
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -21,28 +21,21 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
 
   return (
     <div className="flex items-center gap-1.5">
-      <div className="relative flex items-center justify-center">
-        {/* Outer glow ring for online status */}
-        {isOnline && (
-          <div className={`absolute ${dotSize} rounded-full bg-green-400 opacity-75 animate-ping`} />
-        )}
-        
-        {/* Main status dot */}
-        <div
-          className={`relative ${dotSize} rounded-full transition-all duration-300 ${
-            isOnline
-              ? 'bg-green-500 shadow-lg shadow-green-500/50 animate-pulse'
-              : 'bg-slate-400 dark:bg-slate-600'
-          }`}
-        />
-      </div>
+      {/* Simple status dot - no animations */}
+      <div
+        className={`${dotSize} rounded-full transition-colors duration-300 ${
+          isOnline
+            ? 'bg-green-500'
+            : 'bg-gray-400 dark:bg-gray-600'
+        }`}
+      />
       
       {showLabel && (
         <span
           className={`text-xs font-medium ${
             isOnline
               ? 'text-green-600 dark:text-green-400'
-              : 'text-slate-500 dark:text-slate-400'
+              : 'text-gray-500 dark:text-gray-400'
           }`}
         >
           {isOnline ? 'Online' : 'Offline'}
