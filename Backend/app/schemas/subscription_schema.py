@@ -70,6 +70,7 @@ class AdminSubscriptionUpdate(BaseModel):
     plan_id: Optional[int] = None
     is_active: Optional[bool] = None
     end_date: Optional[datetime] = None
+    accept_subscription: Optional[bool] = None
 
 
 class AdminSubscriptionOut(BaseModel):

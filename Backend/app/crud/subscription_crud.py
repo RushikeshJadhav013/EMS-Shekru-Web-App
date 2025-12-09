@@ -9,7 +9,7 @@ from app.schemas.subscription_schema import (
     AdminSubscriptionUpdate
 )
 from app.enums import RoleEnum
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 # ==================== Subscription Plan CRUD ====================
@@ -122,21 +122,36 @@ def create_admin_subscription(
     ).first()
     
     if existing:
-        # Update existing subscription
+        # Update existing subscription; new plan should start after current term ends
+        current_end = existing.end_date
+        scheduled_start = current_end if current_end and current_end > datetime.now() else datetime.now()
+
+        # Preserve existing tenure length if we don't receive an explicit end date
+        if existing.end_date and existing.start_date:
+            preserved_duration = existing.end_date - existing.start_date
+        else:
+            preserved_duration = timedelta(days=30)  # default duration fallback
+
         existing.plan_id = subscription.plan_id
-        existing.start_date = datetime.now()
-        existing.end_date = subscription.end_date
+        existing.start_date = scheduled_start
+        if subscription.end_date is not None:
+            # Use provided end date but ensure it isn't before the scheduled start
+            existing.end_date = max(subscription.end_date, scheduled_start)
+        else:
+            existing.end_date = scheduled_start + preserved_duration
         existing.is_active = True
         existing.created_by = created_by
         db.commit()
         db.refresh(existing)
         return existing
     
-    # Create new subscription
+    # Create new subscription with a 1-month free trial by default
+    trial_end_date = datetime.now() + timedelta(days=30)
     db_subscription = AdminSubscription(
         admin_id=subscription.admin_id,
         plan_id=subscription.plan_id,
-        end_date=subscription.end_date,
+        # Enforce trial duration for new admins unless an explicit end_date is provided
+        end_date=subscription.end_date or trial_end_date,
         created_by=created_by
     )
     db.add(db_subscription)
@@ -192,6 +207,15 @@ def update_admin_subscription(
         return None
     
     update_data = subscription_update.model_dump(exclude_unset=True)
+
+    # If admin accepts the subscription, set a 1-year tenure starting now
+    if update_data.pop("accept_subscription", False):
+        current_end = subscription.end_date
+        scheduled_start = current_end if current_end and current_end > datetime.now() else datetime.now()
+        subscription.start_date = scheduled_start
+        subscription.end_date = scheduled_start + timedelta(days=365)
+        subscription.is_active = True
+
     for key, value in update_data.items():
         setattr(subscription, key, value)
     
