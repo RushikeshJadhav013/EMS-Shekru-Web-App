@@ -38,6 +38,39 @@ class UserBase(BaseModel):
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None  # ✅ Added: contract or permanent
 
+    @validator("pan_card")
+    def validate_pan_card(cls, v: Optional[str]) -> Optional[str]:
+        """
+        PAN format: 10 characters, first 5 letters, next 4 digits, last letter.
+        Returned value is uppercased. Empty is allowed.
+        """
+        if v is None:
+            return None
+        normalized = v.strip().upper()
+        if not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", normalized):
+            raise ValueError("PAN must be 10 chars: 5 letters, 4 digits, last letter")
+        return normalized
+    
+    @validator("aadhar_card")
+    def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
+        """Aadhar must be exactly 12 digits; allow missing."""
+        if v is None:
+            return None
+        digits_only = v.strip()
+        if not re.fullmatch(r"\d{12}", digits_only):
+            raise ValueError("Aadhar must be exactly 12 digits")
+        return digits_only
+
+    @validator("phone")
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        """Require 10 digits starting with 6/7/8/9; allow missing."""
+        if v is None:
+            return None
+        digits_only = v.strip()
+        if not re.fullmatch(r"[6789]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
+        return digits_only
+
 class UserCreate(UserBase):
     employee_id: str
     profile_photo: Optional[str] = None
@@ -92,6 +125,39 @@ class AdminCreate(BaseModel):
             raise ValueError("Email cannot be empty")
         normalized = v.strip().lower()
         return normalized
+    
+    @validator("phone")
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        """Require 10 digits starting with 6/7/8/9; allow missing."""
+        if v is None:
+            return None
+        digits_only = v.strip()
+        if not re.fullmatch(r"[6789]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
+        return digits_only
+    
+    @validator("pan_card")
+    def validate_pan_card(cls, v: Optional[str]) -> Optional[str]:
+        """
+        PAN format: 10 characters, first 5 letters, next 4 digits, last letter.
+        Returned value is uppercased. Empty is allowed.
+        """
+        if v is None:
+            return None
+        normalized = v.strip().upper()
+        if not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", normalized):
+            raise ValueError("PAN must be 10 chars: 5 letters, 4 digits, last letter")
+        return normalized
+
+    @validator("aadhar_card")
+    def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
+        """Aadhar must be exactly 12 digits; allow missing."""
+        if v is None:
+            return None
+        digits_only = v.strip()
+        if not re.fullmatch(r"\d{12}", digits_only):
+            raise ValueError("Aadhar must be exactly 12 digits")
+        return digits_only
 
 
 class AdminUpdate(BaseModel):
@@ -117,6 +183,29 @@ class AdminUpdate(BaseModel):
         normalized = v.strip().lower()
         return normalized
     
+    @validator("phone")
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        """Require 10 digits starting with 6/7/8/9; allow missing."""
+        if v is None:
+            return None
+        digits_only = v.strip()
+        if not re.fullmatch(r"[6789]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
+        return digits_only
+    
+    @validator("pan_card")
+    def validate_pan_card(cls, v: Optional[str]) -> Optional[str]:
+        """
+        PAN format: 10 characters, first 5 letters, next 4 digits, last letter.
+        Returned value is uppercased. Empty is allowed.
+        """
+        if v is None:
+            return None
+        normalized = v.strip().upper()
+        if not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", normalized):
+            raise ValueError("PAN must be 10 chars: 5 letters, 4 digits, last letter")
+        return normalized
+    
     email: Optional[EmailStr] = None
     employee_id: Optional[str] = None
     department: Optional[str] = None
@@ -129,3 +218,13 @@ class AdminUpdate(BaseModel):
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
     is_active: Optional[bool] = None
+    
+    @validator("aadhar_card")
+    def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
+        """Aadhar must be exactly 12 digits; allow missing."""
+        if v is None:
+            return None
+        digits_only = v.strip()
+        if not re.fullmatch(r"\d{12}", digits_only):
+            raise ValueError("Aadhar must be exactly 12 digits")
+        return digits_only
