@@ -10,6 +10,7 @@ from app.schemas.subscription_schema import (
 )
 from app.enums import RoleEnum
 from datetime import datetime, timedelta
+from typing import Optional
 
 
 # ==================== Subscription Plan CRUD ====================
@@ -42,10 +43,14 @@ def list_subscription_plans(
     db: Session,
     active_only: bool = False
 ) -> list[SubscriptionPlan]:
-    """List all subscription plans"""
+    """
+    List subscription plans.
+
+    - active_only=True  -> only active plans
+    - active_only=False -> only inactive plans (per current requirement)
+    """
     query = db.query(SubscriptionPlan)
-    if active_only:
-        query = query.filter(SubscriptionPlan.is_active == True)
+    query = query.filter(SubscriptionPlan.is_active == True) if active_only else query.filter(SubscriptionPlan.is_active == False)
     return query.order_by(SubscriptionPlan.created_on.desc()).all()
 
 
@@ -158,6 +163,30 @@ def create_admin_subscription(
     db.commit()
     db.refresh(db_subscription)
     return db_subscription
+
+
+def assign_trial_subscription_to_admin(
+    db: Session,
+    admin_id: int,
+    created_by: Optional[int] = None
+) -> Optional[AdminSubscription]:
+    """
+    Assign a 1-month trial subscription to the given admin.
+    Picks the first active subscription plan (oldest created) for the trial.
+    Returns None if no active plan exists.
+    """
+    plan = (
+        db.query(SubscriptionPlan)
+        .filter(SubscriptionPlan.is_active == True)
+        .order_by(SubscriptionPlan.created_on.asc())
+        .first()
+    )
+
+    if not plan:
+        return None
+
+    trial_request = AdminSubscriptionCreate(admin_id=admin_id, plan_id=plan.plan_id)
+    return create_admin_subscription(db, trial_request, created_by=created_by)
 
 
 def get_admin_subscription(
@@ -288,13 +317,23 @@ def get_admin_subscription_info(
     """Get comprehensive subscription information for an admin"""
     subscription = get_admin_subscription(db, admin_id)
     
+    def _is_trial(sub: AdminSubscription) -> bool:
+        """Heuristic: subscription created via trial helper (30-day window)."""
+        if not sub or not sub.start_date or not sub.end_date:
+            return False
+        duration = sub.end_date - sub.start_date
+        # Accept small drift (<= 31 days) as trial
+        return duration.days <= 31
+
     if not subscription:
         return {
             "has_subscription": False,
             "current_count": 0,
             "max_allowed": 0,
             "can_create": False,
-            "subscription": None
+            "subscription": None,
+            "is_trial": False,
+            "trial_ends_on": None,
         }
     
     can_create, current_count, max_allowed = check_admin_subscription_limit(db, admin_id)
@@ -305,6 +344,8 @@ def get_admin_subscription_info(
         "max_allowed": max_allowed,
         "can_create": can_create,
         "subscription": subscription,
-        "plan": subscription.plan
+        "plan": subscription.plan,
+        "is_trial": _is_trial(subscription),
+        "trial_ends_on": subscription.end_date,
     }
 

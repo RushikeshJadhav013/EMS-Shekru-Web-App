@@ -65,7 +65,12 @@ def list_plans(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
-    """List all subscription plans - Superadmin only"""
+    """
+    List subscription plans - Superadmin only.
+
+    - active_only=true  -> only active plans
+    - active_only=false -> only inactive plans
+    """
     return list_subscription_plans(db, active_only=active_only)
 
 

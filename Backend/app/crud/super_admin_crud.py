@@ -51,3 +51,16 @@ def set_super_admin_status(db: Session, super_admin_id: int, is_active: bool, up
     db.commit()
     db.refresh(db_super_admin)
     return db_super_admin
+
+
+def get_super_admin_counts(db: Session):
+    """Get counts of total, active, and inactive super admins"""
+    total_super_admins = db.query(SuperAdmin).count()
+    active_super_admins = db.query(SuperAdmin).filter(SuperAdmin.is_active == True).count()
+    inactive_super_admins = total_super_admins - active_super_admins
+
+    return {
+        "total": total_super_admins,
+        "active": active_super_admins,
+        "inactive": inactive_super_admins,
+    }
