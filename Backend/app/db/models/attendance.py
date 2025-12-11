@@ -15,5 +15,6 @@ class Attendance(Base):
     selfie = Column(String(1024), nullable=True)
     work_summary = Column(Text, nullable=True)
     work_report = Column(String(1024), nullable=True)
+    work_location = Column(String(50), default='office')  # 'office' or 'work_from_home'
 
     user = relationship("User", back_populates="attendances")

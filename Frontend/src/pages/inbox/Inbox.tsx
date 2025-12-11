@@ -27,6 +27,7 @@ import {
   Paperclip
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatIST, formatDateTimeIST } from '@/utils/timezone';
 
 interface Message {
   id: string;

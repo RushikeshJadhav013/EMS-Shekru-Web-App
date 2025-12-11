@@ -11,6 +11,7 @@ class TaskStatus(str, Enum):
     PENDING = "Pending"
     IN_PROGRESS = "In Progress"
     COMPLETED = "Completed"
+    CANCELLED = "Cancelled"
 
 class TaskAction(str, Enum):
     CREATED = "created"

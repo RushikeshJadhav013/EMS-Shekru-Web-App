@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
+import { useNavigationGuard } from '@/hooks/useNavigationGuard';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
@@ -13,6 +14,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   Select,
   SelectContent,
@@ -48,6 +59,19 @@ const MainLayout: React.FC = () => {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [showLogoutDialog, setShowLogoutDialog] = useState(false);
+  
+  // Enable navigation guard to handle back/forward button
+  useNavigationGuard();
+
+  const handleLogoutClick = () => {
+    setShowLogoutDialog(true);
+  };
+
+  const handleLogoutConfirm = () => {
+    setShowLogoutDialog(false);
+    logout();
+  };
 
   if (!user) return null;
 
@@ -76,7 +100,7 @@ const MainLayout: React.FC = () => {
       manager: [
         ...commonItems,
         { icon: Clock, label: t.navigation.shiftSchedule, path: '/manager/shift-schedule' },
-        { icon: Users, label: 'Team', path: '/manager/team' },
+        { icon: Users, label: t.navigation.team, path: '/manager/team' },
         { icon: BarChart3, label: t.navigation.reports, path: '/manager/reports' },
       ],
       team_lead: [
@@ -220,7 +244,7 @@ const MainLayout: React.FC = () => {
                 </div>
               </DropdownMenuItem>
               <DropdownMenuSeparator className="my-0" />
-              <DropdownMenuItem onClick={logout} className="text-destructive">
+              <DropdownMenuItem onClick={handleLogoutClick} className="text-destructive">
                 <LogOut className="mr-2 h-4 w-4" />
                 {t.common.logout}
               </DropdownMenuItem>
@@ -358,6 +382,27 @@ const MainLayout: React.FC = () => {
           </div>
         </main>
       </div>
+
+      {/* Logout Confirmation Dialog */}
+      <AlertDialog open={showLogoutDialog} onOpenChange={setShowLogoutDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Logout</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to logout? You will need to login again to access your account.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleLogoutConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Logout
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

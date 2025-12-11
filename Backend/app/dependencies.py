@@ -25,6 +25,14 @@ def get_current_user(token: str = Depends(api_key_header), db: Session = Depends
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # ✅ Check if user is still active (in case they were deactivated after login)
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Account is inactive. Please contact your administrator."
+        )
+    
     return user
 
 def get_current_super_admin(token: str = Depends(api_key_header), db: Session = Depends(get_db)) -> SuperAdmin:

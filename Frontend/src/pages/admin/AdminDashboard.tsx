@@ -20,6 +20,7 @@ import {
   Award,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatIST, formatDateTimeIST, formatTimeIST, todayIST, parseToIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 const AdminDashboard: React.FC = () => {
@@ -40,46 +41,48 @@ const AdminDashboard: React.FC = () => {
   const [recentActivities, setRecentActivities] = useState<{id: number; type: string; user: string; time: string; status: string;}[]>([]);
 
   useEffect(() => {
-    apiService.getAdminDashboard()
-      .then((data) => {
-        setStats(data);
+    const loadDashboard = async () => {
+      try {
+        const data = await apiService.getAdminDashboard();
+        
+        // If activeTasks is 0, try to get actual count from tasks API
+        let activeTasks = data.activeTasks || 0;
+        let pendingLeaves = data.pendingLeaves || 0;
+        
+        if (activeTasks === 0) {
+          try {
+            const tasks = await apiService.getMyTasks();
+            // Count tasks that are not completed
+            activeTasks = tasks.filter((task: any) => 
+              task.status !== 'Completed' && 
+              task.status !== 'completed' &&
+              task.status !== 'Cancelled' &&
+              task.status !== 'cancelled'
+            ).length;
+          } catch (error) {
+            console.log('Could not fetch tasks for count');
+          }
+        }
+        
+        setStats({
+          ...data,
+          activeTasks,
+          pendingLeaves,
+        });
         setDepartmentPerformance(data.departmentPerformance || []);
         setRecentActivities(data.recentActivities || []);
-      })
-      .catch(() => {});
+      } catch (error) {
+        console.error('Failed to load dashboard:', error);
+      }
+    };
+    
+    loadDashboard();
   }, []);
 
   const formatActivityTime = (timeString: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string or date string, try to parse it
-      date = new Date(timeString);
-      // If no timezone info, assume it's UTC
-      if (!timeString.includes('Z') && !timeString.includes('+')) {
-        const isoString = date.toISOString();
-        date = new Date(isoString);
-      }
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    // Parse the ISO string and convert to IST, then format time only
+    return formatTimeIST(timeString, 'hh:mm a');
   };
 
   return (
@@ -94,7 +97,7 @@ const AdminDashboard: React.FC = () => {
             {t.common.welcome}, Admin!
           </h1>
           <p className="text-blue-100 mt-2 ml-15">
-            {new Date().toLocaleDateString(language === 'en' ? 'en-US' : language === 'hi' ? 'hi-IN' : 'mr-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatIST(nowIST(), 'EEEE, MMMM dd, yyyy')}
           </p>
         </div>
         <Button onClick={() => navigate('/admin/employees/new')} className="gap-2 bg-white text-blue-700 hover:bg-blue-50">
@@ -105,7 +108,7 @@ const AdminDashboard: React.FC = () => {
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/admin/employees')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-blue-50">
               {t.dashboard.totalEmployees}
@@ -116,14 +119,21 @@ const AdminDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>   
             <div className="text-3xl font-bold">{stats.totalEmployees}</div>
-            <div className="flex items-center gap-1 mt-2">
-              <TrendingUp className="h-4 w-4 text-blue-100" />
-              <span className="text-sm text-blue-100">+12% from last month</span>
-            </div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-blue-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/admin/employees');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/admin/attendance')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-green-50">
               {t.dashboard.presentToday}
@@ -134,7 +144,17 @@ const AdminDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.presentToday}</div>
-            <Progress value={(stats.presentToday / stats.totalEmployees) * 100} className="mt-2 h-2 bg-white/30" />
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-green-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/admin/attendance');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
 
@@ -156,7 +176,7 @@ const AdminDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/admin/tasks')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-purple-50">
               Active Tasks
@@ -167,10 +187,17 @@ const AdminDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.activeTasks}</div>
-            <div className="flex items-center gap-1 mt-2">
-              <Activity className="h-4 w-4 text-purple-100" />
-              <span className="text-sm text-purple-100">{stats.completedTasks} completed</span>
-            </div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-purple-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/admin/tasks');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
       </div>
@@ -180,17 +207,33 @@ const AdminDashboard: React.FC = () => {
         {/* Department Performance */}
         <Card className="lg:col-span-2 card-hover border-0 shadow-lg bg-gradient-to-br from-slate-50 to-gray-100 dark:from-slate-900 dark:to-gray-800">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-xl">
-              <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
-                <Building className="h-5 w-5 text-white" />
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-xl">
+                  <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+                    <Building className="h-5 w-5 text-white" />
+                  </div>
+                  Department Performance
+                </CardTitle>
+                <CardDescription className="text-base">Performance metrics by department</CardDescription>
               </div>
-              Department Performance
-            </CardTitle>
-            <CardDescription className="text-base">Performance metrics by department</CardDescription>
+              <Button 
+                variant="link" 
+                className="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300" 
+                onClick={() => navigate('/admin/reports?tab=department')}
+              >
+                <span className="text-sm font-medium">View all</span>
+                <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {departmentPerformance.map((dept) => (
-              <div key={dept.name} className="space-y-2">
+              <div 
+                key={dept.name} 
+                className="space-y-2 p-3 rounded-lg hover:bg-white/50 dark:hover:bg-gray-800/50 transition-all cursor-pointer"
+                onClick={() => navigate('/admin/reports?tab=department')}
+              >
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-3">
                     <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">

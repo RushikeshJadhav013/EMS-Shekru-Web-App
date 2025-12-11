@@ -6,6 +6,11 @@ from sqlalchemy.orm import relationship
 from app.enums import TaskStatus
 from app.db.database import Base
 
+def get_utc_now():
+    """Get current time in UTC for database storage"""
+    from app.utils.timezone import ist_to_utc, now_ist
+    return ist_to_utc(now_ist())
+
 class Task(Base):
     __tablename__ = "tasks"
     task_id = Column(Integer, primary_key=True, index=True)
@@ -24,6 +29,7 @@ class Task(Base):
     assigned_to_user = relationship("User", back_populates="assigned_tasks", foreign_keys="Task.assigned_to")
     history = relationship("TaskHistory", back_populates="task", cascade="all, delete-orphan")
     notifications = relationship("TaskNotification", back_populates="task", cascade="all, delete-orphan")
+    comments = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan", order_by="TaskComment.created_at")
 
 
 class TaskHistory(Base):
@@ -34,7 +40,7 @@ class TaskHistory(Base):
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     action = Column(String(50))
     details = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_utc_now)
 
     task = relationship("Task", back_populates="history")
     user = relationship("User", back_populates="task_history_entries")

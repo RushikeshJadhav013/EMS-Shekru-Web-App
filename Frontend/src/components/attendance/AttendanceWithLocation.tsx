@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/components/ui/use-toast';
 import { CheckCircle, Clock, MapPin, AlertCircle, Loader2 } from 'lucide-react';
 import { getCurrentLocation as requestCurrentLocation } from '@/utils/geolocation';
+import { nowIST } from '@/utils/timezone';
 
 interface AttendanceWithLocationProps {
   userId: number;
@@ -76,7 +77,7 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
           accuracy: locationData.accuracy,
           address: locationData.address,
           placeName: locationData.placeName,
-          timestamp: new Date().toISOString()
+          timestamp: nowIST().toISOString()
         }
       });
       
@@ -115,7 +116,7 @@ const AttendanceWithLocation: React.FC<AttendanceWithLocationProps> = ({
           accuracy: locationData.accuracy,
           address: locationData.address,
           placeName: locationData.placeName,
-          timestamp: new Date().toISOString()
+          timestamp: nowIST().toISOString()
         }
       });
       

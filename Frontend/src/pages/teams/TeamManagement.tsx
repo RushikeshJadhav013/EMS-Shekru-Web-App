@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import V2Overlay from '@/components/ui/V2Overlay';
 import { 
   Users, 
   Plus, 
@@ -247,6 +248,8 @@ export default function TeamManagement() {
   }
 
   return (
+    <div className="relative min-h-screen">
+      {user?.role === 'manager' && <V2Overlay />}
     <div className="container mx-auto p-6 space-y-6">
       {/* Team Statistics */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -544,6 +547,7 @@ export default function TeamManagement() {
           </Card>
         </TabsContent>
       </Tabs>
+    </div>
     </div>
   );
 }

@@ -1,5 +1,10 @@
 from pydantic_settings import BaseSettings
 import os
+from datetime import datetime
+import pytz
+
+# Application timezone - Indian Standard Time
+APP_TIMEZONE = pytz.timezone('Asia/Kolkata')
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
@@ -7,7 +12,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "mysql+pymysql://root:root@localhost/emple"
     JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
-    OTP_EXPIRY_MINUTES: int = 10
+    OTP_EXPIRY_SECONDS: int = 120
+    
+
     
     # Environment-based OTP settings
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")  # development, testing, production
@@ -40,5 +47,21 @@ class Settings(BaseSettings):
     def should_send_email(self) -> bool:
         """Send email only in production or when explicitly enabled"""
         return self.is_production or self.ENABLE_EMAIL_OTP
+
+def get_ist_now() -> datetime:
+    """Get current datetime in IST timezone"""
+    return datetime.now(APP_TIMEZONE)
+
+def utc_to_ist(utc_dt: datetime) -> datetime:
+    """Convert UTC datetime to IST"""
+    if utc_dt.tzinfo is None:
+        utc_dt = pytz.utc.localize(utc_dt)
+    return utc_dt.astimezone(APP_TIMEZONE)
+
+def ist_to_utc(ist_dt: datetime) -> datetime:
+    """Convert IST datetime to UTC for database storage"""
+    if ist_dt.tzinfo is None:
+        ist_dt = APP_TIMEZONE.localize(ist_dt)
+    return ist_dt.astimezone(pytz.utc)
 
 settings = Settings()

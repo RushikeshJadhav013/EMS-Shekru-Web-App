@@ -12,6 +12,7 @@ import AttendanceCamera from '@/components/attendance/AttendanceCamera';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatTimeIST, formatDateIST, todayIST, formatDateTimeComponentsIST, parseToIST, nowIST } from '@/utils/timezone';
 import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast, getCurrentLocationWithContinuousImprovement } from '@/utils/geolocation';
 
 type GeoLocation = {
@@ -35,16 +36,17 @@ const AttendancePage: React.FC = () => {
   const [location, setLocation] = useState<GeoLocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
-  const [isGettingFastLocation, setIsGettingFastLocation] = useState(true);
+  const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [locationWatcher, setLocationWatcher] = useState<{ stop: () => void } | null>(null);
   const [isImprovingAccuracy, setIsImprovingAccuracy] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // Helper to fetch today's attendance for current user
   const fetchTodayAttendance = async () => {
     if (!user?.id) return;
     try {
-      const res = await fetch(`http://127.0.0.1:8000/attendance/my-attendance/${user.id}`);
+      const res = await fetch(`https://staffly.space/attendance/my-attendance/${user.id}`);
       if (!res.ok) throw new Error('Failed to fetch attendance');
       const data = await res.json();
       
@@ -206,12 +208,59 @@ const AttendancePage: React.FC = () => {
     // Get location immediately when page loads
     const initLocation = async () => {
       try {
-        await refreshLocationFast();
+        setIsGettingFastLocation(true);
+        setLocationError(null);
+        
+        // Get fast location immediately
+        const fastLocation = await getCurrentLocationFast();
+        const refreshed: GeoLocation = {
+          latitude: fastLocation.latitude,
+          longitude: fastLocation.longitude,
+          accuracy: fastLocation.accuracy ?? null,
+          address: fastLocation.address || `${fastLocation.latitude.toFixed(6)}, ${fastLocation.longitude.toFixed(6)}`,
+          updatedAt: Date.now(),
+        };
+        setLocation(refreshed);
+        setIsGettingFastLocation(false);
+        
         // After initial fast location, start continuous improvement
-        startContinuousLocationImprovement();
+        try {
+          const watcher = getCurrentLocationWithContinuousImprovement(
+            (improvedLocation) => {
+              const improved: GeoLocation = {
+                latitude: improvedLocation.latitude,
+                longitude: improvedLocation.longitude,
+                accuracy: improvedLocation.accuracy ?? null,
+                address: improvedLocation.address || `${improvedLocation.latitude.toFixed(6)}, ${improvedLocation.longitude.toFixed(6)}`,
+                updatedAt: Date.now(),
+              };
+              setLocation(improved);
+              
+              // Stop improving if we get very accurate location (< 10 meters)
+              if (improvedLocation.accuracy && improvedLocation.accuracy < 10) {
+                setIsImprovingAccuracy(false);
+              }
+            },
+            10 // Target 10 meters accuracy
+          );
+          
+          setLocationWatcher(watcher);
+          setIsImprovingAccuracy(true);
+          
+          // Auto-stop after 30 seconds
+          setTimeout(() => {
+            watcher.stop();
+            setIsImprovingAccuracy(false);
+          }, 30000);
+        } catch (error) {
+          console.error('Failed to start continuous location improvement:', error);
+          setIsImprovingAccuracy(false);
+        }
       } catch (error) {
         console.error('Initial location fetch failed:', error);
-        setLocationError(error instanceof Error ? error.message : 'Failed to get location');
+        const errorMessage = error instanceof Error ? error.message : 'Failed to get location';
+        setLocationError(errorMessage);
+        setIsGettingFastLocation(false);
       }
     };
     
@@ -228,9 +277,12 @@ const AttendancePage: React.FC = () => {
     
     return () => {
       clearInterval(checkMidnight);
-      stopContinuousLocationImprovement();
+      if (locationWatcher) {
+        locationWatcher.stop();
+      }
     };
-  }, [user?.id, refreshLocationFast]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]); // Only depend on user?.id to avoid re-running unnecessarily
 
   const handleCheckIn = async () => {
     try {
@@ -325,8 +377,8 @@ const AttendancePage: React.FC = () => {
       formData.append('selfie', selfieBlob, 'selfie.jpg');
       
       let apiUrl = '';
-      if (isCheckingIn) apiUrl = 'http://127.0.0.1:8000/attendance/check-in';
-      else apiUrl = 'http://127.0.0.1:8000/attendance/check-out';
+      if (isCheckingIn) apiUrl = 'https://staffly.space/attendance/check-in';
+      else apiUrl = 'https://staffly.space/attendance/check-out';
       
       const response = await fetch(apiUrl, { method: 'POST', body: formData });
       if (!response.ok) {
@@ -379,32 +431,9 @@ const AttendancePage: React.FC = () => {
     return null;
   };
 
-  const formatIST = (dateString: string, timeString?: string) => {
+  const formatAttendanceTime = (dateString: string, timeString?: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string (HH:MM:SS), assume UTC and combine with date
-      date = new Date(`${dateString}T${timeString}Z`);
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    return formatDateTimeComponentsIST(dateString, timeString, 'hh:mm a');
   };
 
   if (showCamera) {
@@ -505,7 +534,9 @@ const AttendancePage: React.FC = () => {
                   </>
                 ) : (
                   'Refresh'
-           
+                )}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="pt-6">
@@ -615,7 +646,7 @@ const AttendancePage: React.FC = () => {
                       {getStatusBadge(currentAttendance.status, currentAttendance.checkInTime)}
                     </div>
                     <p className="text-lg font-semibold">
-                      {formatIST(currentAttendance.date, currentAttendance.checkInTime)}
+                      {formatAttendanceTime(currentAttendance.date, currentAttendance.checkInTime)}
                     </p>
                   </div>
                   
@@ -628,7 +659,7 @@ const AttendancePage: React.FC = () => {
                     </div>
                     <p className="text-lg font-semibold">
                       {currentAttendance.checkOutTime 
-                        ? formatIST(currentAttendance.date, currentAttendance.checkOutTime)
+                        ? formatAttendanceTime(currentAttendance.date, currentAttendance.checkOutTime)
                         : '-'}
                     </p>
                   </div>
@@ -639,7 +670,7 @@ const AttendancePage: React.FC = () => {
                         <Clock className="h-4 w-4 text-blue-500" />
                         <span className="text-sm font-medium">Total Work Hours</span>
                       </div>
-                      <p className="text-lg font-semibold">{currentAttendance.workHours} hours</p>
+                      <p className="text-lg font-semibold">{currentAttendance.workHours} Hrs</p>
                     </div>
                   )}
                 </>
@@ -691,11 +722,11 @@ const AttendancePage: React.FC = () => {
                       <Calendar className="h-6 w-6 text-white" />
                     </div>
                     <div>
-                      <p className="font-medium">{format(new Date(record.date), 'dd MMM yyyy')}</p>
+                      <p className="font-medium">{formatDateIST(record.date, 'dd MMM yyyy')}</p>
                       <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        <span>In: {formatIST(record.date, record.checkInTime)}</span>
-                        <span>Out: {formatIST(record.date, record.checkOutTime)}</span>
-                        {record.workHours && <span>{record.workHours}h</span>}
+                        <span>In: {formatAttendanceTime(record.date, record.checkInTime)}</span>
+                        <span>Out: {formatAttendanceTime(record.date, record.checkOutTime)}</span>
+                        {record.workHours && <span>{record.workHours} Hrs</span>}
                       </div>
                     </div>
                   </div>

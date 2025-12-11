@@ -2,7 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://staffly.space';
 const FETCH_INTERVAL_MS = 60_000;
 const POLLING_IDLE_TIMEOUT_MS = 5 * 60_000;
 
@@ -89,6 +89,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const audioRef = useRef<{ play: () => void } | null>(null);
   const pollIntervalRef = useRef<number | null>(null);
   const pollIdleTimeoutRef = useRef<number | null>(null);
+  
+  // Check if notifications are enabled
+  const areNotificationsEnabled = () => {
+    const stored = localStorage.getItem('notificationsEnabled');
+    return stored === null ? true : stored === 'true';
+  };
 
   // Load notifications from localStorage
   useEffect(() => {
@@ -254,8 +260,21 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const fetchBackendNotifications = useCallback(async () => {
     if (!user) return;
+    
+    // Check if notifications are enabled
+    if (!areNotificationsEnabled()) {
+      return;
+    }
+    
     const authHeader = getAuthHeader();
     if (!authHeader) {
+      stopPolling();
+      return;
+    }
+
+    // ✅ Validate token exists and is not empty
+    const token = localStorage.getItem('token');
+    if (!token || token.trim() === '') {
       stopPolling();
       return;
     }
@@ -266,20 +285,38 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           headers: {
             Authorization: authHeader,
           },
+        }).catch(err => {
+          // Silently handle network errors
+          if (import.meta.env.DEV) {
+            console.warn('Task notifications fetch failed:', err.message);
+          }
+          return { ok: false, status: 0 } as Response;
         }),
         fetch(`${API_BASE_URL}/leave/notifications`, {
           headers: {
             Authorization: authHeader,
           },
+        }).catch(err => {
+          // Silently handle network errors
+          if (import.meta.env.DEV) {
+            console.warn('Leave notifications fetch failed:', err.message);
+          }
+          return { ok: false, status: 0 } as Response;
         }),
         fetch(`${API_BASE_URL}/shift/notifications`, {
           headers: {
             Authorization: authHeader,
           },
+        }).catch(err => {
+          // Silently handle network errors
+          if (import.meta.env.DEV) {
+            console.warn('Shift notifications fetch failed:', err.message);
+          }
+          return { ok: false, status: 0 } as Response;
         }),
       ]);
 
-      // Check for 401 errors - if any endpoint returns 401, stop polling
+      // Check for 401 errors - if any endpoint returns 401, stop polling and clear auth
       let hasUnauthorized = false;
       if (taskResult.status === 'fulfilled' && taskResult.value.status === 401) {
         hasUnauthorized = true;
@@ -292,7 +329,19 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
 
       if (hasUnauthorized) {
+        // ✅ Token is invalid - clear auth and stop polling
+        if (import.meta.env.DEV) {
+          console.warn('Token expired or invalid - stopping notification polling');
+        }
         stopPolling();
+        // Clear auth data to prevent further unauthorized requests
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('userId');
+        // Redirect to login if not already there
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
         return;
       }
 
@@ -392,6 +441,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       stopPolling();
       return;
     }
+    
+    // Check if notifications are enabled
+    if (!areNotificationsEnabled()) {
+      stopPolling();
+      return;
+    }
 
     // Check if we have a valid token before starting
     const authHeader = getAuthHeader();
@@ -447,6 +502,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const addNotification = (notification: Omit<Notification, 'id' | 'userId' | 'createdAt' | 'read'>) => {
     if (!user) return;
+    
+    // Check if notifications are enabled
+    if (!areNotificationsEnabled()) {
+      return;
+    }
 
     const newNotification: Notification = {
       ...notification,
@@ -472,6 +532,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const markAsRead = useCallback(async (notificationId: string) => {
     let backendId: number | undefined;
     let backendType: Notification['type'] | undefined;
+    
+    // First, mark as read in local state
     setNotifications((prev) =>
       prev.map((notif) => {
         if (notif.id === notificationId) {
@@ -483,9 +545,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       })
     );
 
+    // If it's a local-only notification (no backend ID), we're done
     if (!user || !backendId || !backendType) {
       return;
     }
+    
     const authHeader = getAuthHeader();
     if (!authHeader) {
       return;
@@ -513,8 +577,23 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       if (!response.ok) {
         throw new Error(`Failed to mark notification as read (${response.status})`);
       }
+      
+      // After successfully marking as read on backend, remove it from the list after a short delay
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((notif) => notif.id !== notificationId));
+      }, 500); // 500ms delay to allow smooth UI transition
+      
     } catch (error) {
       console.error('Failed to mark notification as read', error);
+      // Revert the read status if backend call failed
+      setNotifications((prev) =>
+        prev.map((notif) => {
+          if (notif.id === notificationId) {
+            return { ...notif, read: false };
+          }
+          return notif;
+        })
+      );
       fetchBackendNotifications();
     }
   }, [fetchBackendNotifications, user]);
@@ -522,13 +601,21 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const markAllAsRead = useCallback(async () => {
     const taskIds: number[] = [];
     const leaveIds: number[] = [];
+    const shiftIds: number[] = [];
+    const notificationIdsToRemove: string[] = [];
+    
     setNotifications((prev) =>
       prev.map((notif) => {
-        if (!notif.read && notif.backendId) {
-          if (notif.type === 'leave') {
-            leaveIds.push(notif.backendId);
-          } else if (notif.type === 'task') {
-            taskIds.push(notif.backendId);
+        if (!notif.read) {
+          notificationIdsToRemove.push(notif.id);
+          if (notif.backendId) {
+            if (notif.type === 'leave') {
+              leaveIds.push(notif.backendId);
+            } else if (notif.type === 'task') {
+              taskIds.push(notif.backendId);
+            } else if (notif.type === 'shift') {
+              shiftIds.push(notif.backendId);
+            }
           }
         }
         if (notif.read) return notif;
@@ -536,9 +623,14 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       })
     );
 
-    if (!user || (taskIds.length === 0 && leaveIds.length === 0)) {
+    if (!user || (taskIds.length === 0 && leaveIds.length === 0 && shiftIds.length === 0)) {
+      // Still remove local notifications even if no backend IDs
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((notif) => !notificationIdsToRemove.includes(notif.id)));
+      }, 500);
       return;
     }
+    
     const authHeader = getAuthHeader();
     if (!authHeader) {
       return;
@@ -562,16 +654,41 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
             },
           })
         ),
+        ...shiftIds.map((id) =>
+          fetch(`${API_BASE_URL}/shift/notifications/${id}/read`, {
+            method: 'PUT',
+            headers: {
+              Authorization: authHeader,
+            },
+          })
+        ),
       ]);
+      
+      // After successfully marking all as read, remove them from the list
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((notif) => !notificationIdsToRemove.includes(notif.id)));
+      }, 500);
+      
     } catch (error) {
-      console.error('Failed to mark all task notifications as read', error);
+      console.error('Failed to mark all notifications as read', error);
+      // Revert the read status if backend call failed
+      setNotifications((prev) =>
+        prev.map((notif) => {
+          if (notificationIdsToRemove.includes(notif.id)) {
+            return { ...notif, read: false };
+          }
+          return notif;
+        })
+      );
       fetchBackendNotifications();
     }
   }, [fetchBackendNotifications, user]);
 
-  const clearNotification = (notificationId: string) => {
-    setNotifications(prev => prev.filter(notif => notif.id !== notificationId));
-  };
+  const clearNotification = useCallback(async (notificationId: string) => {
+    // First mark as read, then remove
+    await markAsRead(notificationId);
+    // The markAsRead function will handle the removal after marking as read
+  }, [markAsRead]);
 
   const clearAll = () => {
     setNotifications([]);

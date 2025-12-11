@@ -1,6 +1,7 @@
 import random
 from datetime import datetime, timedelta
 from app.core.config import settings
+from app.utils.timezone import now_ist
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ def generate_otp(email: str) -> int:
     
     OTP_STORE[email] = {
         "otp": otp, 
-        "expiry": datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRY_MINUTES),
+        "expiry": now_ist() + timedelta(seconds=settings.OTP_EXPIRY_SECONDS),
         "environment": settings.ENVIRONMENT
     }
     return otp
@@ -45,7 +46,7 @@ def verify_otp(email: str, otp: int) -> bool:
         return False
     
     # Check expiry
-    if datetime.utcnow() > record["expiry"]:
+    if now_ist() > record["expiry"]:
         logger.warning(f"OTP expired for email {email}")
         del OTP_STORE[email]
         return False
@@ -68,8 +69,8 @@ def get_otp_info(email: str) -> dict:
         "otp": record["otp"],
         "expiry": record["expiry"].isoformat(),
         "environment": record["environment"],
-        "is_expired": datetime.utcnow() > record["expiry"],
-        "time_remaining": max(0, (record["expiry"] - datetime.utcnow()).total_seconds())
+        "is_expired": now_ist() > record["expiry"],
+        "time_remaining": max(0, (record["expiry"] - now_ist()).total_seconds())
     }
 
 def clear_all_otps():

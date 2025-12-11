@@ -7,47 +7,43 @@ import { buttonVariants } from "@/components/ui/button";
 
 export type CalendarProps = React.ComponentProps<typeof DayPicker>;
 
-function Calendar({ className, classNames, showOutsideDays = true, ...props }: CalendarProps) {
+function Calendar({ className, classNames, showOutsideDays = false, ...props }: CalendarProps) {
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
-      className={cn("p-4", className)}
+      className={cn("p-0", className)}
       classNames={{
-        months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
-        month: "space-y-4",
-        caption: "flex justify-center pt-1 relative items-center mb-4",
-        caption_label: "text-lg font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent",
-        nav: "space-x-1 flex items-center",
-        nav_button: cn(
-          buttonVariants({ variant: "outline" }),
-          "h-9 w-9 bg-gradient-to-br from-slate-50 to-gray-100 dark:from-slate-800 dark:to-gray-900 border-2 p-0 hover:from-blue-50 hover:to-indigo-50 dark:hover:from-blue-950 dark:hover:to-indigo-950 hover:border-blue-300 transition-all duration-300 shadow-sm hover:shadow-md",
-        ),
-        nav_button_previous: "absolute left-1",
-        nav_button_next: "absolute right-1",
-        table: "w-full border-collapse space-y-1",
-        head_row: "flex mb-2",
-        head_cell: "text-muted-foreground rounded-lg w-11 font-semibold text-xs uppercase tracking-wider bg-gradient-to-br from-slate-100 to-gray-200 dark:from-slate-800 dark:to-gray-900 py-2 shadow-sm",
-        row: "flex w-full mt-2",
-        cell: "h-11 w-11 text-center text-sm p-0 relative [&:has([aria-selected].day-range-end)]:rounded-r-md [&:has([aria-selected].day-outside)]:bg-accent/50 [&:has([aria-selected])]:bg-accent first:[&:has([aria-selected])]:rounded-l-md last:[&:has([aria-selected])]:rounded-r-md focus-within:relative focus-within:z-20",
+        months: "flex flex-col sm:flex-row",
+        month: "space-y-3 w-full",
+        caption: "flex justify-center pt-1 relative items-center mb-2",
+        caption_label: "text-sm font-medium text-slate-600 dark:text-slate-300",
+        nav: "hidden",
+        nav_button: "hidden",
+        nav_button_previous: "hidden",
+        nav_button_next: "hidden",
+        table: "w-full border-collapse",
+        head_row: "flex w-full",
+        head_cell: "text-slate-500 dark:text-slate-400 w-9 font-medium text-[11px] uppercase tracking-wider py-2 text-center",
+        row: "flex w-full mt-0.5",
+        cell: "relative p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([aria-selected])]:bg-gradient-to-r [&:has([aria-selected])]:from-blue-50 [&:has([aria-selected])]:to-indigo-50 dark:[&:has([aria-selected])]:from-blue-950/30 dark:[&:has([aria-selected])]:to-indigo-950/30",
         day: cn(
           buttonVariants({ variant: "ghost" }),
-          "h-11 w-11 p-0 font-semibold aria-selected:opacity-100 rounded-xl transition-all duration-300 hover:scale-110 hover:shadow-lg relative overflow-hidden",
-          "before:absolute before:inset-0 before:bg-gradient-to-br before:from-white/20 before:to-transparent before:opacity-0 hover:before:opacity-100 before:transition-opacity before:duration-300"
+          "h-9 w-9 p-0 font-normal rounded-lg transition-all duration-200 hover:bg-gradient-to-br hover:from-blue-50 hover:to-indigo-50 dark:hover:from-blue-900/40 dark:hover:to-indigo-900/40 hover:scale-105 hover:shadow-sm"
         ),
-        day_range_end: "day-range-end",
+        day_range_end: "day-range-end rounded-r-lg",
         day_selected:
-          "bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-bold hover:from-blue-600 hover:to-indigo-700 focus:from-blue-600 focus:to-indigo-700 shadow-lg hover:shadow-xl scale-105",
-        day_today: "bg-gradient-to-br from-emerald-400 to-teal-500 text-white font-bold shadow-md ring-2 ring-emerald-300 ring-offset-2 dark:ring-offset-gray-950",
+          "bg-gradient-to-br from-blue-600 to-indigo-600 text-white font-semibold shadow-md hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg scale-105",
+        day_today: "bg-gradient-to-br from-amber-100 to-orange-100 dark:from-amber-900/40 dark:to-orange-900/40 text-amber-900 dark:text-amber-100 font-bold ring-2 ring-amber-400 dark:ring-amber-600 shadow-sm",
         day_outside:
-          "day-outside text-muted-foreground opacity-40 aria-selected:bg-accent/50 aria-selected:text-muted-foreground aria-selected:opacity-30",
-        day_disabled: "text-muted-foreground opacity-30 line-through",
-        day_range_middle: "aria-selected:bg-gradient-to-r aria-selected:from-blue-100 aria-selected:to-indigo-100 dark:aria-selected:from-blue-950 dark:aria-selected:to-indigo-950 aria-selected:text-accent-foreground",
+          "day-outside text-slate-300 dark:text-slate-700 opacity-30",
+        day_disabled: "text-slate-200 dark:text-slate-800 opacity-30 cursor-not-allowed",
+        day_range_middle: "aria-selected:bg-gradient-to-r aria-selected:from-blue-100 aria-selected:to-indigo-100 dark:aria-selected:from-blue-900/30 dark:aria-selected:to-indigo-900/30 aria-selected:text-blue-700 dark:aria-selected:text-blue-300 rounded-none",
         day_hidden: "invisible",
         ...classNames,
       }}
       components={{
-        IconLeft: ({ ..._props }) => <ChevronLeft className="h-5 w-5" />,
-        IconRight: ({ ..._props }) => <ChevronRight className="h-5 w-5" />,
+        IconLeft: () => <ChevronLeft className="h-4 w-4" />,
+        IconRight: () => <ChevronRight className="h-4 w-4" />,
       }}
       {...props}
     />

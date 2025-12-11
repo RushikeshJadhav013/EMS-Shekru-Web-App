@@ -7,6 +7,7 @@ from app.core.otp_utils import generate_otp, verify_otp, get_environment_info, g
 from app.services.email_service import send_otp_email, test_email_configuration
 from app.core.security import create_token
 from app.core.config import settings
+from app.utils.timezone import now_ist
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,13 @@ def send_otp(email: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # ✅ Check if user is active before sending OTP
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403, 
+            detail="Account is inactive. Please contact your administrator for assistance."
+        )
     
     # Generate OTP based on environment
     otp = generate_otp(email)
@@ -37,7 +45,7 @@ def send_otp(email: str, db: Session = Depends(get_db)):
         "message": response_message,
         "environment": settings.ENVIRONMENT,
         "otp_method": "email" if settings.should_send_email else "console",
-        "expires_in_minutes": settings.OTP_EXPIRY_MINUTES
+        "expires_in_seconds": settings.OTP_EXPIRY_SECONDS
     }
 
 @router.post("/verify-otp")
@@ -49,6 +57,13 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # ✅ Check if user is active before allowing login
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403, 
+            detail="Account is inactive. Please contact your administrator for assistance."
+        )
     
     # Convert role enum to string value
     role_value = user.role.value if hasattr(user.role, 'value') else str(user.role)

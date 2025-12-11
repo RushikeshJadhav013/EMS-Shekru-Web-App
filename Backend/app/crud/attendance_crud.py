@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
 from app.db.models.office_timing import OfficeTiming
+from app.utils.timezone import now_ist, get_today_bounds_ist, utc_to_ist, ist_to_utc
 import csv
 import io
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -20,7 +21,7 @@ UTC_TZ = ZoneInfo("UTC")
 
 def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
     try:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start, today_end = get_today_bounds_ist()
         
         # Check for existing attendance record today
         attendance = (
@@ -35,15 +36,15 @@ def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = 
         )
         
         if attendance:
-            # Update existing check-in
-            attendance.check_in = datetime.utcnow()
+            # Update existing check-in (store in UTC for database)
+            attendance.check_in = ist_to_utc(now_ist())
             attendance.gps_location = gps_location or attendance.gps_location
             attendance.selfie = selfie or attendance.selfie
         else:
-            # Create new check-in
+            # Create new check-in (store in UTC for database)
             attendance = Attendance(
                 user_id=user_id,
-                check_in=datetime.utcnow(),
+                check_in=ist_to_utc(now_ist()),
                 gps_location=gps_location,
                 selfie=selfie,
                 total_hours=0.0  # Initialize total_hours
@@ -59,7 +60,7 @@ def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = 
         raise e
 
 def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start, today_end = get_today_bounds_ist()
     attendance = (
         db.query(Attendance)
         .filter(Attendance.user_id == user_id, Attendance.check_in >= today_start)
@@ -68,16 +69,16 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
     if not attendance:
         return None
 
-    # Update checkout and calculate total hours
-    now = datetime.utcnow()
+    # Update checkout and calculate total hours (store in UTC for database)
+    now_utc = ist_to_utc(now_ist())
     if attendance.check_out:
         # Add hours from previous checkout to now
-        delta = now - attendance.check_out
+        delta = now_utc - attendance.check_out
     else:
         # First checkout today
-        delta = now - attendance.check_in
+        delta = now_utc - attendance.check_in
 
-    attendance.check_out = now
+    attendance.check_out = now_utc
     attendance.total_hours += delta.total_seconds() / 3600  # hours
     attendance.gps_location = gps_location or attendance.gps_location
     attendance.selfie = selfie or attendance.selfie
@@ -87,7 +88,7 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
     return attendance
 
 def list_attendance(db: Session, user_id: int):
-    six_months_ago = datetime.utcnow() - timedelta(days=180)
+    six_months_ago = ist_to_utc(now_ist() - timedelta(days=180))
     return (
         db.query(Attendance)
         .filter(Attendance.user_id == user_id, Attendance.check_in >= six_months_ago)
@@ -96,8 +97,7 @@ def list_attendance(db: Session, user_id: int):
     )
 
 def total_present_today(db: Session):
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
+    today_start, today_end = get_today_bounds_ist()
     return db.query(Attendance).filter(Attendance.check_in >= today_start, Attendance.check_in < today_end).count()
 
 def get_all_attendance(db: Session, department: str = None):

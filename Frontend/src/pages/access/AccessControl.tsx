@@ -22,6 +22,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatIST, formatDateIST } from '@/utils/timezone';
 
 interface TaskPermission {
   fromRole: string;

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union
 from pathlib import Path
+from app.utils.timezone import now_ist, utc_to_ist
 from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema
 from app.crud.user_crud import (
     create_user,
@@ -12,6 +13,9 @@ from app.crud.user_crud import (
     delete_user,
     get_user_by_email,
     get_user_by_employee_id,
+    get_user_by_phone,
+    get_user_by_pan_card,
+    get_user_by_aadhar_card,
     get_user,
     export_users_pdf,
     export_users_csv,
@@ -109,30 +113,29 @@ def register_employee(
             detail=f"Employee already exists with ID '{employee_id}'",
         )
 
+    # Check for duplicate phone number
+    if phone and phone.strip():
+        existing_phone = get_user_by_phone(db, phone.strip())
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number already exists. Please enter a unique phone number.",
+            )
+
     if pan_card:
-        duplicate_pan = (
-            db.query(User)
-            .filter(User.pan_card.isnot(None))
-            .filter(User.pan_card == pan_card)
-            .first()
-        )
+        duplicate_pan = get_user_by_pan_card(db, pan_card)
         if duplicate_pan:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Employee already exists with this PAN card number",
+                detail="PAN Card already exists. Please enter a unique PAN Card number.",
             )
 
     if aadhar_card:
-        duplicate_aadhar = (
-            db.query(User)
-            .filter(User.aadhar_card.isnot(None))
-            .filter(User.aadhar_card == aadhar_card)
-            .first()
-        )
+        duplicate_aadhar = get_user_by_aadhar_card(db, aadhar_card)
         if duplicate_aadhar:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Employee already exists with this Aadhar card number",
+                detail="Aadhar Card already exists. Please enter a unique Aadhar Card number.",
             )
 
     profile_photo_path = None
@@ -276,6 +279,33 @@ def update_employee(
     employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    # Check for duplicate phone number (excluding current employee)
+    if phone and phone.strip():
+        existing_phone = get_user_by_phone(db, phone.strip())
+        if existing_phone and existing_phone.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number already exists. Please enter a unique phone number.",
+            )
+
+    # Check for duplicate PAN card (excluding current employee)
+    if pan_card and pan_card.strip():
+        duplicate_pan = get_user_by_pan_card(db, pan_card.strip())
+        if duplicate_pan and duplicate_pan.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="PAN Card already exists. Please enter a unique PAN Card number.",
+            )
+
+    # Check for duplicate Aadhar card (excluding current employee)
+    if aadhar_card and aadhar_card.strip():
+        duplicate_aadhar = get_user_by_aadhar_card(db, aadhar_card.strip())
+        if duplicate_aadhar and duplicate_aadhar.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Aadhar Card already exists. Please enter a unique Aadhar Card number.",
+            )
 
     # Handle profile photo upload
     profile_photo_path = employee.profile_photo  # Keep existing photo by default
@@ -450,3 +480,64 @@ def get_subscription_status(
     
     from app.crud.subscription_crud import get_admin_subscription_info
     return get_admin_subscription_info(db, current_user.user_id)
+
+
+# ✅ Real-time validation endpoints for form fields
+@router.get("/validate/phone/{phone}")
+def validate_phone_availability(
+    phone: str, 
+    exclude_user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Check if phone number is available (not already taken)"""
+    if not phone or not phone.strip():
+        return {"available": True, "message": ""}
+    
+    existing_user = get_user_by_phone(db, phone.strip())
+    if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
+        return {
+            "available": False, 
+            "message": "Phone number already exists. Please enter a unique phone number."
+        }
+    
+    return {"available": True, "message": ""}
+
+
+@router.get("/validate/pan/{pan_card}")
+def validate_pan_availability(
+    pan_card: str, 
+    exclude_user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Check if PAN card is available (not already taken)"""
+    if not pan_card or not pan_card.strip():
+        return {"available": True, "message": ""}
+    
+    existing_user = get_user_by_pan_card(db, pan_card.strip().upper())
+    if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
+        return {
+            "available": False, 
+            "message": "PAN Card already exists. Please enter a unique PAN Card number."
+        }
+    
+    return {"available": True, "message": ""}
+
+
+@router.get("/validate/aadhar/{aadhar_card}")
+def validate_aadhar_availability(
+    aadhar_card: str, 
+    exclude_user_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Check if Aadhar card is available (not already taken)"""
+    if not aadhar_card or not aadhar_card.strip():
+        return {"available": True, "message": ""}
+    
+    existing_user = get_user_by_aadhar_card(db, aadhar_card.strip())
+    if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
+        return {
+            "available": False, 
+            "message": "Aadhar Card already exists. Please enter a unique Aadhar Card number."
+        }
+    
+    return {"available": True, "message": ""}

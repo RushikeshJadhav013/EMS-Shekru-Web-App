@@ -162,10 +162,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(user);
       localStorage.setItem('user', JSON.stringify(user));
       localStorage.setItem('token', userData.access_token);
+      localStorage.setItem('userId', user.id.toString()); // Store userId for language persistence
 
       toast({
+        variant: 'success',
         title: 'Login Successful',
-        description: `Welcome back, ${user.name}! (Role: ${user.role})`,
+        description: `Welcome back, ${user.name}!`,
       });
 
       // Redirect to the appropriate dashboard based on role
@@ -207,11 +209,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     setUser(null);
     localStorage.removeItem('user');
+    localStorage.removeItem('token');
+    localStorage.removeItem('userId'); // Clear userId for language persistence
+    
+    // Clear all session-related data
+    sessionStorage.clear();
+    
     toast({
       title: 'Logged Out',
       description: 'You have been successfully logged out.',
     });
-    navigate('/login');
+    
+    // Use replace to prevent going back to authenticated pages
+    navigate('/login', { replace: true });
   };
 
   const updateUser = (updatedUser: User) => {

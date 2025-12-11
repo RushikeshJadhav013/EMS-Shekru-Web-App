@@ -4,7 +4,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -12,9 +12,12 @@ import { toast } from '@/hooks/use-toast';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
+import OnlineStatusToggle from '@/components/attendance/OnlineStatusToggle';
+import OnlineStatusIndicator from '@/components/attendance/OnlineStatusIndicator';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Users, Filter, User, X, Download, Search, Loader2 } from 'lucide-react';
 import { AttendanceRecord, UserRole } from '@/types';
 import { format, subMonths } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatTimeIST, formatDateIST, todayIST, formatDateTimeComponentsIST, parseToIST } from '@/utils/timezone';
 import { getCurrentLocation as fetchPreciseLocation, getCurrentLocationFast } from '@/utils/geolocation';
 import { DatePicker } from '@/components/ui/date-picker';
 
@@ -61,7 +64,7 @@ const AttendanceWithToggle: React.FC = () => {
   const [isRefreshingLocation, setIsRefreshingLocation] = useState(false);
   const [isGettingFastLocation, setIsGettingFastLocation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [selectedDate, setSelectedDate] = useState(todayIST());
   const [filterRole, setFilterRole] = useState<'all' | UserRole>('all');
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendanceRecord | null>(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
@@ -80,6 +83,12 @@ const AttendanceWithToggle: React.FC = () => {
   const [selectedExportDepartment, setSelectedExportDepartment] = useState<string>('');
   const [exportDepartments, setExportDepartments] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
+  
+  // Online/Offline status state
+  const [isOnline, setIsOnline] = useState(true);
+  const [workingHours, setWorkingHours] = useState('0:00');
+  const [onlineStatusMap, setOnlineStatusMap] = useState<Record<number, boolean>>({});
+  const [allUsersOnlineStatus, setAllUsersOnlineStatus] = useState<Record<string, boolean>>({});
 
   const resolveStaticUrl = useCallback((url?: string | null) => {
     if (!url) return '';
@@ -87,7 +96,7 @@ const AttendanceWithToggle: React.FC = () => {
       return url;
     }
     const normalized = url.startsWith('/') ? url : `/${url}`;
-    return `http://127.0.0.1:8000${normalized}`;
+    return `https://staffly.space${normalized}`;
   }, []);
 
   // Determine if user can view employee attendance
@@ -288,7 +297,7 @@ const AttendanceWithToggle: React.FC = () => {
         );
       }
 
-      const apiUrl = `http://127.0.0.1:8000/attendance/download/${exportType}?${params.toString()}`;
+      const apiUrl = `https://staffly.space/attendance/download/${exportType}?${params.toString()}`;
       const res = await fetch(apiUrl, { method: 'GET' });
       if (!res.ok) {
         throw new Error(`Request failed with status ${res.status}`);
@@ -360,14 +369,14 @@ const AttendanceWithToggle: React.FC = () => {
   const loadFromBackend = async () => {
     try {
       if (!user?.id) return;
-      const res = await fetch(`http://127.0.0.1:8000/attendance/my-attendance/${user.id}`);
+      const res = await fetch(`https://staffly.space/attendance/my-attendance/${user.id}`);
       if (!res.ok) return;
       const data = await res.json();
       setAttendanceHistory(
         data.map((rec: any) => ({
           id: String(rec.attendance_id),
           userId: String(rec.user_id),
-          date: format(new Date(rec.check_in), 'yyyy-MM-dd'),
+          date: formatDateIST(rec.check_in),
           checkInTime: rec.check_in,
           checkOutTime: rec.check_out || undefined,
           checkInLocation: {
@@ -388,18 +397,17 @@ const AttendanceWithToggle: React.FC = () => {
           workReport: resolveStaticUrl(rec.workReport || rec.work_report),
         }))
       );
-      const today = format(new Date(), 'yyyy-MM-dd');
+      const today = todayIST();
       const todayRecord = data.find((rec: any) => {
-        const recordDate = format(new Date(rec.check_in), 'yyyy-MM-dd');
+        const recordDate = formatDateIST(rec.check_in);
         return recordDate === today;
       });
 
       if (todayRecord) {
-        const checkInDate = new Date(todayRecord.check_in);
         const attendance: AttendanceRecord = {
           id: todayRecord.attendance_id.toString(),
           userId: todayRecord.user_id.toString(),
-          date: format(checkInDate, 'yyyy-MM-dd'),
+          date: formatDateIST(todayRecord.check_in),
           checkInTime: todayRecord.check_in, // Use ISO datetime string
           checkOutTime: todayRecord.check_out || undefined, // Use ISO datetime string
           checkInLocation: {
@@ -435,7 +443,7 @@ const AttendanceWithToggle: React.FC = () => {
     try {
       setIsLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('http://127.0.0.1:8000/attendance/all', {
+      const res = await fetch('https://staffly.space/attendance/all', {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       
@@ -457,7 +465,7 @@ const AttendanceWithToggle: React.FC = () => {
         .map((rec: any) => ({
           id: String(rec.attendance_id || rec.id || ''),
           userId: String(rec.user_id || rec.employee_id || ''),
-          date: rec.check_in ? (rec.check_in.includes('T') ? rec.check_in.slice(0,10) : format(new Date(rec.check_in), 'yyyy-MM-dd')) : selectedDate,
+          date: rec.check_in ? formatDateIST(rec.check_in) : selectedDate,
           checkInTime: rec.check_in || undefined, // Use ISO datetime string if available
           checkOutTime: rec.check_out || undefined, // Use ISO datetime string if available
           checkInLocation: {
@@ -500,7 +508,7 @@ const AttendanceWithToggle: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch('http://127.0.0.1:8000/employees');
+      const res = await fetch('https://staffly.space/employees');
       if (!res.ok) {
         throw new Error(`Failed to load employees: ${res.status}`);
       }
@@ -580,9 +588,40 @@ const AttendanceWithToggle: React.FC = () => {
     setShowCheckoutDialog(false);
   };
 
+  // Helper function to compress base64 image
+  const compressBase64Image = async (base64: string, maxWidth = 800, quality = 0.7): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        // Calculate new dimensions while maintaining aspect ratio
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        
+        // Convert to compressed base64
+        const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedBase64);
+      };
+      img.src = base64;
+    });
+  };
+
   const handleCameraCapture = async (imageData: string) => {
     setIsLoading(true);
     try {
+      // ✅ Compress the image to reduce payload size (fixes 413 error)
+      const compressedImage = await compressBase64Image(imageData, 800, 0.7);
       if (!location) {
         await refreshLocation();
       }
@@ -610,16 +649,23 @@ const AttendanceWithToggle: React.FC = () => {
         location_data: {
           [isCheckingIn ? 'check_in' : 'check_out']: locationPayload,
         },
-        selfie: imageData,
+        selfie: compressedImage, // ✅ Use compressed image
         work_summary: !isCheckingIn ? todaysWork.trim() : undefined,
         work_report: !isCheckingIn ? workReportBase64 : undefined,
       };
       const endpoint = isCheckingIn
-        ? 'http://127.0.0.1:8000/attendance/check-in/json'
-        : 'http://127.0.0.1:8000/attendance/check-out/json';
+        ? 'https://staffly.space/attendance/check-in/json'
+        : 'https://staffly.space/attendance/check-out/json';
+      
+      // ✅ Get token from localStorage for authentication
+      const token = localStorage.getItem('token');
+      
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
@@ -628,6 +674,12 @@ const AttendanceWithToggle: React.FC = () => {
       }
       await loadFromBackend();
       toast({ title: 'Success', description: isCheckingIn ? t.attendance.checkedIn : t.attendance.checkedOut });
+      
+      // Set user as online after check-in
+      if (isCheckingIn) {
+        setIsOnline(true);
+      }
+      
       if (!isCheckingIn) {
         setTodaysWork('');
         setWorkPdf(null);
@@ -647,6 +699,136 @@ const AttendanceWithToggle: React.FC = () => {
     }
   };
 
+  const handleOnlineStatusChange = async (newStatus: boolean, reason?: string) => {
+    if (!currentAttendance?.id) {
+      throw new Error('No active attendance record');
+    }
+
+    const token = localStorage.getItem('token');
+    const response = await fetch('https://staffly.space/attendance/online-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify({
+        attendance_id: parseInt(currentAttendance.id),
+        is_online: newStatus,
+        reason: reason || null,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Failed to update status');
+    }
+
+    setIsOnline(newStatus);
+    
+    // Fetch updated working hours
+    await fetchWorkingHours();
+  };
+
+  const fetchWorkingHours = async () => {
+    if (!currentAttendance?.id) return;
+
+    try {
+      // Calculate hours from check-in time
+      if (currentAttendance.checkInTime) {
+        const checkInDate = new Date(currentAttendance.checkInTime);
+        const now = new Date();
+        const diffMs = now.getTime() - checkInDate.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
+        const hours = Math.floor(diffHours);
+        const minutes = Math.round((diffHours - hours) * 60);
+        setWorkingHours(`${hours}:${minutes.toString().padStart(2, '0')}`);
+      } else {
+        setWorkingHours('0:00');
+      }
+    } catch (error) {
+      console.error('Failed to calculate working hours:', error);
+      setWorkingHours('0:00');
+    }
+  };
+
+  // Fetch working hours periodically when checked in
+  useEffect(() => {
+    if (currentAttendance && !currentAttendance.checkOutTime) {
+      fetchWorkingHours();
+      const interval = setInterval(fetchWorkingHours, 30000); // Update every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [currentAttendance]);
+
+  // Fetch online status for all employees (for admin/hr/manager view)
+  const fetchAllOnlineStatus = useCallback(async () => {
+    if (!canViewEmployeeAttendance) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://staffly.space/attendance/current-online-status', {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Convert to simple map of user_id -> is_online
+        const statusMap: Record<number, boolean> = {};
+        Object.keys(data).forEach(userId => {
+          statusMap[parseInt(userId)] = data[userId].is_online;
+        });
+        setOnlineStatusMap(statusMap);
+      }
+    } catch (error) {
+      console.error('Failed to fetch online status:', error);
+    }
+  }, [canViewEmployeeAttendance]);
+
+  // Fetch online status periodically when viewing employee attendance
+  useEffect(() => {
+    if (viewMode === 'employee' && canViewEmployeeAttendance) {
+      fetchAllOnlineStatus();
+      const interval = setInterval(fetchAllOnlineStatus, 15000); // Update every 15 seconds
+      return () => clearInterval(interval);
+    }
+  }, [viewMode, canViewEmployeeAttendance, fetchAllOnlineStatus]);
+
+  // Fetch all users' online status (for Admin, HR, Manager viewing employee attendance)
+  const fetchAllUsersOnlineStatus = useCallback(async () => {
+    if (!canViewEmployeeAttendance) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://staffly.space/attendance/current-online-status', {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const statusMap: Record<string, boolean> = {};
+        Object.keys(data).forEach(userId => {
+          statusMap[userId] = data[userId].is_online;
+        });
+        setAllUsersOnlineStatus(statusMap);
+      }
+    } catch (error) {
+      console.error('Failed to fetch online status:', error);
+    }
+  }, [canViewEmployeeAttendance]);
+
+  // Fetch online status periodically when viewing employee attendance
+  useEffect(() => {
+    if (viewMode === 'employee' && canViewEmployeeAttendance) {
+      fetchAllUsersOnlineStatus();
+      const interval = setInterval(fetchAllUsersOnlineStatus, 15000); // Update every 15 seconds
+      return () => clearInterval(interval);
+    }
+  }, [viewMode, canViewEmployeeAttendance, fetchAllUsersOnlineStatus]);
+
   const getStatusBadge = (status: string, checkInTime?: string, checkOutTime?: string) => {
     if (status === 'late' || checkInTime && checkInTime > '09:30:00') {
       return <Badge variant="destructive">Late</Badge>;
@@ -660,32 +842,9 @@ const AttendanceWithToggle: React.FC = () => {
     return null;
   };
 
-  const formatIST = (dateString: string, timeString?: string) => {
+  const formatAttendanceTime = (dateString: string, timeString?: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string (HH:MM:SS), assume UTC and combine with date
-      date = new Date(`${dateString}T${timeString}Z`);
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    return formatDateTimeComponentsIST(dateString, timeString, 'hh:mm a');
   };
 
   if (showCamera) {
@@ -711,26 +870,37 @@ const AttendanceWithToggle: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">{t.navigation.attendance}</h2>
-        <div className="flex items-center gap-4">
-          {canViewEmployeeAttendance && (
-            <div className="flex items-center space-x-2">
-              <Switch
-                id="view-mode"
-                checked={viewMode === 'employee'}
-                onCheckedChange={(checked) => setViewMode(checked ? 'employee' : 'self')}
-              />
-              <Label htmlFor="view-mode" className="cursor-pointer">
-                {viewMode === 'self' ? 'Self Attendance' : 'Employee Attendance'}
-              </Label>
-            </div>
-          )}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold">{t.navigation.attendance}</h2>
           <Badge variant="outline" className="text-lg px-3 py-1">
             <Calendar className="h-4 w-4 mr-2" />
             {format(new Date(), 'dd MMM yyyy')}
           </Badge>
         </div>
+        
+        {canViewEmployeeAttendance && (
+          <div className="flex justify-center w-full">
+            <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as 'self' | 'employee')} className="w-full sm:w-auto">
+              <TabsList className="grid grid-cols-2 h-14 w-full sm:w-[500px] bg-gradient-to-r from-slate-100 to-gray-100 dark:from-slate-800 dark:to-gray-800 border-2 border-slate-200 dark:border-slate-700 rounded-lg p-1 gap-1 shadow-sm">
+              <TabsTrigger 
+                value="self"
+                className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-600 data-[state=active]:to-indigo-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+              >
+                <User className="h-4 w-4 mr-2" />
+                Self Attendance
+              </TabsTrigger>
+              <TabsTrigger 
+                value="employee"
+                className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-green-600 data-[state=active]:to-emerald-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:font-semibold data-[state=inactive]:text-slate-600 dark:data-[state=inactive]:text-slate-300 data-[state=inactive]:hover:bg-slate-200 dark:data-[state=inactive]:hover:bg-slate-700 transition-all duration-300 rounded-md"
+              >
+                <Users className="h-4 w-4 mr-2" />
+                Employee Attendance
+              </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        )}
       </div>
 
       {canExportAttendance && viewMode === 'employee' && (
@@ -793,7 +963,7 @@ const AttendanceWithToggle: React.FC = () => {
                           {getStatusBadge(currentAttendance.status, currentAttendance.checkInTime)}
                         </div>
                         <p className="text-lg font-semibold">
-                          {formatIST(currentAttendance.date, currentAttendance.checkInTime)}
+                          {formatAttendanceTime(currentAttendance.date, currentAttendance.checkInTime)}
                         </p>
                       </div>
                       
@@ -806,7 +976,7 @@ const AttendanceWithToggle: React.FC = () => {
                         </div>
                         <p className="text-lg font-semibold">
                           {currentAttendance.checkOutTime 
-                            ? formatIST(currentAttendance.date, currentAttendance.checkOutTime)
+                            ? formatAttendanceTime(currentAttendance.date, currentAttendance.checkOutTime)
                             : '-'}
                         </p>
                       </div>
@@ -853,6 +1023,16 @@ const AttendanceWithToggle: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Online/Offline Status Toggle */}
+          {currentAttendance && !currentAttendance.checkOutTime && (
+            <OnlineStatusToggle
+              isOnline={isOnline}
+              onStatusChange={handleOnlineStatusChange}
+              workingHours={workingHours}
+              isVisible={true}
+            />
+          )}
+
           {/* Attendance History */}
           <Card>
             <CardHeader>
@@ -869,10 +1049,10 @@ const AttendanceWithToggle: React.FC = () => {
                           <Calendar className="h-5 w-5 text-primary" />
                         </div>
                         <div>
-                          <p className="font-medium">{format(new Date(record.date), 'dd MMM yyyy')}</p>
+                          <p className="font-medium">{formatDateIST(record.date, 'dd MMM yyyy')}</p>
                           <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                            <span>In: {formatIST(record.date, record.checkInTime)}</span>
-                            <span>Out: {formatIST(record.date, record.checkOutTime)}</span>
+                            <span>In: {formatAttendanceTime(record.date, record.checkInTime)}</span>
+                            <span>Out: {formatAttendanceTime(record.date, record.checkOutTime)}</span>
                             {record.workHours && <span>{record.workHours}h</span>}
                           </div>
                         </div>
@@ -939,6 +1119,7 @@ const AttendanceWithToggle: React.FC = () => {
                         <TableHead>Employee (Name & Email)</TableHead>
                         <TableHead>Employee ID</TableHead>
                         <TableHead>Department</TableHead>
+                        <TableHead>Online Status</TableHead>
                         <TableHead>Check In</TableHead>
                         <TableHead>Check Out</TableHead>
                         <TableHead>Hours</TableHead>
@@ -961,11 +1142,34 @@ const AttendanceWithToggle: React.FC = () => {
                             </TableCell>
                             <TableCell className="font-medium">{record.userId}</TableCell>
                             <TableCell>{record.department || '-'}</TableCell>
-                            <TableCell>{formatIST(record.date, record.checkInTime)}</TableCell>
-                            <TableCell>{formatIST(record.date, record.checkOutTime)}</TableCell>
+                            <TableCell>
+                              {!record.checkOutTime ? (
+                                <OnlineStatusIndicator 
+                                  isOnline={onlineStatusMap[parseInt(record.userId)] ?? true} 
+                                  size="md"
+                                  showLabel={true}
+                                />
+                              ) : (
+                                <span className="text-xs text-muted-foreground">Checked Out</span>
+                              )}
+                            </TableCell>
+                            <TableCell>{formatAttendanceTime(record.date, record.checkInTime)}</TableCell>
+                            <TableCell>{formatAttendanceTime(record.date, record.checkOutTime)}</TableCell>
                             <TableCell>{record.workHours || '-'} h</TableCell>
-                            <TableCell className="text-sm text-muted-foreground">
-                              {record.checkInLocation.address || 'N/A'}
+                            <TableCell>
+                              {record.checkInLocation?.address && record.checkInLocation.address !== 'N/A' ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setSelectedRecord(record)}
+                                  className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950"
+                                >
+                                  <MapPin className="h-4 w-4 mr-1" />
+                                  View
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">-</span>
+                              )}
                             </TableCell>
                             <TableCell>
                               {record.checkInSelfie ? (
@@ -977,7 +1181,7 @@ const AttendanceWithToggle: React.FC = () => {
                                   }}
                                 >
                                   <img
-                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${record.checkInSelfie}`}
+                                    src={record.checkInSelfie.startsWith('http') ? record.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'https://staffly.space'}${record.checkInSelfie}`}
                                     alt="Selfie"
                                     className="w-full h-full object-cover"
                                     onError={(e) => {
@@ -1312,7 +1516,7 @@ const AttendanceWithToggle: React.FC = () => {
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkInSelfie ? (
                   <img 
-                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${selectedRecord.checkInSelfie}`}
+                    src={selectedRecord.checkInSelfie.startsWith('http') ? selectedRecord.checkInSelfie : `${import.meta.env.VITE_API_BASE_URL || 'https://staffly.space'}${selectedRecord.checkInSelfie}`}
                     alt="Check-in selfie" 
                     className="w-full h-full object-cover"
                   />
@@ -1323,7 +1527,7 @@ const AttendanceWithToggle: React.FC = () => {
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatIST(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
+                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatAttendanceTime(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
                   <p className="text-sm opacity-80">{selectedRecord?.checkInLocation?.address || 'Location not available'}</p>
                 </div>
               </div>
@@ -1338,7 +1542,7 @@ const AttendanceWithToggle: React.FC = () => {
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkOutSelfie ? (
                   <img 
-                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${selectedRecord.checkOutSelfie}`}
+                    src={selectedRecord.checkOutSelfie.startsWith('http') ? selectedRecord.checkOutSelfie : `${import.meta.env.VITE_API_BASE_URL || 'https://staffly.space'}${selectedRecord.checkOutSelfie}`}
                     alt="Check-out selfie" 
                     className="w-full h-full object-cover"
                   />
@@ -1351,7 +1555,7 @@ const AttendanceWithToggle: React.FC = () => {
                 )}
                 {selectedRecord?.checkOutTime && (
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                    <p className="font-medium">Check-out: {formatIST(selectedRecord.date, selectedRecord.checkOutTime)}</p>
+                    <p className="font-medium">Check-out: {formatAttendanceTime(selectedRecord.date, selectedRecord.checkOutTime)}</p>
                     <p className="text-sm opacity-80">{selectedRecord?.checkOutLocation?.address || 'Location not available'}</p>
                   </div>
                 )}
@@ -1384,6 +1588,90 @@ const AttendanceWithToggle: React.FC = () => {
             <Button 
               variant="outline" 
               onClick={() => setShowSelfieModal(false)}
+              className="gap-2"
+            >
+              <X className="h-4 w-4" />
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Location Details Modal */}
+      <Dialog open={!!selectedRecord && !showSelfieModal} onOpenChange={(open) => !open && setSelectedRecord(null)}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-blue-600" />
+              Location Details
+            </DialogTitle>
+            <DialogDescription>
+              Check-in and check-out location information
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-4">
+            {/* Check-in Location */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="h-3 w-3 rounded-full bg-green-500"></div>
+                <h3 className="font-semibold text-base">Check-in Location</h3>
+              </div>
+              <div className="bg-green-50 dark:bg-green-950/20 border-2 border-green-200 dark:border-green-800 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <MapPin className="h-5 w-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-green-900 dark:text-green-100 mb-1">
+                      {formatAttendanceTime(selectedRecord?.date || '', selectedRecord?.checkInTime)}
+                    </p>
+                    <p className="text-sm text-green-700 dark:text-green-300 leading-relaxed">
+                      {selectedRecord?.checkInLocation?.address || 'Location not available'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Check-out Location */}
+            {selectedRecord?.checkOutTime ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-3 w-3 rounded-full bg-red-500"></div>
+                  <h3 className="font-semibold text-base">Check-out Location</h3>
+                </div>
+                <div className="bg-red-50 dark:bg-red-950/20 border-2 border-red-200 dark:border-red-800 rounded-xl p-4">
+                  <div className="flex items-start gap-3">
+                    <MapPin className="h-5 w-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-red-900 dark:text-red-100 mb-1">
+                        {formatAttendanceTime(selectedRecord?.date || '', selectedRecord?.checkOutTime)}
+                      </p>
+                      <p className="text-sm text-red-700 dark:text-red-300 leading-relaxed">
+                        {selectedRecord?.checkOutLocation?.address || 'Location not available'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-3 w-3 rounded-full bg-slate-400"></div>
+                  <h3 className="font-semibold text-base">Check-out Location</h3>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-900/20 border-2 border-slate-200 dark:border-slate-700 rounded-xl p-4">
+                  <p className="text-sm text-slate-600 dark:text-slate-400 text-center py-2">
+                    User has not checked out yet
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline"
+              onClick={() => setSelectedRecord(null)}
               className="gap-2"
             >
               <X className="h-4 w-4" />

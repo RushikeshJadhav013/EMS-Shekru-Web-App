@@ -3,6 +3,7 @@
 import * as React from "react"
 import { format } from "date-fns"
 import { Calendar as CalendarIcon } from "lucide-react"
+import { formatIST, nowIST } from "@/utils/timezone"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -36,10 +37,10 @@ export function DatePicker({
   toDate,
 }: DatePickerProps) {
   const [open, setOpen] = React.useState(false);
-  const [currentMonth, setCurrentMonth] = React.useState<Date>(date || new Date());
+  const [currentMonth, setCurrentMonth] = React.useState<Date>(date || nowIST());
 
   // Set minimum date to today if disablePastDates is true
-  const minDate = disablePastDates ? new Date() : fromDate;
+  const minDate = disablePastDates ? nowIST() : fromDate;
 
   const handleSelect = (selectedDate: Date | undefined) => {
     onDateChange?.(selectedDate);
@@ -52,7 +53,8 @@ export function DatePicker({
         variant={"outline"}
         className={cn(
           "w-full justify-start text-left font-normal h-11 bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 dark:hover:from-blue-950 dark:hover:to-indigo-950 transition-all duration-300",
-          !date && "text-muted-foreground",
+          !date && "text-muted-foreground hover:text-muted-foreground",
+          date && "text-foreground hover:text-foreground",
           className
         )}
         disabled={disabled}

@@ -18,6 +18,7 @@ from app.crud.task_crud import (
     update_task_status,
 )
 from app.dependencies import get_current_user
+from app.utils.timezone import now_ist, utc_to_ist
 
 from app.schemas.task_schema import TaskCreate, TaskHistoryOut, TaskNotificationOut, TaskOut, TaskPassRequest, TaskUpdate
 from app.enums import RoleEnum, TaskStatus
@@ -144,6 +145,13 @@ def pass_task_route(
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+    # Prevent passing completed or cancelled tasks
+    if task.status in [TaskStatus.COMPLETED, TaskStatus.CANCELLED]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"Cannot pass a task with status '{task.status}'. Only pending or in-progress tasks can be passed."
+        )
 
     if current_user.role != RoleEnum.ADMIN and task.assigned_to != current_user.user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the current assignee can pass this task")

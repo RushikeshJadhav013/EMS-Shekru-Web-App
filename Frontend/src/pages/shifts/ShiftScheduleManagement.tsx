@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from '@/hooks/use-toast';
 import { Calendar, CalendarDays, Clock, Users, Plus, Edit, Trash2, UserPlus, ArrowRight, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { format, addDays } from 'date-fns';
+import { formatIST, formatDateIST, nowIST } from '@/utils/timezone';
 
 interface Shift {
   shift_id: number;

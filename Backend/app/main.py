@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-from fastapi.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db import models
@@ -13,6 +13,7 @@ from app.routes import (
     attendance_routes,
     leave_routes,
     task_routes,
+    task_comment_routes,
     auth_routes,
     dashboard_routes,
     hiring_routes,
@@ -58,43 +59,7 @@ except Exception as _e:
     # Fail-soft: app will still boot; detailed error returned via middleware if used
     pass
 
-# Custom middleware to add CORS headers to all responses
-class CORSMiddlewareWithErrorHandling(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # Handle preflight requests
-        if request.method == 'OPTIONS':
-            response = JSONResponse(
-                content={"message": "Preflight request successful"},
-                status_code=200,
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                    "Access-Control-Allow-Headers": "*",
-                }
-            )
-            return response
-
-        try:
-            response = await call_next(request)
-            # Add CORS headers to all successful responses
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            return response
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return JSONResponse(
-                status_code=500,
-                content={"detail": str(e)},
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                    "Access-Control-Allow-Headers": "*",
-                }
-            )
-
-# Initialize FastAPI with middleware
+# Initialize FastAPI
 app = FastAPI(
     title="Employee Management System",
     version="1.0",
@@ -102,6 +67,11 @@ app = FastAPI(
         Middleware(CORSMiddlewareWithErrorHandling)
     ]
 )
+
+# Note: If you get 413 Payload Too Large errors, configure your web server:
+# - nginx: client_max_body_size 50M;
+# - Apache: LimitRequestBody 52428800
+# - Gunicorn: --limit-request-line 8190 --limit-request-field_size 8190
 
 @app.on_event("startup")
 def create_initial_super_admin():
@@ -145,23 +115,26 @@ origins = [
     "http://localhost:3000",    # React dev server
     "http://127.0.0.1:3000",   # React dev server alternative
     "http://localhost:5173",    # Vite dev server
-    "http://127.0.0.1:5173",   # Vite dev server alternative
-    "http://localhost:8000",    # Direct backend access
-    "http://127.0.0.1:8000",   # Direct backend access alternative
-    "http://localhost:8080",    # Common frontend port
-    "http://127.0.0.1:8080",   # Common frontend port alternative
-    "*"                         # Allow all origins (temporary for development)
+    # "http://127.0.0.1:5173",   # Vite dev server alternative
+    # "http://localhost:8000",    # Direct backend access
+    "https://staffly.space",   # Direct backend access alternative
+    # "http://localhost:8080",    # Common frontend port
+    # "http://127.0.0.1:8080",   # Common frontend port alternative
+    # "http://localhost:4173",    # Vite preview server
+    # "http://127.0.0.1:4173",   # Vite preview server alternative
+    "https://stafflyhrms.netlify.app",  # Production deployment
+    "https://staffly.space"                         # Allow all origins (for development)
 ]
 
 # Configure CORS middleware with detailed settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=["*"],  # Allow all origins for development
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
-    expose_headers=["*"],  # Expose all headers
-    max_age=600  # Cache preflight requests for 10 minutes
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600
 )
 
 
@@ -170,6 +143,7 @@ app.include_router(user_routes.router)
 app.include_router(attendance_routes.router)
 app.include_router(leave_routes.router)
 app.include_router(task_routes.router)
+app.include_router(task_comment_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(dashboard_routes.router)
 app.include_router(hiring_routes.router)
@@ -178,6 +152,86 @@ app.include_router(department_routes.router)
 app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
+
+# Global exception handlers to ensure CORS headers are always included
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+    # Add CORS headers to error responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    response = JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body}
+    )
+    # Add CORS headers to validation error responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)}
+    )
+    # Add CORS headers to general error responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+# Global exception handlers to ensure CORS headers are always included
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+    # Add CORS headers to error responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    response = JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body}
+    )
+    # Add CORS headers to validation error responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)}
+    )
+    # Add CORS headers to general error responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 @app.get("/")
 async def home():
@@ -191,9 +245,19 @@ async def test_cors():
     return {
         "status": "success",
         "message": "CORS is working! If you can see this, your frontend can communicate with the backend.",
-        "cors_headers": {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "*"
-        }
+        "timestamp": "2024-01-01T00:00:00Z",
+        "endpoints_tested": [
+            "/tasks/notifications",
+            "/shift/notifications"
+        ]
     }
+
+@app.options("/tasks/notifications", tags=["Test"])
+async def test_task_notifications_cors():
+    """Preflight handler for task notifications"""
+    return {"message": "CORS preflight successful for task notifications"}
+
+@app.options("/shift/notifications", tags=["Test"])
+async def test_shift_notifications_cors():
+    """Preflight handler for shift notifications"""
+    return {"message": "CORS preflight successful for shift notifications"}

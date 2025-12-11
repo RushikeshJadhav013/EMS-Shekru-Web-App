@@ -4,18 +4,19 @@ from sqlalchemy import func, and_
 from datetime import datetime, timedelta
 
 from app.db.database import get_db
-from app.db.models import User, Attendance, Leave, Task, OfficeTiming
+from app.db.models import User, Attendance, Leave, Task
+from app.db.models.office_timing import OfficeTiming
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user
+from app.utils.timezone import now_ist, get_today_bounds_ist, utc_to_ist, localize_ist
 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
 def _today_bounds():
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
-    return today_start, today_end
+    """Get today's bounds in UTC for database queries (converted from IST)"""
+    return get_today_bounds_ist()
 
 
 @router.get("/admin")
@@ -39,31 +40,59 @@ def admin_dashboard(db: Session = Depends(get_db)):
         .scalar()
         or 0
     )
-    late_arrivals = (
-        db.query(func.count(Attendance.attendance_id))
+    
+    # Calculate late arrivals using office timing configuration
+    # First get office timings for proper late calculation
+    office_timings_query = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
+    office_timings_map = {}
+    for timing in office_timings_query:
+        key = timing.department if timing.department else "__global__"
+        office_timings_map[key] = timing
+    
+    # Get all attendance records for today with user info for late calculation
+    attendance_for_late_calc = (
+        db.query(Attendance, User)
+        .join(User, User.user_id == Attendance.user_id)
         .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
-        .filter(
-            func.extract('hour', Attendance.check_in) * 60 + func.extract('minute', Attendance.check_in) > 9 * 60 + 30
-        )
-        .scalar()
-        or 0
+        .all()
     )
+    
+    late_arrivals = 0
+    for att, usr in attendance_for_late_calc:
+        # Get applicable office timing (department-specific or global)
+        timing = office_timings_map.get(usr.department) or office_timings_map.get("__global__")
+        
+        if timing:
+            # Calculate late threshold (start_time + grace_minutes)
+            start_hour = timing.start_time.hour
+            start_minute = timing.start_time.minute
+            grace_minutes = timing.check_in_grace_minutes or 0
+            
+            # Convert to total minutes for comparison
+            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes > start_total_minutes:
+                late_arrivals += 1
+        else:
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM
+            if att.check_in.hour > 9 or (att.check_in.hour == 9 and att.check_in.minute > 45):
+                late_arrivals += 1
     pending_leaves = (
         db.query(func.count(Leave.leave_id))
-        .join(User, User.user_id == Leave.user_id)
-        .filter(
-            Leave.status == "Pending",
-            User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
-            User.is_active.is_(True),
-        )
+        .filter(Leave.status == "Pending")
         .scalar()
         or 0
     )
     active_tasks = (
-        db.query(func.count(Task.task_id)).filter(Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)])).scalar() or 0
+        db.query(func.count(Task.task_id))
+        .filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
+        .scalar() or 0
     )
     completed_tasks = (
-        db.query(func.count(Task.task_id)).filter(Task.status == str(TaskStatus.COMPLETED)).scalar() or 0
+        db.query(func.count(Task.task_id))
+        .filter(Task.status == TaskStatus.COMPLETED.value)
+        .scalar() or 0
     )
     # Department performance (by presence rate today)
     dept_names = [row[0] for row in db.query(User.department).filter(User.department.isnot(None)).distinct().all()]
@@ -114,19 +143,41 @@ def admin_dashboard(db: Session = Depends(get_db)):
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
             # Fallback to default 9:30 AM + 15 min grace = 9:45 AM
-            status = 'on-time' if att.check_in.hour < 9 or (att.check_in.hour == 9 and att.check_in.minute <= 45) else 'late'
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
+        # Convert check_in time to IST for frontend display.
+        # If stored as naive datetime (no tzinfo), treat it as IST to avoid shifting by 5.5h.
+        if att.check_in.tzinfo is None:
+            ist_check_in = localize_ist(att.check_in)
+        else:
+            ist_check_in = utc_to_ist(att.check_in)
         recent_activities.append({
             "id": att.attendance_id,
             "type": "check-in",
             "user": usr.name,
-            "time": att.check_in.isoformat(),
+            "time": ist_check_in.isoformat(),
             "status": status,
         })
 
@@ -215,11 +266,15 @@ def hr_dashboard(db: Session = Depends(get_db)):
     recent_activities = []
 
     for leave, usr in recent_leave_requests:
+        # Convert leave start_date to IST for frontend display
+        leave_time = leave.start_date or now_ist()
+        if leave_time.tzinfo is None:
+            leave_time = utc_to_ist(leave_time)
         recent_activities.append({
             "id": f"leave-{leave.leave_id}",
             "type": "leave",
             "user": usr.name,
-            "time": (leave.start_date or datetime.utcnow()).isoformat(),
+            "time": leave_time.isoformat(),
             "status": (leave.status or "pending").lower(),
             "description": leave.reason or f"{leave.leave_type or 'Leave'} request",
         })
@@ -242,29 +297,52 @@ def hr_dashboard(db: Session = Depends(get_db)):
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
-            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
-            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM (consistent with admin)
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
+        # Convert UTC check_in time to IST for frontend display
+        check_in_time = att.check_in if att.check_in else now_ist()
+        ist_check_in = utc_to_ist(check_in_time)
         recent_activities.append({
             "id": f"attendance-{att.attendance_id}",
             "type": "attendance",
             "user": usr.name,
-            "time": att.check_in.isoformat() if att.check_in else datetime.utcnow().isoformat(),
+            "time": ist_check_in.isoformat(),
             "status": status,
             "description": "Checked in",
         })
 
     for joiner in recent_joiners_records:
+        # Convert joining date to IST for frontend display
+        join_time = joiner.joining_date or joiner.created_at or now_ist()
+        if join_time.tzinfo is None:
+            join_time = utc_to_ist(join_time)
         recent_activities.append({
             "id": f"join-{joiner.user_id}",
             "type": "join",
             "user": joiner.name,
-            "time": (joiner.joining_date or joiner.created_on or datetime.utcnow()).isoformat(),
+            "time": join_time.isoformat(),
             "status": "new-joiner",
             "description": f"Joined {joiner.department or 'company'}",
         })
@@ -311,13 +389,13 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     active_tasks = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)]))
+        .filter(User.department == dept, Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
         .scalar() or 0
     )
     completed_tasks = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == str(TaskStatus.COMPLETED))
+        .filter(User.department == dept, Task.status == TaskStatus.COMPLETED.value)
         .scalar() or 0
     )
     pending_approvals = (
@@ -337,7 +415,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         .join(User, User.user_id == Task.assigned_to)
         .filter(
             User.department == dept,
-            Task.status != str(TaskStatus.COMPLETED),
+            Task.status != TaskStatus.COMPLETED.value,
             Task.due_date.isnot(None),
             Task.due_date < datetime.utcnow()
         )
@@ -375,19 +453,37 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
-            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
-            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM (consistent with admin)
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
+        # Convert UTC check_in time to IST for frontend display
+        ist_check_in = utc_to_ist(att.check_in)
         activities.append({
             "id": f"attendance-{att.attendance_id}",
             "type": "attendance",
             "user": usr.name,
-            "time": att.check_in.isoformat(),
+            "time": ist_check_in.isoformat(),
             "description": "Checked in",
             "status": status,
         })
@@ -406,11 +502,13 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         .all()
     )
     for leave, usr in pending_leaves:
+        # Convert leave start_date to IST for frontend display
+        ist_start_date = utc_to_ist(leave.start_date) if leave.start_date else now_ist()
         activities.append({
             "id": f"leave-{leave.leave_id}",
             "type": "leave",
             "user": usr.name,
-            "time": leave.start_date.isoformat(),
+            "time": ist_start_date.isoformat(),
             "description": "Leave request pending approval",
             "status": leave.status.lower(),
         })
@@ -424,11 +522,15 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         .all()
     )
     for task, usr in recent_tasks:
+        # Convert task due_date to IST for frontend display
+        task_time = task.due_date or now_ist()
+        if task_time.tzinfo is None:
+            task_time = utc_to_ist(task_time)
         activities.append({
             "id": f"task-{task.task_id}",
             "type": "task",
             "user": usr.name,
-            "time": (task.due_date or datetime.utcnow()).isoformat(),
+            "time": task_time.isoformat(),
             "description": task.title,
             "status": task.status.lower(),
         })
@@ -445,7 +547,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
             .all()
         )
         total_lead_tasks = len(lead_tasks)
-        completed_lead_tasks = len([t for t in lead_tasks if t.status == str(TaskStatus.COMPLETED)])
+        completed_lead_tasks = len([t for t in lead_tasks if t.status == TaskStatus.COMPLETED.value])
         completion_rate = int((completed_lead_tasks / max(total_lead_tasks, 1)) * 100)
         member_ids = {task.assigned_to for task in lead_tasks if task.assigned_to}
         team_performance.append({
@@ -501,13 +603,13 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
     tasks_in_progress = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == str(TaskStatus.IN_PROGRESS))
+        .filter(User.department == dept, Task.status == TaskStatus.IN_PROGRESS.value)
         .scalar() or 0
     )
     completed_today = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == str(TaskStatus.COMPLETED))
+        .filter(User.department == dept, Task.status == TaskStatus.COMPLETED.value)
         .scalar() or 0
     )
     pending_reviews = 0  # Not modeled
@@ -541,19 +643,37 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
             grace_minutes = timing.check_in_grace_minutes or 0
             
             # Convert to total minutes for comparison
-            start_total_minutes = start_hour * 60 + start_minute + grace_minutes
+            office_start_minutes = start_hour * 60 + start_minute
+            late_threshold_minutes = office_start_minutes + grace_minutes
             checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
             
-            status = 'on-time' if checkin_total_minutes <= start_total_minutes else 'late'
+            # Determine status: early, on-time, or late
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         else:
-            # Fallback to default 10:00 AM + 15 min grace = 10:15 AM
-            status = 'on-time' if att.check_in.hour < 10 or (att.check_in.hour == 10 and att.check_in.minute <= 15) else 'late'
+            # Fallback to default 9:30 AM + 15 min grace = 9:45 AM (consistent with admin)
+            office_start_minutes = 9 * 60 + 30  # 9:30 AM = 570 minutes
+            late_threshold_minutes = office_start_minutes + 15  # 9:45 AM = 585 minutes
+            checkin_total_minutes = att.check_in.hour * 60 + att.check_in.minute
+            
+            if checkin_total_minutes < office_start_minutes:
+                status = 'early'
+            elif checkin_total_minutes <= late_threshold_minutes:
+                status = 'on-time'
+            else:
+                status = 'late'
         
+        # Convert UTC check_in time to IST for frontend display
+        ist_check_in = utc_to_ist(att.check_in)
         recent_activities.append({
             "id": att.attendance_id,
             "type": "check-in",
             "user": usr.name,
-            "time": att.check_in.isoformat(),
+            "time": ist_check_in.isoformat(),
             "status": status,
         })
 
@@ -577,8 +697,8 @@ def employee_dashboard(current_user=Depends(get_current_user), db: Session = Dep
     today_start, today_end = _today_bounds()
 
     tasks_assigned = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id).scalar() or 0
-    tasks_completed = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status == str(TaskStatus.COMPLETED)).scalar() or 0
-    tasks_pending = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)])).scalar() or 0
+    tasks_completed = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status == TaskStatus.COMPLETED.value).scalar() or 0
+    tasks_pending = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])).scalar() or 0
 
     # Leaves available not modeled; return 0 and expose leavesTaken from approved leaves this year
     leaves_taken = db.query(func.count(Leave.leave_id)).filter(Leave.user_id == user_id, Leave.status == "Approved").scalar() or 0

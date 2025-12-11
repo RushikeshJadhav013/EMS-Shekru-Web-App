@@ -325,40 +325,77 @@ export default function DepartmentManagement() {
     setFormData((prev) => ({ ...prev, description: e.target.value }));
   }, []);
 
-  useEffect(() => {
-    const loadDepartments = async () => {
-      setIsLoading(true);
-      try {
-        const data = await apiService.getDepartments();
-        const mapped: ExtendedDepartment[] = (data || []).map((dept: ApiDepartment) => ({
-          id: dept.id,
-          name: dept.name,
-          code: dept.code,
-          managerId: dept.manager_id?.toString() ?? '',
-          description: dept.description ?? '',
-          status: (dept.status as 'active' | 'inactive') || 'active',
-          employeeCount: dept.employee_count ?? 0,
-          budget: dept.budget ?? 0,
-          location: dept.location ?? '',
-          createdAt: dept.created_at,
-          updatedAt: dept.updated_at,
-        }));
-        setDepartments(mapped);
-      } catch (error) {
-        console.error('Failed to load departments:', error);
-        toast({
-          title: 'Error',
-          description:
-            error instanceof Error ? error.message : 'Failed to load departments',
-          variant: 'destructive',
-        });
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadDepartments();
+  const loadDepartments = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const data = await apiService.getDepartments();
+      const mapped: ExtendedDepartment[] = (data || []).map((dept: ApiDepartment) => ({
+        id: dept.id,
+        name: dept.name,
+        code: dept.code,
+        managerId: dept.manager_id?.toString() ?? '',
+        description: dept.description ?? '',
+        status: (dept.status as 'active' | 'inactive') || 'active',
+        employeeCount: dept.employee_count ?? 0,
+        budget: dept.budget ?? 0,
+        location: dept.location ?? '',
+        createdAt: dept.created_at,
+        updatedAt: dept.updated_at,
+      }));
+      setDepartments(mapped);
+    } catch (error) {
+      console.error('Failed to load departments:', error);
+      toast({
+        title: 'Error',
+        description:
+          error instanceof Error ? error.message : 'Failed to load departments',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  const handleSyncDepartments = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const result = await apiService.syncDepartmentsFromUsers();
+      
+      // Reload departments after sync
+      await loadDepartments();
+      
+      toast({
+        variant: 'success',
+        title: 'Sync Completed',
+        description: `Created ${result.created} new departments, updated ${result.updated} existing departments.`,
+      });
+    } catch (error) {
+      console.error('Failed to sync departments:', error);
+      toast({
+        title: 'Error',
+        description:
+          error instanceof Error ? error.message : 'Failed to sync departments',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadDepartments]);
+
+  useEffect(() => {
+    // Auto-sync departments from users on mount, then load
+    const initializeDepartments = async () => {
+      try {
+        await apiService.syncDepartmentsFromUsers();
+      } catch (error) {
+        // Silently fail sync, still load existing departments
+        console.warn('Auto-sync failed:', error);
+      }
+      await loadDepartments();
+    };
+    
+    initializeDepartments();
+  }, [loadDepartments]);
 
   // Load all employees for auto-calculation
   useEffect(() => {
@@ -476,10 +513,16 @@ export default function DepartmentManagement() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
-              className="gap-2 border-2 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500 hover:bg-white dark:hover:bg-slate-900"
+              onClick={handleSyncDepartments}
+              disabled={isLoading}
+              className="gap-2 border-2 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
             >
-              <SlidersHorizontal className="h-4 w-4" />
-              Quick Filters
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Users className="h-4 w-4" />
+              )}
+              Sync from Users
             </Button>
             <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
               <DialogTrigger asChild>
@@ -488,31 +531,35 @@ export default function DepartmentManagement() {
                   New Department
                 </Button>
               </DialogTrigger>
-              <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] overflow-y-auto border-2 shadow-2xl">
-                <DialogHeader>
-                  <DialogTitle className="text-xl font-semibold">
-                    Create New Department
-                  </DialogTitle>
-                </DialogHeader>
-                <DepartmentForm
-                  mode="create"
-                  formData={formData}
-                  managers={managers}
-                  managerLoadError={managerLoadError}
-                  isManagersLoading={isManagersLoading}
-                  isSaving={isSaving}
-                  selectedDepartment={selectedDepartment}
-                  onNameChange={handleNameChange}
-                  onCodeChange={handleCodeChange}
-                  onManagerChange={handleManagerChange}
-                  onStatusChange={handleStatusChange}
-                  onEmployeeCountChange={handleEmployeeCountChange}
-                  onBudgetChange={handleBudgetChange}
-                  onLocationChange={handleLocationChange}
-                  onDescriptionChange={handleDescriptionChange}
-                  onCancel={handleCreateCancel}
-                  onSubmit={handleCreateDepartment}
-                />
+              <DialogContent className="w-[95vw] max-w-2xl max-h-[85vh] p-0 border-2 shadow-2xl flex flex-col">
+                <div className="px-6 pt-6 pb-2">
+                  <DialogHeader>
+                    <DialogTitle className="text-xl font-semibold">
+                      Create New Department
+                    </DialogTitle>
+                  </DialogHeader>
+                </div>
+                <div className="overflow-y-auto px-6 pb-6 flex-1">
+                  <DepartmentForm
+                    mode="create"
+                    formData={formData}
+                    managers={managers}
+                    managerLoadError={managerLoadError}
+                    isManagersLoading={isManagersLoading}
+                    isSaving={isSaving}
+                    selectedDepartment={selectedDepartment}
+                    onNameChange={handleNameChange}
+                    onCodeChange={handleCodeChange}
+                    onManagerChange={handleManagerChange}
+                    onStatusChange={handleStatusChange}
+                    onEmployeeCountChange={handleEmployeeCountChange}
+                    onBudgetChange={handleBudgetChange}
+                    onLocationChange={handleLocationChange}
+                    onDescriptionChange={handleDescriptionChange}
+                    onCancel={handleCreateCancel}
+                    onSubmit={handleCreateDepartment}
+                  />
+                </div>
               </DialogContent>
             </Dialog>
           </div>
@@ -592,7 +639,7 @@ export default function DepartmentManagement() {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search by name, code, or location..."
+                    placeholder="Search by name, code, or location"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="pl-9 h-10 text-sm"
@@ -657,7 +704,7 @@ export default function DepartmentManagement() {
                   <TableHead>Budget</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead className="text-center">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -726,11 +773,11 @@ export default function DepartmentManagement() {
                                 : 'bg-slate-400 text-white border-0 px-2 py-0.5 shadow-sm'
                             }
                           >
-                            {department.status}
+                            {department.status.charAt(0).toUpperCase() + department.status.slice(1)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1.5">
+                        <TableCell className="text-center">
+                          <div className="flex justify-center gap-1.5">
                             <Button
                               size="sm"
                               variant="ghost"
@@ -811,29 +858,33 @@ export default function DepartmentManagement() {
 
       {/* Edit Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="w-[95vw] max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Department</DialogTitle>
-          </DialogHeader>
-          <DepartmentForm
-            mode="edit"
-            formData={formData}
-            managers={managers}
-            managerLoadError={managerLoadError}
-            isManagersLoading={isManagersLoading}
-            isSaving={isSaving}
-            selectedDepartment={selectedDepartment}
-            onNameChange={handleNameChange}
-            onCodeChange={handleCodeChange}
-            onManagerChange={handleManagerChange}
-            onStatusChange={handleStatusChange}
-            onEmployeeCountChange={handleEmployeeCountChange}
-            onBudgetChange={handleBudgetChange}
-            onLocationChange={handleLocationChange}
-            onDescriptionChange={handleDescriptionChange}
-            onCancel={handleEditCancel}
-            onSubmit={handleUpdateDepartment}
-          />
+        <DialogContent className="w-[95vw] max-w-2xl max-h-[80vh] p-0 flex flex-col">
+          <div className="px-6 pt-6 pb-2">
+            <DialogHeader>
+              <DialogTitle>Edit Department</DialogTitle>
+            </DialogHeader>
+          </div>
+          <div className="overflow-y-auto px-6 pb-6 flex-1">
+            <DepartmentForm
+              mode="edit"
+              formData={formData}
+              managers={managers}
+              managerLoadError={managerLoadError}
+              isManagersLoading={isManagersLoading}
+              isSaving={isSaving}
+              selectedDepartment={selectedDepartment}
+              onNameChange={handleNameChange}
+              onCodeChange={handleCodeChange}
+              onManagerChange={handleManagerChange}
+              onStatusChange={handleStatusChange}
+              onEmployeeCountChange={handleEmployeeCountChange}
+              onBudgetChange={handleBudgetChange}
+              onLocationChange={handleLocationChange}
+              onDescriptionChange={handleDescriptionChange}
+              onCancel={handleEditCancel}
+              onSubmit={handleUpdateDepartment}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

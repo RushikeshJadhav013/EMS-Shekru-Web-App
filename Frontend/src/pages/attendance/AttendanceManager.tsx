@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,11 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings, LogOut, AlertTriangle, CheckCircle2, Timer } from 'lucide-react';
+import { Calendar, Clock, MapPin, Search, Filter, Download, AlertCircle, CheckCircle, Users, X, User, Settings, LogOut, AlertTriangle, CheckCircle2, Timer, FileSpreadsheet, FileText } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { AttendanceRecord } from '@/types';
 import { format, subMonths, subDays } from 'date-fns';
+import { formatIST, formatDateTimeIST, formatTimeIST, formatDateIST, todayIST, formatDateTimeComponentsIST, parseToIST, nowIST } from '@/utils/timezone';
 import { DatePicker } from '@/components/ui/date-picker';
+import OnlineStatusIndicator from '@/components/attendance/OnlineStatusIndicator';
 
 interface EmployeeAttendance extends AttendanceRecord {
   userName: string;
@@ -26,6 +28,7 @@ interface EmployeeAttendance extends AttendanceRecord {
   scheduledEnd?: string | null;
   workSummary?: string | null;
   workReport?: string | null;
+  workLocation?: string;
 }
 
 interface OfficeTiming {
@@ -59,10 +62,11 @@ const AttendanceManager: React.FC = () => {
   const [selectedRecord, setSelectedRecord] = useState<EmployeeAttendance | null>(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
 const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: string | null }>({ open: false, summary: null });
+  const [locationModal, setLocationModal] = useState<{ open: boolean; location: EmployeeAttendance | null }>({ open: false, location: null });
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
-  const [filterDate, setFilterDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [filterDate, setFilterDate] = useState(todayIST());
+  const [selectedDate, setSelectedDate] = useState<Date>(nowIST());
   const [isExporting, setIsExporting] = useState(false);
   const [summary, setSummary] = useState<{ total_employees: number; present_today: number; late_arrivals: number; early_departures: number; absent_today: number }>({ total_employees: 0, present_today: 0, late_arrivals: 0, early_departures: 0, absent_today: 0 });
   
@@ -95,23 +99,54 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     checkInGrace: 15,
     checkOutGrace: 0,
   });
+  const [onlineStatusMap, setOnlineStatusMap] = useState<Record<number, boolean>>({});
+  
+  // Ref for scrolling to department form when editing
+  const departmentFormRef = useRef<HTMLDivElement>(null);
  
   const getAuthHeaders = () => {
     const token = localStorage.getItem('token');
     return token ? { Authorization: token } : {};
   };
 
+  const fetchAllOnlineStatus = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://staffly.space/attendance/current-online-status', {
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const statusMap: Record<number, boolean> = {};
+        Object.keys(data).forEach(userId => {
+          statusMap[parseInt(userId)] = data[userId].is_online;
+        });
+        setOnlineStatusMap(statusMap);
+      }
+    } catch (error) {
+      console.error('Failed to fetch online status:', error);
+    }
+  };
+
   const resolveMediaUrl = (url?: string | null) => {
     if (!url) return '';
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
     const normalized = url.startsWith('/') ? url : `/${url}`;
-    return `http://127.0.0.1:8000${normalized}`;
+    return `https://staffly.space${normalized}`;
   };
 
   useEffect(() => {
     loadAllAttendance();
     fetchSummary();
     loadEmployees();
+    fetchAllOnlineStatus();
+    
+    // Fetch online status every 15 seconds
+    const interval = setInterval(fetchAllOnlineStatus, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -159,7 +194,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
   const loadEmployees = async () => {
     try {
-      const res = await fetch('http://127.0.0.1:8000/employees');
+      const res = await fetch('https://staffly.space/employees');
       if (!res.ok) throw new Error(`Failed to load employees: ${res.status}`);
       const data = await res.json();
       const departmentSet = new Set<string>();
@@ -186,7 +221,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     if (!isAdmin) return;
     setOfficeFormLoading(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
+      const res = await fetch('https://staffly.space/attendance/office-hours', {
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeaders(),
@@ -199,8 +234,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       const globalTiming = data.find((entry) => !entry.department || entry.department === '');
       if (globalTiming) {
         setGlobalTimingForm({
-          startTime: (globalTiming.start_time || '').slice(0, 5) || '09:30',
-          endTime: (globalTiming.end_time || '').slice(0, 5) || '18:00',
+          startTime: (globalTiming.start_time || '').slice(0, 5) || '10:00 AM',
+          endTime: (globalTiming.end_time || '').slice(0, 5) || '07:00PM',
           checkInGrace: globalTiming.check_in_grace_minutes ?? 0,
           checkOutGrace: globalTiming.check_out_grace_minutes ?? 0,
         });
@@ -238,7 +273,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         check_in_grace_minutes: resolveGraceValue(globalTimingForm.checkInGrace),
         check_out_grace_minutes: resolveGraceValue(globalTimingForm.checkOutGrace),
       };
-      const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
+      const res = await fetch('https://staffly.space/attendance/office-hours', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -280,7 +315,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         check_in_grace_minutes: resolveGraceValue(departmentTimingForm.checkInGrace),
         check_out_grace_minutes: resolveGraceValue(departmentTimingForm.checkOutGrace),
       };
-      const res = await fetch('http://127.0.0.1:8000/attendance/office-hours', {
+      const res = await fetch('https://staffly.space/attendance/office-hours', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -309,10 +344,32 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
   const handleDepartmentTimingEdit = (timing: OfficeTiming) => {
     setDepartmentTimingForm({
       department: timing.department || '',
-      startTime: (timing.start_time || '').slice(0, 5) || '09:30',
-      endTime: (timing.end_time || '').slice(0, 5) || '18:00',
+      startTime: (timing.start_time || '').slice(0, 5) || '10:00 AM',
+      endTime: (timing.end_time || '').slice(0, 5) || '07:00 PM',
       checkInGrace: timing.check_in_grace_minutes ?? 0,
       checkOutGrace: timing.check_out_grace_minutes ?? 0,
+    });
+    
+    // Scroll to the form and provide visual feedback
+    setTimeout(() => {
+      if (departmentFormRef.current) {
+        departmentFormRef.current.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+        
+        // Add a brief highlight effect
+        departmentFormRef.current.classList.add('ring-4', 'ring-purple-400', 'ring-opacity-50');
+        setTimeout(() => {
+          departmentFormRef.current?.classList.remove('ring-4', 'ring-purple-400', 'ring-opacity-50');
+        }, 2000);
+      }
+    }, 100);
+    
+    // Show toast notification
+    toast({
+      title: 'Editing Department Timing',
+      description: `Form populated with settings for ${timing.department || 'All Departments'}. Scroll up to edit.`,
     });
   };
 
@@ -323,7 +380,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
     try {
       setOfficeFormLoading(true);
-      const res = await fetch(`http://127.0.0.1:8000/attendance/office-hours/${timing.id}`, {
+      const res = await fetch(`https://staffly.space/attendance/office-hours/${timing.id}`, {
         method: 'DELETE',
         headers: {
           ...getAuthHeaders(),
@@ -358,7 +415,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
   const fetchSummary = async () => {
     try {
-      const res = await fetch('http://127.0.0.1:8000/attendance/summary');
+      const res = await fetch('https://staffly.space/attendance/summary');
       if (!res.ok) throw new Error(`Failed to load summary: ${res.status}`);
       const data = await res.json();
       setSummary(data);
@@ -377,7 +434,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     (async () => {
       try {
         const query = targetDate ? `?date=${encodeURIComponent(targetDate)}` : '';
-        const res = await fetch(`http://127.0.0.1:8000/attendance/today${query}`);
+        const res = await fetch(`https://staffly.space/attendance/today${query}`);
         
         if (!res.ok) {
           const errorText = await res.text();
@@ -407,7 +464,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             userEmail: rec.userEmail || rec.email || '',
             employeeId: rec.employee_id || rec.employeeId || String(rec.user_id || rec.userId || ''),
             department: rec.department || 'N/A',
-            date: checkInDate ? format(checkInDate, 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+            date: checkInDate ? formatDateIST(checkInDate) : todayIST(),
             checkInTime: checkIn || undefined,
             checkOutTime: checkOut || undefined,
             checkInLocation: { 
@@ -425,6 +482,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             scheduledEnd: scheduledEnd || undefined,
             workSummary: rec.workSummary || rec.work_summary || null,
             workReport: resolveMediaUrl(rec.workReport || rec.work_report),
+            workLocation: rec.workLocation || rec.work_location || 'office',
           };
         });
         
@@ -493,7 +551,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="bg-blue-500 hover:bg-blue-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <Timer className="h-2.5 w-2.5" />
-          Awaiting
+          {t.attendance.awaiting}
         </Badge>,
       );
     }
@@ -506,7 +564,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="bg-red-500 hover:bg-red-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <AlertTriangle className="h-2.5 w-2.5" />
-          Late
+          {t.attendance.late}
         </Badge>,
       );
     }
@@ -519,7 +577,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="border-orange-500 bg-orange-50 text-orange-600 hover:bg-orange-100 text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <LogOut className="h-2.5 w-2.5" />
-          Early
+          {t.attendance.early}
         </Badge>,
       );
     }
@@ -532,7 +590,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
           className="bg-green-500 hover:bg-green-600 text-white text-[10px] flex items-center gap-0.5 px-1.5 py-0.5 shadow-sm"
         >
           <CheckCircle2 className="h-2.5 w-2.5" />
-          On Time
+          {t.attendance.onTime}
         </Badge>,
       );
     }
@@ -540,32 +598,9 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     return badges;
   };
 
-  const formatIST = (dateString: string, timeString?: string) => {
+  const formatAttendanceTime = (dateString: string, timeString?: string) => {
     if (!timeString) return '-';
-    
-    // If timeString is an ISO datetime string (contains 'T'), use it directly
-    let date: Date;
-    if (timeString.includes('T')) {
-      // It's an ISO datetime string - check if it has timezone info
-      if (timeString.includes('Z') || timeString.includes('+') || timeString.includes('-', 10)) {
-        // Has explicit timezone info
-        date = new Date(timeString);
-      } else {
-        // No timezone info - assume UTC (backend stores UTC)
-        date = new Date(timeString + 'Z');
-      }
-    } else {
-      // It's just a time string (HH:MM:SS), assume UTC and combine with date
-      date = new Date(`${dateString}T${timeString}Z`);
-    }
-    
-    // Convert to IST and format
-    return date.toLocaleString('en-IN', { 
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
+    return formatDateTimeComponentsIST(dateString, timeString, 'hh:mm a');
   };
 
   const handleQuickFilter = (filter: string) => {
@@ -592,8 +627,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     }
   };
 
-  const openExportModal = (type: 'csv' | 'pdf') => {
-    setExportType(type);
+  const openExportModal = () => {
+    setExportType(null);
     setExportModalOpen(true);
     // Set default dates
     const today = new Date();
@@ -648,7 +683,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         params.append('end_date', format(endDate, 'yyyy-MM-dd'));
       }
 
-      const apiUrl = `http://127.0.0.1:8000/attendance/download/${exportType}?${params.toString()}`;
+      const apiUrl = `https://staffly.space/attendance/download/${exportType}?${params.toString()}`;
       const res = await fetch(apiUrl, { method: 'GET' });
 
       if (!res.ok) {
@@ -700,13 +735,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
     }
   };
 
-  const exportToCSV = () => {
-    openExportModal('csv');
-  };
-  
-  const exportToPDF = () => {
-    openExportModal('pdf');
-  };
+
 
 
   const todayStats = {
@@ -799,43 +828,29 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <Clock className="h-7 w-7 text-white" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold">Employee Attendance</h2>
-              <p className="text-sm text-muted-foreground mt-1">Monitor team attendance and export reports</p>
+              <h2 className="text-2xl font-bold">{t.attendance.employeeAttendance}</h2>
+              <p className="text-sm text-muted-foreground mt-1">{t.attendance.monitorTeamAttendance}</p>
             </div>
           </div>
-          <div className="flex gap-2">
-            <Button 
-              onClick={exportToCSV} 
-              variant="outline" 
-              className="gap-2 bg-white dark:bg-gray-900 hover:bg-green-50 dark:hover:bg-green-950 border-2 border-green-600 hover:border-green-700 font-medium shadow-md hover:shadow-lg transition-all"
-              disabled={isExporting}
-              style={{ color: '#15803d' }}
-            >
-              <Download className="h-4 w-4" style={{ color: '#15803d' }} />
-              <span className="font-semibold" style={{ color: '#15803d' }}>
-                {isExporting ? 'Exporting...' : 'Export CSV'}
-              </span>
-            </Button>
-            <Button 
-              onClick={exportToPDF} 
-              variant="outline" 
-              className="gap-2 bg-white dark:bg-gray-900 hover:bg-red-50 dark:hover:bg-red-950 border-2 border-red-600 hover:border-red-700 font-medium shadow-md hover:shadow-lg transition-all"
-              disabled={isExporting}
-              style={{ color: '#b91c1c' }}
-            >
-              <Download className="h-4 w-4" style={{ color: '#b91c1c' }} />
-              <span className="font-semibold" style={{ color: '#b91c1c' }}>
-                {isExporting ? 'Exporting...' : 'Export PDF'}
-              </span>
-            </Button>
-          </div>
+          <Button 
+            onClick={() => setExportModalOpen(true)} 
+            variant="outline" 
+            className="gap-2 bg-white dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-950 border-2 border-blue-600 hover:border-blue-700 font-medium shadow-md hover:shadow-lg transition-all"
+            disabled={isExporting}
+            style={{ color: '#2563eb' }}
+          >
+            <Download className="h-4 w-4" style={{ color: '#2563eb' }} />
+            <span className="font-semibold" style={{ color: '#2563eb' }}>
+              {isExporting ? t.attendance.exporting : 'Export'}
+            </span>
+          </Button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-blue-50">Total Employees</CardTitle>
+            <CardTitle className="text-sm font-medium text-blue-50">{t.attendance.totalEmployees}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.total}</div>
@@ -843,7 +858,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </Card>
         <Card className="border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-green-50">Present Today</CardTitle>
+            <CardTitle className="text-sm font-medium text-green-50">{t.attendance.presentToday}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.present}</div>
@@ -851,7 +866,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </Card>
         <Card className="border-0 bg-gradient-to-br from-orange-500 to-amber-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-orange-50">Late Arrivals</CardTitle>
+            <CardTitle className="text-sm font-medium text-orange-50">{t.attendance.lateArrivals}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.late}</div>
@@ -859,7 +874,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </Card>
         <Card className="border-0 bg-gradient-to-br from-yellow-500 to-amber-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-yellow-50">Early Departures</CardTitle>
+            <CardTitle className="text-sm font-medium text-yellow-50">{t.attendance.earlyDepartures}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{todayStats.early}</div>
@@ -869,8 +884,8 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
 
       <Card className="border-0 shadow-lg">
         <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
-          <CardTitle className="text-xl font-semibold">Attendance Records</CardTitle>
-          <CardDescription>View and manage employee attendance</CardDescription>
+          <CardTitle className="text-xl font-semibold">{t.attendance.attendanceRecords}</CardTitle>
+          <CardDescription>{t.attendance.viewAndManage}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col md:flex-row gap-3 mb-6">
@@ -878,7 +893,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <div className="relative">
                 <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Search by name, email, employee ID, or department..."
+                  placeholder={t.attendance.searchPlaceholder}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="pl-10 h-11 bg-white dark:bg-gray-950 border-gray-200 dark:border-gray-800 focus:ring-2 focus:ring-blue-500"
@@ -888,13 +903,13 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <Select value={filterStatus} onValueChange={setFilterStatus}>
               <SelectTrigger className="w-[200px] h-11 bg-white dark:bg-gray-950">
                 <Filter className="h-4 w-4 mr-2" />
-                <SelectValue placeholder="Filter by status" />
+                <SelectValue placeholder={t.attendance.filterByStatus} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="present">On Schedule</SelectItem>
-                <SelectItem value="late">Late Arrivals</SelectItem>
-                <SelectItem value="early">Early Departures</SelectItem>
+                <SelectItem value="all">{t.attendance.allStatus}</SelectItem>
+                <SelectItem value="present">{t.attendance.onSchedule}</SelectItem>
+                <SelectItem value="late">{t.attendance.lateArrivals}</SelectItem>
+                <SelectItem value="early">{t.attendance.earlyDepartures}</SelectItem>
               </SelectContent>
             </Select>
             <DatePicker
@@ -907,7 +922,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                   loadAllAttendance(formatted);
                 }
               }}
-              placeholder="Select date"
+              placeholder={t.attendance.selectDate}
               className="w-[200px]"
             />
           </div>
@@ -917,17 +932,19 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <table className="w-full">
                 <thead className="bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
                   <tr className="hover:bg-transparent">
-                    <th className="text-left p-3 font-medium">Employee</th>
-                    <th className="text-left p-3 font-medium">Employee ID</th>
-                    <th className="text-left p-3 font-medium">Department</th>
-                    <th className="text-left p-3 font-medium">Check In</th>
-                    <th className="text-left p-3 font-medium">Check Out</th>
-                    <th className="text-left p-3 font-medium">Hours</th>
-                    <th className="text-left p-3 font-medium">Location</th>
-                    <th className="text-left p-3 font-medium">Selfie</th>
-                    <th className="text-left p-3 font-medium">Status</th>
-                    <th className="text-left p-3 font-medium">Work Summary</th>
-                    <th className="text-left p-3 font-medium">Work Report</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.employee}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.employeeId}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.department}</th>
+                    <th className="text-left p-3 font-medium">Work Location</th>
+                    <th className="text-left p-3 font-medium">Online Status</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.checkInTime}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.checkOutTime}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.hours}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.location}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.selfiePhoto}</th>
+                    <th className="text-left p-3 font-medium">{t.common.status}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.workSummary}</th>
+                    <th className="text-left p-3 font-medium">{t.attendance.workReport}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -950,24 +967,48 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                           <Badge variant="outline">{record.department}</Badge>
                         </td>
                         <td className="p-3">
+                          {record.workLocation === 'work_from_home' ? (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800">
+                              <div className="h-2 w-2 rounded-full bg-orange-500 animate-pulse"></div>
+                              <span className="text-xs font-medium text-orange-700 dark:text-orange-300">Work from Home</span>
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
+                              <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+                              <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Work from Office</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          {!record.checkOutTime ? (
+                            <OnlineStatusIndicator 
+                              isOnline={onlineStatusMap[parseInt(record.userId)] ?? true} 
+                              size="md"
+                              showLabel={true}
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Checked Out</span>
+                          )}
+                        </td>
+                        <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-green-500" />
-                            <span>{formatIST(record.date, record.checkInTime)}</span>
+                            <span>{formatAttendanceTime(record.date, record.checkInTime)}</span>
                           </div>
                           {record.scheduledStart && (
                             <div className="text-xs text-muted-foreground">
-                              Scheduled: {record.scheduledStart}
+                              {t.attendance.scheduled}: {record.scheduledStart}
                             </div>
                           )}
                         </td>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-red-500" />
-                            <span>{formatIST(record.date, record.checkOutTime)}</span>
+                            <span>{formatAttendanceTime(record.date, record.checkOutTime)}</span>
                           </div>
                           {record.scheduledEnd && (
                             <div className="text-xs text-muted-foreground">
-                              Scheduled: {record.scheduledEnd}
+                              {t.attendance.scheduled}: {record.scheduledEnd}
                             </div>
                           )}
                         </td>
@@ -977,10 +1018,19 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                           ) : '-'}
                         </td>
                         <td className="p-3">
-                          <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                            <MapPin className="h-3 w-3" />
-                            <span>{record.checkInLocation?.address ?? '-'}</span>
-                          </div>
+                          {record.checkInLocation?.address && record.checkInLocation.address !== '-' ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setLocationModal({ open: true, location: record })}
+                              className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950 h-8 px-3"
+                            >
+                              <MapPin className="h-4 w-4 mr-1" />
+                              View
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">-</span>
+                          )}
                         </td>
                         <td className="p-3">
                           <div 
@@ -1041,7 +1091,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                               rel="noopener noreferrer"
                               className="text-sm text-blue-600 hover:underline"
                             >
-                              View Report
+                              {t.attendance.viewReport}
                             </a>
                           ) : (
                             <span className="text-muted-foreground text-sm">—</span>
@@ -1053,7 +1103,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                     <tr>
                       <td colSpan={9} className="p-8 text-center text-muted-foreground">
                         <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                        <p>No attendance records found for the selected date</p>
+                        <p>{t.attendance.noRecordsFound}</p>
                       </td>
                     </tr>
                   )}
@@ -1071,6 +1121,9 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               <User className="h-5 w-5" />
               {selectedRecord?.userName}'s Attendance
             </DialogTitle>
+            <DialogDescription>
+              View check-in and check-out selfies with location and time information
+            </DialogDescription>
           </DialogHeader>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-4">
@@ -1078,7 +1131,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-green-500"></div>
-                <h3 className="font-medium">Check-in Selfie</h3>
+                <h3 className="font-medium">{t.attendance.checkInSelfie}</h3>
               </div>
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkInSelfie ? (
@@ -1099,11 +1152,11 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
                     <User className="h-12 w-12 mb-2" />
-                    <p>No selfie available</p>
+                    <p>{t.attendance.noSelfieAvailable}</p>
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatIST(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
+                  <p className="font-medium">Check-in: {selectedRecord?.checkInTime ? formatAttendanceTime(selectedRecord.date, selectedRecord.checkInTime) : 'N/A'}</p>
                   <p className="text-sm opacity-80">{selectedRecord?.checkInLocation?.address || 'Location not available'}</p>
                 </div>
               </div>
@@ -1113,7 +1166,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-red-500"></div>
-                <h3 className="font-medium">Check-out Selfie</h3>
+                <h3 className="font-medium">{t.attendance.checkOutSelfie}</h3>
               </div>
               <div className="relative aspect-[3/4] bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden">
                 {selectedRecord?.checkOutSelfie ? (
@@ -1134,13 +1187,13 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
                     <User className="h-12 w-12 mb-2" />
-                    <p>No check-out selfie</p>
-                    <p className="text-sm">Not checked out yet</p>
+                    <p>{t.attendance.checkOutSelfie}</p>
+                    <p className="text-sm">{t.attendance.notCheckedOut}</p>
                   </div>
                 )}
                 {selectedRecord?.checkOutTime && (
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                    <p className="font-medium">Check-out: {formatIST(selectedRecord.date, selectedRecord.checkOutTime)}</p>
+                    <p className="font-medium">Check-out: {formatAttendanceTime(selectedRecord.date, selectedRecord.checkOutTime)}</p>
                     <p className="text-sm opacity-80">{selectedRecord.checkOutLocation?.address || 'Location not available'}</p>
                   </div>
                 )}
@@ -1155,7 +1208,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
               className="gap-2"
             >
               <X className="h-4 w-4" />
-              Close
+              {t.common.close}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1167,15 +1220,55 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Work Summary</DialogTitle>
-            <DialogDescription>Detail submitted during check-out.</DialogDescription>
+            <DialogTitle>{t.attendance.workSummaryTitle}</DialogTitle>
+            <DialogDescription>{t.attendance.workSummaryDescription}</DialogDescription>
           </DialogHeader>
           <div className="py-4 text-sm text-muted-foreground whitespace-pre-wrap">
-            {summaryModal.summary || 'No summary provided.'}
+            {summaryModal.summary || t.attendance.noSummaryProvided}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSummaryModal({ open: false, summary: null })}>
-              Close
+              {t.common.close}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={locationModal.open}
+        onOpenChange={(open) => setLocationModal({ open, location: open ? locationModal.location : null })}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-blue-600" />
+              {t.attendance.checkInLocation}
+            </DialogTitle>
+            <DialogDescription>{t.attendance.fullLocationDetails}</DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4 border">
+              <div className="flex items-start gap-3">
+                <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <MapPin className="h-4 w-4 text-blue-600" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">{t.attendance.address}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed break-words">
+                    {locationModal.location?.checkInLocation?.address || t.attendance.locationNotAvailable}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setLocationModal({ open: false, location: null })}
+              className="gap-2"
+            >
+              <X className="h-4 w-4" />
+              {t.common.close}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1185,13 +1278,57 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
         <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col overflow-visible">
           <DialogHeader>
-            <DialogTitle>Export Attendance Report ({exportType?.toUpperCase()})</DialogTitle>
+            <DialogTitle>{t.attendance.exportReport}</DialogTitle>
             <DialogDescription>
-              Configure your export preferences. Select date range and employee filter options.
+              {t.attendance.configureExport}
             </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-6 py-4 flex-1 overflow-y-auto overflow-x-visible pr-1">
+            {/* Export Format Selection */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Export Format</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setExportType('csv')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'csv'
+                      ? 'border-green-600 bg-green-50 dark:bg-green-950'
+                      : 'border-gray-200 hover:border-green-300 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <FileSpreadsheet className={`h-8 w-8 ${exportType === 'csv' ? 'text-green-600' : 'text-gray-400'}`} />
+                    <span className={`font-semibold ${exportType === 'csv' ? 'text-green-600' : 'text-gray-600'}`}>
+                      CSV
+                    </span>
+                    <span className="text-xs text-muted-foreground text-center">
+                      Excel compatible
+                    </span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportType('pdf')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'pdf'
+                      ? 'border-red-600 bg-red-50 dark:bg-red-950'
+                      : 'border-gray-200 hover:border-red-300 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <FileText className={`h-8 w-8 ${exportType === 'pdf' ? 'text-red-600' : 'text-gray-400'}`} />
+                    <span className={`font-semibold ${exportType === 'pdf' ? 'text-red-600' : 'text-gray-600'}`}>
+                      PDF
+                    </span>
+                    <span className="text-xs text-muted-foreground text-center">
+                      Print ready
+                    </span>
+                  </div>
+                </button>
+              </div>
+            </div>
             {/* Quick Filter Dropdown */}
             <div className="space-y-2">
               <Label htmlFor="quick-filter" className="text-sm font-medium">Quick Filter</Label>
@@ -1409,9 +1546,10 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
             </Button>
             <Button
               onClick={performExport}
-              disabled={isExporting || (!startDate && !endDate) || (employeeFilter === 'specific' && !selectedEmployee)}
+              disabled={isExporting || !exportType || (!startDate && !endDate) || (employeeFilter === 'specific' && !selectedEmployee)}
+              className={exportType === 'csv' ? 'bg-green-600 hover:bg-green-700' : exportType === 'pdf' ? 'bg-red-600 hover:bg-red-700' : ''}
             >
-              {isExporting ? 'Exporting...' : `Export ${exportType?.toUpperCase()}`}
+              {isExporting ? 'Exporting...' : exportType ? `Export ${exportType.toUpperCase()}` : 'Select Format'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1554,7 +1692,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
         </CardContent>
       </Card>
 
-        <Card className="shadow-xl border border-purple-100 dark:border-slate-800">
+        <Card ref={departmentFormRef} className="shadow-xl border border-purple-100 dark:border-slate-800 transition-all duration-300">
           <CardHeader className="space-y-1 pb-4">
             <CardTitle className="text-xl font-semibold">Department Overrides</CardTitle>
             <CardDescription>

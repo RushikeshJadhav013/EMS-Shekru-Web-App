@@ -18,6 +18,7 @@ import {
   Target,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 const EmployeeDashboard: React.FC = () => {
@@ -38,8 +39,44 @@ const EmployeeDashboard: React.FC = () => {
   const [myTasks, setMyTasks] = useState<any[]>([]);
 
   useEffect(() => {
-    apiService.getEmployeeDashboard().then(setStats).catch(() => {});
-    apiService.getMyTasks().then(setMyTasks).catch(() => {});
+    const loadDashboard = async () => {
+      try {
+        const [dashboardData, tasksData] = await Promise.all([
+          apiService.getEmployeeDashboard(),
+          apiService.getMyTasks()
+        ]);
+        
+        // If task counts are 0, calculate from actual tasks
+        let tasksAssigned = dashboardData.tasksAssigned || 0;
+        let tasksCompleted = dashboardData.tasksCompleted || 0;
+        let tasksPending = dashboardData.tasksPending || 0;
+        
+        if (tasksAssigned === 0 && tasksData.length > 0) {
+          tasksAssigned = tasksData.length;
+          tasksCompleted = tasksData.filter((task: any) => 
+            task.status === 'Completed' || task.status === 'completed'
+          ).length;
+          tasksPending = tasksData.filter((task: any) => 
+            task.status !== 'Completed' && 
+            task.status !== 'completed' &&
+            task.status !== 'Cancelled' &&
+            task.status !== 'cancelled'
+          ).length;
+        }
+        
+        setStats({
+          ...dashboardData,
+          tasksAssigned,
+          tasksCompleted,
+          tasksPending,
+        });
+        setMyTasks(tasksData);
+      } catch (error) {
+        console.error('Failed to load dashboard:', error);
+      }
+    };
+    
+    loadDashboard();
   }, []);
 
   const formatWorkHours = (hours: number) => {
@@ -70,7 +107,7 @@ const EmployeeDashboard: React.FC = () => {
             {t.common.welcome}, {user?.name}!
           </h1>
           <p className="text-rose-100 mt-2 ml-15">
-            {new Date().toLocaleDateString(language === 'en' ? 'en-US' : language === 'hi' ? 'hi-IN' : 'mr-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatIST(nowIST(), 'EEEE, MMMM dd, yyyy')}
           </p>
         </div>
         <Button onClick={() => navigate('/employee/attendance')} className="gap-2 bg-white text-rose-700 hover:bg-rose-50">

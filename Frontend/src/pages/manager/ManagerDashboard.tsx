@@ -19,6 +19,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatTimeIST, formatIST, nowIST } from '@/utils/timezone';
 import { apiService } from '@/lib/api';
 
 interface TeamMemberStatus {
@@ -51,22 +52,47 @@ const ManagerDashboard: React.FC = () => {
   const [isLoadingTeamMembers, setIsLoadingTeamMembers] = useState(false);
 
   useEffect(() => {
-    apiService.getManagerDashboard()
-      .then((data) => {
+    const loadDashboard = async () => {
+      try {
+        const data = await apiService.getManagerDashboard();
+        
+        // If activeTasks is 0, try to get actual count from tasks API
+        let activeTasks = data.activeTasks || 0;
+        let pendingApprovals = data.pendingApprovals || 0;
+        
+        if (activeTasks === 0) {
+          try {
+            const tasks = await apiService.getMyTasks();
+            // Count tasks that are not completed
+            activeTasks = tasks.filter((task: any) => 
+              task.status !== 'Completed' && 
+              task.status !== 'completed' &&
+              task.status !== 'Cancelled' &&
+              task.status !== 'cancelled'
+            ).length;
+          } catch (error) {
+            console.log('Could not fetch tasks for count');
+          }
+        }
+        
         setStats({
           teamMembers: data.teamMembers || 0,
           presentToday: data.presentToday || 0,
           onLeave: data.onLeave || 0,
-          activeTasks: data.activeTasks || 0,
+          activeTasks,
           completedTasks: data.completedTasks || 0,
-          pendingApprovals: data.pendingApprovals || 0,
+          pendingApprovals,
           teamPerformancePercent: data.teamPerformancePercent || 0,
           overdueItems: data.overdueItems || 0,
         });
         setTeamActivities(data.teamActivities || []);
         setTeamPerformance(data.teamPerformance || []);
-      })
-      .catch(() => {});
+      } catch (error) {
+        console.error('Failed to load dashboard:', error);
+      }
+    };
+    
+    loadDashboard();
   }, []);
 
   useEffect(() => {
@@ -156,7 +182,7 @@ const ManagerDashboard: React.FC = () => {
             {t.common.welcome}, Manager!
           </h1>
           <p className="text-teal-100 mt-2 ml-15">
-            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatIST(nowIST(), 'EEEE, MMMM dd, yyyy')}
           </p>
         </div>
         <Button onClick={() => navigate('/manager/tasks')} className="gap-2 bg-white text-teal-700 hover:bg-teal-50">
@@ -167,10 +193,10 @@ const ManagerDashboard: React.FC = () => {
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/manager/teams')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-blue-50">
-              Team Members
+              {t.navigation.teamMembers}
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <Users className="h-5 w-5 text-white" />
@@ -178,25 +204,42 @@ const ManagerDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.teamMembers}</div>
-            <div className="flex items-center gap-1 mt-2">
-              <CheckCircle2 className="h-4 w-4 text-blue-100" />
-              <span className="text-sm text-blue-100">{stats.presentToday} present today</span>
-            </div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-blue-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/manager/teams');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/manager/attendance')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-green-50">
-              Team Performance
+              Present Today
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
-              <Target className="h-5 w-5 text-white" />
+              <Clock className="h-5 w-5 text-white" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.teamPerformancePercent}%</div>
-            <Progress value={stats.teamPerformancePercent} className="mt-2 h-2 bg-white/30" />
+            <div className="text-3xl font-bold">{stats.presentToday}</div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-green-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/manager/attendance');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
 
@@ -218,7 +261,7 @@ const ManagerDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg hover:shadow-xl transition-all duration-300">
+        <Card className="card-hover border-0 bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/manager/leaves')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-amber-50">
               Pending Approvals
@@ -229,9 +272,17 @@ const ManagerDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.pendingApprovals}</div>
-            <div className="flex items-center gap-1 mt-2">
-              <span className="text-sm text-amber-100">{stats.overdueItems} overdue</span>
-            </div>
+            <Button 
+              variant="link" 
+              className="p-0 h-auto mt-2 text-white hover:text-amber-100" 
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/manager/leaves');
+              }}
+            >
+              <span className="text-sm">View all</span>
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </CardContent>
         </Card>
       </div>
@@ -245,7 +296,7 @@ const ManagerDashboard: React.FC = () => {
               <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center">
                 <Activity className="h-5 w-5 text-white" />
               </div>
-              Team Activities
+              {t.navigation.teamActivities}
             </CardTitle>
             <CardDescription className="text-base">Recent updates from your team</CardDescription>
           </CardHeader>
@@ -269,7 +320,7 @@ const ManagerDashboard: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-muted-foreground">
-                    {new Date(activity.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {formatTimeIST(activity.time, 'hh:mm a')}
                   </p>
                   <Badge 
                     variant={
@@ -296,7 +347,7 @@ const ManagerDashboard: React.FC = () => {
               <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center">
                 <Target className="h-5 w-5 text-white" />
               </div>
-              Team Performance
+              {t.navigation.teamPerformance}
             </CardTitle>
             <CardDescription className="text-base">Task completion by team</CardDescription>
           </CardHeader>
@@ -326,15 +377,15 @@ const ManagerDashboard: React.FC = () => {
             <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center">
               <Users className="h-5 w-5 text-white" />
             </div>
-            Team Members Current Status
+            {t.navigation.teamMembers} Current Status
           </CardTitle>
           <CardDescription className="text-base">Current status and task progress</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {isLoadingTeamMembers ? (
-            <p className="text-sm text-muted-foreground text-center py-4">Loading team members...</p>
+            <p className="text-sm text-muted-foreground text-center py-4">{t.common.loadingTeamMembers}</p>
           ) : teamMembers.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">No team members found</p>
+            <p className="text-sm text-muted-foreground text-center py-4">{t.common.noTeamMembers}</p>
           ) : (
             teamMembers.map((member) => (
               <div key={member.userId} className="p-3 rounded-lg border space-y-2">
@@ -385,15 +436,15 @@ const ManagerDashboard: React.FC = () => {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/shift-schedule')}>
               <Clock className="h-5 w-5" />
-              <span className="text-xs">Shift Schedule</span>
+              <span className="text-xs">{t.navigation.shiftSchedule}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/teams')}>
               <Users className="h-5 w-5" />
-              <span className="text-xs">View Team</span>
+              <span className="text-xs">{t.navigation.viewTeam}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/attendance')}>
               <Clock className="h-5 w-5" />
-              <span className="text-xs">Team Attendance</span>
+              <span className="text-xs">{t.navigation.teamAttendance}</span>
             </Button>
             <Button variant="outline" className="h-auto py-3 flex-col gap-2" onClick={() => navigate('/manager/leaves')}>
               <CalendarDays className="h-5 w-5" />
