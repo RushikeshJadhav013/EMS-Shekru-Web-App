@@ -51,6 +51,7 @@ class AttendanceBase(BaseModel):
     gps_location: Optional[Union[Dict[str, Any], str]] = Field(None, description="GPS location data")
     selfie: Optional[str] = Field(None, description="Base64 encoded selfie image")
     location_data: Optional[Union[Dict[str, Any], str]] = Field(None, description="Detailed location data")
+    work_location: Optional[Literal['office', 'work_from_home']] = Field('office', description="Work location type: 'office' or 'work_from_home'")
 
 class AttendanceOut(AttendanceBase):
     attendance_id: int = Field(..., gt=0, description="Unique attendance ID")
@@ -60,7 +61,7 @@ class AttendanceOut(AttendanceBase):
     total_hours: float = Field(default=0.0, ge=0, le=24, description="Total work hours (0-24)")
     work_summary: Optional[constr(min_length=10, max_length=1000)] = Field(None, description="Work summary (10-1000 characters)")
     work_report: Optional[str] = Field(None, description="Work report file path or URL")
-    work_location: Optional[Literal['office', 'work_from_home']] = Field('office', description="Work location type")
+    # work_location is inherited from AttendanceBase
 
     @field_validator('check_out')
     @classmethod

@@ -265,7 +265,7 @@ def mark_notification_as_read(
 @router.get("/config/allocation", response_model=LeaveAllocationConfigOut)
 def get_leave_allocation_config(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles([RoleEnum.ADMIN]))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
 ):
     """
     Get the active leave allocation configuration.
@@ -287,7 +287,7 @@ def get_leave_allocation_config(
 def create_leave_allocation_config_route(
     config_data: LeaveAllocationConfigCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles([RoleEnum.ADMIN]))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
 ):
     """
     Create a new leave allocation configuration.
@@ -318,7 +318,7 @@ def update_leave_allocation_config_route(
     config_id: int,
     config_data: LeaveAllocationConfigUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles([RoleEnum.ADMIN]))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
 ):
     """
     Update an existing leave allocation configuration.

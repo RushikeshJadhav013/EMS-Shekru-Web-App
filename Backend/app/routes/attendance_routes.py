@@ -12,7 +12,7 @@ from app.schemas.attendance_schema import AttendanceOut, LocationData
 from fastapi.responses import StreamingResponse, JSONResponse
 from app.dependencies import get_current_user
 from app.enums import RoleEnum
-from typing import Optional, List, Dict, Any, Union, Tuple
+from typing import Optional, List, Dict, Any, Union, Tuple, Literal
 from decimal import Decimal
 from pydantic import BaseModel, ValidationError
 import base64
@@ -36,6 +36,7 @@ class AttendanceJSONPayload(BaseModel):
     location_data: Optional[Dict[str, Any]] = None
     work_summary: Optional[str] = None
     work_report: Optional[str] = None  # base64 data URL or raw base64
+    work_location: Optional[Literal['office', 'work_from_home']] = 'office'  # Work location type
 
 # ---------------------------------
 # Helper functions for Attendance
@@ -778,6 +779,7 @@ async def employee_check_in_route(
     gps_location: Optional[str] = Form(None),
     selfie: Optional[UploadFile] = File(None),
     location_data: Optional[str] = Form(None),
+    work_location: Optional[str] = Form('office'),
     db: Session = Depends(get_db)
 ):
     try:
@@ -817,9 +819,9 @@ async def employee_check_in_route(
         if existing_attendance:
             return _prepare_attendance_payload(existing_attendance)
 
-        # Check if user has approved work from home leave for today
-        # Set work location to office (WFH option removed)
-        work_location = 'office'
+        # Validate and set work location (default to 'office')
+        if work_location not in ['office', 'work_from_home']:
+            work_location = 'office'
 
         # Create new check-in with location data
         attendance = Attendance(
@@ -891,10 +893,8 @@ async def employee_check_in_json(
         if existing_attendance:
             return _prepare_attendance_payload(existing_attendance)
 
-        # Check if user has approved work from home leave for today
-        from app.db.models.leave import Leave
-        # Set work location to office (WFH option removed)
-        work_location = 'office'
+        # Get work location from payload or default to 'office'
+        work_location = payload.work_location if payload.work_location else 'office'
 
         # Create new check-in with location data
         attendance = Attendance(

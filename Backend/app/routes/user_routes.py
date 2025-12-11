@@ -455,10 +455,20 @@ def remove_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return None
 
-# ✅ Admin & HR: Get single employee by ID
+# ✅ Get single employee by ID (Users can view their own profile, Admin/HR can view anyone)
 @router.get("/{user_id}", response_model=UserOut)
-def get_single_employee(user_id: int, db: Session = Depends(get_db),
-                        _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR]))):
+def get_single_employee(
+    user_id: int, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Check permissions: User can view their own profile OR must be Admin/HR to view others
+    if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted. You can only view your own profile."
+        )
+    
     employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")

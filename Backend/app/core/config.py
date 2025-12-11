@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     def should_send_email(self) -> bool:
         """Send email only in production or when explicitly enabled"""
         return self.is_production or self.ENABLE_EMAIL_OTP
+    
+    @property
+    def OTP_EXPIRY_MINUTES(self) -> int:
+        """Convert OTP expiry from seconds to minutes"""
+        return self.OTP_EXPIRY_SECONDS // 60
 
 def get_ist_now() -> datetime:
     """Get current datetime in IST timezone"""

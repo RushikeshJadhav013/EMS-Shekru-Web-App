@@ -55,6 +55,29 @@ try:
             conn.execute(
                 text("ALTER TABLE leaves ADD COLUMN leave_type VARCHAR(50) NOT NULL DEFAULT 'annual'")
             )
+        
+        # Check if 'work_location' exists on 'attendances' table; if not, add it
+        result = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'attendances'
+                  AND COLUMN_NAME = 'work_location'
+                """
+            )
+        )
+        row = result.first()
+        has_work_location = bool(row[0] if row else 0)
+        if not has_work_location:
+            conn.execute(
+                text("ALTER TABLE attendances ADD COLUMN work_location VARCHAR(50) DEFAULT 'office'")
+            )
+            # Update existing records to have 'office' as default
+            conn.execute(
+                text("UPDATE attendances SET work_location = 'office' WHERE work_location IS NULL")
+            )
 except Exception as _e:
     # Fail-soft: app will still boot; detailed error returned via middleware if used
     pass
@@ -62,10 +85,7 @@ except Exception as _e:
 # Initialize FastAPI
 app = FastAPI(
     title="Employee Management System",
-    version="1.0",
-    middleware=[
-        Middleware(CORSMiddlewareWithErrorHandling)
-    ]
+    version="1.0"
 )
 
 # Note: If you get 413 Payload Too Large errors, configure your web server:

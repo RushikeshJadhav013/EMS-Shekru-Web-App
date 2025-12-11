@@ -88,39 +88,6 @@ class UserBase(BaseModel):
             raise ValueError('Resignation date cannot be before 1900')
         return v
 
-    @validator("pan_card")
-    def validate_pan_card(cls, v: Optional[str]) -> Optional[str]:
-        """
-        PAN format: 10 characters, first 5 letters, next 4 digits, last letter.
-        Returned value is uppercased. Empty is allowed.
-        """
-        if v is None:
-            return None
-        normalized = v.strip().upper()
-        if not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", normalized):
-            raise ValueError("PAN must be 10 chars: 5 letters, 4 digits, last letter")
-        return normalized
-    
-    @validator("aadhar_card")
-    def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
-        """Aadhar must be exactly 12 digits; allow missing."""
-        if v is None:
-            return None
-        digits_only = v.strip()
-        if not re.fullmatch(r"\d{12}", digits_only):
-            raise ValueError("Aadhar must be exactly 12 digits")
-        return digits_only
-
-    @validator("phone")
-    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
-        """Require 10 digits starting with 6/7/8/9; allow missing."""
-        if v is None:
-            return None
-        digits_only = v.strip()
-        if not re.fullmatch(r"[6789]\d{9}", digits_only):
-            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
-        return digits_only
-
 class UserCreate(UserBase):
     employee_id: constr(min_length=1, max_length=50, strip_whitespace=True) = Field(..., description="Unique employee ID")
     profile_photo: Optional[str] = Field(None, description="Profile photo URL or path")
@@ -148,6 +115,64 @@ class UserOut(UserBase):
     updated_by: Optional[int] = None
 
     model_config = {"from_attributes": True, "use_enum_values": True}
+    
+    @field_validator('gender', mode='before')
+    @classmethod
+    def normalize_gender(cls, v):
+        """Normalize gender to lowercase when reading from database"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            # Map common variations
+            if normalized in ['male', 'm']:
+                return 'male'
+            elif normalized in ['female', 'f']:
+                return 'female'
+            elif normalized in ['other', 'o']:
+                return 'other'
+            return normalized
+        return v
+    
+    @field_validator('aadhar_card', mode='before')
+    @classmethod
+    def normalize_aadhar_card(cls, v):
+        """Format aadhar_card from 12 digits to 14 characters with dashes (1234-5678-9012)"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            # Remove any existing dashes and spaces
+            digits_only = re.sub(r'[-\s]', '', v.strip())
+            # If it's 12 digits, format it as 1234-5678-9012
+            if len(digits_only) == 12 and digits_only.isdigit():
+                return f"{digits_only[:4]}-{digits_only[4:8]}-{digits_only[8:]}"
+            # If already formatted correctly, return as is
+            if len(v.strip()) == 14 and v.count('-') == 2:
+                return v.strip()
+            return v.strip()
+        return v
+    
+    @field_validator('shift_type', mode='before')
+    @classmethod
+    def normalize_shift_type(cls, v):
+        """Normalize shift_type to lowercase when reading from database"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            # Map common variations
+            if normalized in ['morning', 'morn']:
+                return 'morning'
+            elif normalized in ['afternoon', 'after']:
+                return 'afternoon'
+            elif normalized in ['night', 'evening']:
+                return 'night'
+            elif normalized in ['rotational', 'rotate', 'rotation']:
+                return 'rotational'
+            elif normalized in ['general', 'gen']:
+                return 'general'
+            return normalized
+        return v
 
 class UpdateRoleSchema(BaseModel):
     role: RoleEnum = Field(..., description="New role for the user")
