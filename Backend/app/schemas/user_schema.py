@@ -16,7 +16,7 @@ class UserBase(BaseModel):
     gender: Optional[Literal['male', 'female', 'other']] = Field(None, description="Gender")
     resignation_date: Optional[datetime] = Field(None, description="Resignation date if applicable")
     pan_card: Optional[constr(min_length=10, max_length=10, strip_whitespace=True)] = Field(None, description="PAN card number (10 characters)")
-    aadhar_card: Optional[constr(min_length=14, max_length=14, strip_whitespace=True)] = Field(None, description="Aadhar card number (format: 1234-5678-9012)")
+    aadhar_card: Optional[constr(min_length=12, max_length=12, strip_whitespace=True)] = Field(None, description="Aadhar card number (12 digits)")
     shift_type: Optional[Literal['general', 'morning', 'afternoon', 'night', 'rotational']] = Field(None, description="Shift type")
     employee_type: Optional[Literal['contract', 'permanent']] = Field(None, description="Employment type")
 
@@ -58,12 +58,12 @@ class UserBase(BaseModel):
     @field_validator('aadhar_card')
     @classmethod
     def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
-        """Validate Aadhar card format (1234-5678-9012)"""
+        """Validate Aadhar card format: exactly 12 digits"""
         if v is None:
             return v
-        v = v.strip()
-        if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
-            raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
+        v = re.sub(r'\D', '', v.strip())
+        if not re.fullmatch(r'\d{12}', v):
+            raise ValueError('Aadhar must be exactly 12 digits')
         return v
 
     @field_validator('email')
@@ -137,19 +137,12 @@ class UserOut(UserBase):
     @field_validator('aadhar_card', mode='before')
     @classmethod
     def normalize_aadhar_card(cls, v):
-        """Format aadhar_card from 12 digits to 14 characters with dashes (1234-5678-9012)"""
+        """Normalize Aadhar to raw 12 digits."""
         if v is None:
             return None
         if isinstance(v, str):
-            # Remove any existing dashes and spaces
-            digits_only = re.sub(r'[-\s]', '', v.strip())
-            # If it's 12 digits, format it as 1234-5678-9012
-            if len(digits_only) == 12 and digits_only.isdigit():
-                return f"{digits_only[:4]}-{digits_only[4:8]}-{digits_only[8:]}"
-            # If already formatted correctly, return as is
-            if len(v.strip()) == 14 and v.count('-') == 2:
-                return v.strip()
-            return v.strip()
+            digits_only = re.sub(r'\D', '', v.strip())
+            return digits_only or None
         return v
     
     @field_validator('shift_type', mode='before')

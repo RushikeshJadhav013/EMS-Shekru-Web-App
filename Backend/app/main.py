@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -189,10 +190,17 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    response = JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": exc.body}
-    )
+    # Make validation errors JSON-safe (ctx.error can be an Exception)
+    safe_errors = []
+    for err in exc.errors():
+        ctx = err.get("ctx")
+        if ctx and isinstance(ctx.get("error"), Exception):
+            ctx = {**ctx, "error": str(ctx["error"])}
+            err = {**err, "ctx": ctx}
+        safe_errors.append(err)
+
+    content = jsonable_encoder({"detail": safe_errors, "body": exc.body})
+    response = JSONResponse(status_code=422, content=content)
     # Add CORS headers to validation error responses
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
@@ -221,19 +229,6 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         content={"detail": exc.detail}
     )
     # Add CORS headers to error responses
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    response = JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": exc.body}
-    )
-    # Add CORS headers to validation error responses
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
     response.headers["Access-Control-Allow-Headers"] = "*"

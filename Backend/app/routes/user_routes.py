@@ -28,6 +28,7 @@ from app.crud.subscription_crud import check_admin_subscription_limit
 import os
 import shutil
 from datetime import datetime
+import re
 from pydantic import EmailStr
 from starlette.responses import Response
 from starlette.background import BackgroundTask
@@ -84,7 +85,7 @@ def register_employee(
     email = email.strip().lower()
     employee_id = employee_id.strip()
     pan_card = pan_card.strip().upper() if pan_card else None
-    aadhar_card = aadhar_card.strip() if aadhar_card else None
+    aadhar_card = re.sub(r'\D', '', aadhar_card) if aadhar_card else None
     
     # Validate and convert gender to GenderEnum
     gender_enum = None
@@ -154,6 +155,17 @@ def register_employee(
             shutil.copyfileobj(profile_photo.file, buffer)
         profile_photo_path = file_path
 
+    # Normalize/validate fields to match schema expectations
+    gender_value = gender_enum.value.lower() if hasattr(gender_enum, "value") else (gender_enum or "").strip().lower()
+    shift_value = (shift_type or "").strip().lower()
+    employee_type_value = (employee_type or "").strip().lower()
+
+    if aadhar_card and len(aadhar_card) != 12:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Aadhar Card must have exactly 12 digits.",
+        )
+
     user_in = UserCreate(
         name=name,
         email=email,
@@ -163,12 +175,12 @@ def register_employee(
         phone=phone,
         address=address,
         role=role,
-        gender=gender_enum,
+        gender=gender_value,
         resignation_date=resignation_date,
         pan_card=pan_card,
-        aadhar_card=aadhar_card,
-        shift_type=shift_type,
-        employee_type=employee_type,  # ✅ Added
+        aadhar_card=re.sub(r'\D', '', aadhar_card.strip()) if aadhar_card else None,
+        shift_type=shift_value,
+        employee_type=employee_type_value,  # ✅ Added
         profile_photo=profile_photo_path
     )
 
