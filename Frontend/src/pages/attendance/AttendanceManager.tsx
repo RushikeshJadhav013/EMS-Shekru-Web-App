@@ -56,6 +56,26 @@ const resolveGraceValue = (value: number | '') => (value === '' ? 0 : value);
 const AttendanceManager: React.FC = () => {
   const { user } = useAuth();
   const { t } = useLanguage();
+
+  // Helper function to format work hours from decimal to "X hrs - Y mins" format
+  const formatWorkHours = (decimalHours: number): string => {
+    if (!decimalHours || decimalHours === 0) {
+      return '0 hrs - 0 mins';
+    }
+    
+    const hours = Math.floor(decimalHours);
+    const minutes = Math.round((decimalHours - hours) * 60);
+    
+    if (hours === 0 && minutes === 0) {
+      return '0 hrs - 0 mins';
+    } else if (hours === 0) {
+      return `0 hrs - ${minutes} mins`;
+    } else if (minutes === 0) {
+      return `${hours} hrs - 0 mins`;
+    } else {
+      return `${hours} hrs - ${minutes} mins`;
+    }
+  };
   const isAdmin = user?.role === 'admin';
   const [attendanceRecords, setAttendanceRecords] = useState<EmployeeAttendance[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<EmployeeAttendance[]>([]);
@@ -985,6 +1005,10 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                               isOnline={onlineStatusMap[parseInt(record.userId)] ?? true} 
                               size="md"
                               showLabel={true}
+                              clickable={isAdmin}
+                              attendanceId={parseInt(record.id)}
+                              userId={parseInt(record.userId)}
+                              userName={record.userName}
                             />
                           ) : (
                             <span className="text-xs text-muted-foreground">Checked Out</span>
@@ -1014,7 +1038,7 @@ const [summaryModal, setSummaryModal] = useState<{ open: boolean; summary: strin
                         </td>
                         <td className="p-3">
                           {record.workHours ? (
-                            <Badge variant="secondary">{record.workHours}h</Badge>
+                            <Badge variant="secondary" className="font-mono">{formatWorkHours(record.workHours)}</Badge>
                           ) : '-'}
                         </td>
                         <td className="p-3">

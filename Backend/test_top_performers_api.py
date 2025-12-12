@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 # Configuration
-BASE_URL = "https://staffly.space"
+BASE_URL = "http://localhost:8080"
 # You'll need to replace this with a valid token
 TOKEN = "your_token_here"
 

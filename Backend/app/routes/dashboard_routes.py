@@ -78,9 +78,14 @@ def admin_dashboard(db: Session = Depends(get_db)):
             # Fallback to default 9:30 AM + 15 min grace = 9:45 AM
             if att.check_in.hour > 9 or (att.check_in.hour == 9 and att.check_in.minute > 45):
                 late_arrivals += 1
+    # Count pending leaves that admin can actually approve (HR/Manager requests only)
     pending_leaves = (
         db.query(func.count(Leave.leave_id))
-        .filter(Leave.status == "Pending")
+        .join(User, User.user_id == Leave.user_id)
+        .filter(
+            Leave.status == "Pending",
+            User.role.in_([RoleEnum.HR.value, RoleEnum.MANAGER.value])
+        )
         .scalar()
         or 0
     )
@@ -225,8 +230,17 @@ def hr_dashboard(db: Session = Depends(get_db)):
         .scalar()
         or 0
     )
+    # Count pending leaves that HR can actually approve (Employee/TeamLead requests from their department)
+    # Note: This is a simplified count - actual HR users should have department filtering
     pending_leaves = (
-        db.query(func.count(Leave.leave_id)).filter(Leave.status == "Pending").scalar() or 0
+        db.query(func.count(Leave.leave_id))
+        .join(User, User.user_id == Leave.user_id)
+        .filter(
+            Leave.status == "Pending",
+            User.role.in_([RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value])
+        )
+        .scalar()
+        or 0
     )
     # New joiners and exits this month
     month_start = today_start.replace(day=1)
@@ -234,6 +248,18 @@ def hr_dashboard(db: Session = Depends(get_db)):
     new_joiners = db.query(func.count(User.user_id)).filter(User.joining_date >= month_start, User.joining_date < next_month).scalar() or 0
     exits = db.query(func.count(User.user_id)).filter(User.resignation_date.isnot(None)).filter(User.resignation_date >= month_start, User.resignation_date < next_month).scalar() or 0
     open_positions = 0  # Not modeled; keep zero or derive from another table if exists
+
+    # Task statistics for HR
+    active_tasks = (
+        db.query(func.count(Task.task_id))
+        .filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
+        .scalar() or 0
+    )
+    completed_tasks = (
+        db.query(func.count(Task.task_id))
+        .filter(Task.status == TaskStatus.COMPLETED.value)
+        .scalar() or 0
+    )
 
     # Recent HR-related activities
     recent_leave_requests = (
@@ -357,6 +383,8 @@ def hr_dashboard(db: Session = Depends(get_db)):
         "newJoinersThisMonth": new_joiners,
         "exitingThisMonth": exits,
         "openPositions": open_positions,
+        "activeTasks": active_tasks,
+        "completedTasks": completed_tasks,
         "recentActivities": recent_activities,
     }
 

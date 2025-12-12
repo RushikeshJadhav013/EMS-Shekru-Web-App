@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 
 # Configuration
-BASE_URL = "https://staffly.space"
+BASE_URL = "http://localhost:8080"
 TOKEN = "your_token_here"  # Replace with actual token
 
 def test_executive_summary():

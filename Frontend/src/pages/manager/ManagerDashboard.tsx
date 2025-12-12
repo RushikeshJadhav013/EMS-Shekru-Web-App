@@ -254,7 +254,10 @@ const ManagerDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{stats.activeTasks}</div>
-            <Button variant="link" className="p-0 h-auto mt-2 text-white hover:text-cyan-100" onClick={() => navigate('/manager/tasks')}>
+            <div className="flex items-center gap-1 mt-2">
+              <span className="text-sm text-cyan-100">{stats.completedTasks} completed</span>
+            </div>
+            <Button variant="link" className="p-0 h-auto mt-1 text-white hover:text-cyan-100" onClick={() => navigate('/manager/tasks')}>
               <span className="text-sm">Manage tasks</span>
               <ChevronRight className="h-4 w-4 ml-1" />
             </Button>

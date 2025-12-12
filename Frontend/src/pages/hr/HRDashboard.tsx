@@ -44,6 +44,8 @@ const HRDashboard: React.FC = () => {
     newJoinersThisMonth: 0,
     exitingThisMonth: 0,
     openPositions: 0,
+    activeTasks: 0,
+    completedTasks: 0,
   });
   const [recentActivities, setRecentActivities] = useState<HRActivity[]>([]);
   const [isLoadingActivities, setIsLoadingActivities] = useState(true);
@@ -282,23 +284,26 @@ const HRDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <Card className="card-hover border-0 bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/hr/hiring')}>
+        <Card className="card-hover border-0 bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer" onClick={() => navigate('/hr/tasks')}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-purple-50">
-              Open Positions
+              Active Tasks
             </CardTitle>
             <div className="h-10 w-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
               <ClipboardList className="h-5 w-5 text-white" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.openPositions}</div>
+            <div className="text-3xl font-bold">{stats.activeTasks}</div>
+            <div className="flex items-center gap-1 mt-2">
+              <span className="text-sm text-purple-100">{stats.completedTasks} completed</span>
+            </div>
             <Button 
               variant="link" 
-              className="p-0 h-auto mt-2 text-white hover:text-purple-100" 
+              className="p-0 h-auto mt-1 text-white hover:text-purple-100" 
               onClick={(e) => {
                 e.stopPropagation();
-                navigate('/hr/hiring');
+                navigate('/hr/tasks');
               }}
             >
               <span className="text-sm">View all</span>

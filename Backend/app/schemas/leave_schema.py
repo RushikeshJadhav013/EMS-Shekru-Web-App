@@ -73,6 +73,36 @@ class LeaveWithUserOut(LeaveOut):
     role: Optional[str] = None
 
 
+class LeaveHistoryOut(BaseModel):
+    """Schema for displaying historical leave data without strict validation"""
+    leave_id: int = Field(..., gt=0, description="Unique leave ID")
+    user_id: int = Field(..., gt=0, description="User ID")
+    start_date: date = Field(..., description="Leave start date")
+    end_date: date = Field(..., description="Leave end date")
+    reason: Optional[str] = Field(None, description="Leave reason")
+    status: Optional[str] = Field("Pending", description="Leave status")
+    leave_type: str = Field("annual", description="Type of leave")
+    employee_id: str
+    name: str
+    department: Optional[str] = None
+    role: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class LeaveDisplayOut(BaseModel):
+    """Schema for displaying user's own leave data without strict validation"""
+    leave_id: int = Field(..., gt=0, description="Unique leave ID")
+    user_id: int = Field(..., gt=0, description="User ID")
+    start_date: date = Field(..., description="Leave start date")
+    end_date: date = Field(..., description="Leave end date")
+    reason: Optional[str] = Field(None, description="Leave reason")
+    status: Optional[str] = Field("Pending", description="Leave status")
+    leave_type: str = Field("annual", description="Type of leave")
+
+    model_config = {"from_attributes": True}
+
+
 class LeaveUpdate(BaseModel):
     start_date: Optional[date] = Field(None, description="New start date")
     end_date: Optional[date] = Field(None, description="New end date")

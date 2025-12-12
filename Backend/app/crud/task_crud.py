@@ -9,6 +9,7 @@ from app.db.models.task import Task, TaskHistory
 from app.db.models.notification import TaskNotification
 from app.db.models.user import User
 from app.enums import TaskAction, TaskStatus
+from app.utils.timezone import now_ist, ist_to_utc
 
 
 _TASK_PASS_COLUMNS_READY = False

@@ -10,6 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Pagination } from '@/components/ui/pagination';
 import { toast } from '@/hooks/use-toast';
 import {
   Plus,
@@ -264,7 +265,8 @@ const formatDuplicateErrorMessage = (message: string, employeeId?: string, email
 export default function EmployeeManagement() {
   const { t } = useLanguage();
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [departments] = useState<string[]>(['Engineering', 'Marketing', 'Sales', 'HR', 'Finance', 'Operations']);
+  const [departments, setDepartments] = useState<string[]>([]);
+  const [managers, setManagers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState('all');
   const [selectedRole, setSelectedRole] = useState('all');
@@ -293,6 +295,9 @@ export default function EmployeeManagement() {
     aadharCard: '',
     shift: undefined
   });
+  
+  // For multiple department assignment (HR and Manager roles)
+  const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
 
   const [bulkData, setBulkData] = useState('');
   const [bulkFileName, setBulkFileName] = useState('');
@@ -321,6 +326,10 @@ export default function EmployeeManagement() {
   // Delete confirmation states
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [employeeToDelete, setEmployeeToDelete] = useState<Employee | null>(null);
+
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
 
   const createFileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
@@ -370,11 +379,49 @@ export default function EmployeeManagement() {
       }
     };
 
+    const fetchDepartments = async () => {
+      try {
+        const departmentData = await apiService.getDepartmentNames();
+        const departmentNames = departmentData
+          .map(dept => dept.name)
+          .sort();
+        setDepartments(departmentNames);
+      } catch (error) {
+        console.error('Failed to fetch departments:', error);
+        toast({
+          title: 'Warning',
+          description: 'Failed to load departments. Please create departments first.',
+          variant: 'destructive'
+        });
+      }
+    };
+
+    const fetchManagers = async () => {
+      try {
+        const managerData = await apiService.getDepartmentManagers();
+        setManagers(managerData);
+      } catch (error) {
+        console.error('Failed to fetch managers:', error);
+        toast({
+          title: 'Warning',
+          description: 'Failed to load managers.',
+          variant: 'destructive'
+        });
+      }
+    };
+
     fetchEmployees();
+    fetchDepartments();
+    fetchManagers();
   }, []);
 
   const filteredEmployees = useMemo(() => {
     return employees.filter(emp => {
+    // ✅ Exclude Admin users - Admin is the boss and should not appear in employee lists
+    if (emp.role === 'Admin' || emp.role === 'admin') {
+      return false;
+    }
+    
     const query = searchQuery.trim().toLowerCase();
     const matchesSearch = 
       emp.name.toLowerCase().includes(query) ||
@@ -385,6 +432,20 @@ export default function EmployeeManagement() {
     return matchesSearch && matchesDepartment && matchesRole;
   });
   }, [employees, searchQuery, selectedDepartment, selectedRole]);
+
+  // Paginated employees
+  const paginatedEmployees = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return filteredEmployees.slice(startIndex, endIndex);
+  }, [filteredEmployees, currentPage, itemsPerPage]);
+
+  const totalPages = Math.ceil(filteredEmployees.length / itemsPerPage);
+
+  // Reset to first page when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedDepartment, selectedRole]);
 
   const validateEmail = (email: string) => {
     if (!email) {
@@ -565,10 +626,16 @@ const formatAadharInput = (value: string) => {
     setPanCardDuplicateError('');
     setAadharCardDuplicateError('');
     
-    if (!formData.name || !formData.email || !formData.employeeId || !formData.department || !formData.panCard || !formData.aadharCard || !formData.shift || !formData.employeeType) {
+    // Validate required fields based on role
+    const isHROrManager = formData.role === 'HR' || formData.role === 'Manager';
+    const departmentValid = isHROrManager ? selectedDepartments.length > 0 : formData.department;
+    
+    if (!formData.name || !formData.email || !formData.employeeId || !departmentValid || !formData.panCard || !formData.aadharCard || !formData.shift || !formData.employeeType) {
       toast({
         title: 'Error',
-        description: 'Please fill in all required fields',
+        description: isHROrManager 
+          ? 'Please fill in all required fields and select at least one department'
+          : 'Please fill in all required fields',
         variant: 'destructive'
       });
       return;
@@ -612,11 +679,15 @@ const formatAadharInput = (value: string) => {
 
     setIsCreating(true);
     try {
+      // Handle department assignment based on role
+      const isHROrManager = formData.role === 'HR' || formData.role === 'Manager';
+      const departmentValue = isHROrManager ? selectedDepartments.join(',') : formData.department;
+
       const employeeData: EmployeeData = {
         name: formData.name,
         email: formData.email,
         employee_id: formData.employeeId,
-        department: formData.department,
+        department: departmentValue,
         designation: formData.designation,
         phone: formData.phone ? `${formData.countryCode || '+91'}-${formData.phone.replace(/[^0-9]/g, '')}` : '',
         address: formData.address,
@@ -626,7 +697,8 @@ const formatAadharInput = (value: string) => {
         pan_card: formData.panCard,
         aadhar_card: formData.aadharCard,
         shift_type: formData.shift,
-        employee_type: formData.employeeType,  // ✅ Added
+        employee_type: formData.employeeType,
+        manager_id: formData.managerId,
         profile_photo: imageFile || undefined
       };
 
@@ -678,10 +750,16 @@ const formatAadharInput = (value: string) => {
     setPanCardDuplicateError('');
     setAadharCardDuplicateError('');
 
-    if (!formData.name || !formData.email || !formData.employeeId || !formData.department || !formData.panCard || !formData.aadharCard || !formData.shift) {
+    // Validate required fields based on role
+    const isHROrManager = formData.role === 'HR' || formData.role === 'Manager';
+    const departmentValid = isHROrManager ? selectedDepartments.length > 0 : formData.department;
+
+    if (!formData.name || !formData.email || !formData.employeeId || !departmentValid || !formData.panCard || !formData.aadharCard || !formData.shift) {
       toast({
         title: 'Error',
-        description: 'Please fill in all required fields',
+        description: isHROrManager 
+          ? 'Please fill in all required fields and select at least one department'
+          : 'Please fill in all required fields',
         variant: 'destructive'
       });
       return;
@@ -754,11 +832,15 @@ const formatAadharInput = (value: string) => {
 
       console.log('Updating employee with user_id:', userIdToUpdate); // Debug log
 
+      // Handle department assignment based on role
+      const isHROrManager = formData.role === 'HR' || formData.role === 'Manager';
+      const departmentValue = isHROrManager ? selectedDepartments.join(',') : formData.department;
+
       const employeeData: EmployeeData = {
         name: formData.name,
         email: formData.email,
         employee_id: formData.employeeId,
-        department: formData.department,
+        department: departmentValue,
         designation: formData.designation,
         phone: formData.phone ? `${formData.countryCode || '+91'}-${formData.phone.replace(/[^0-9]/g, '')}` : '',
         address: formData.address,
@@ -769,6 +851,7 @@ const formatAadharInput = (value: string) => {
         aadhar_card: formData.aadharCard,
         shift_type: formData.shift,
         employee_type: formData.employeeType,
+        manager_id: formData.managerId,
         profile_photo: imageFile || formData.profilePhoto || undefined, // Pass the file if available
         is_verified: true,
         created_at: formData.createdAt || new Date().toISOString()
@@ -1238,8 +1321,10 @@ const formatAadharInput = (value: string) => {
       countryCode: '+91',
       panCard: '',
       aadharCard: '',
-      shift: undefined
+      shift: undefined,
+      managerId: undefined
     });
+    setSelectedDepartments([]);
     setImageFile(null);
     setImagePreview('');
     setSelectedEmployee(null);
@@ -1273,6 +1358,7 @@ const formatAadharInput = (value: string) => {
     const role = String(emp['role'] ?? '');
     const designation = String(emp['designation'] ?? '');
     const address = String(emp['address'] ?? '');
+    const managerId = emp['managerId'] ?? emp['manager_id'] ?? undefined;
     
     // Prefer explicit joining_date if provided by API, otherwise fall back to created_at if available
     const rawJoining = emp['joiningDate'] ?? emp['joining_date'] ?? emp['createdAt'] ?? emp['created_at'] ?? '';
@@ -1330,12 +1416,16 @@ const formatAadharInput = (value: string) => {
       phone = rawPhone;
     }
 
+    // Handle multiple departments for HR and Manager roles
+    const isHROrManager = role === 'HR' || role === 'Manager';
+    const departmentList = isHROrManager && department ? department.split(',').map(d => d.trim()) : [];
+    
     setFormData({
       id, // ✅ Include user_id
       employeeId,
       name,
       email,
-      department,
+      department: isHROrManager ? '' : department, // Clear department for HR/Manager
       role,
       designation,
       address,
@@ -1349,8 +1439,12 @@ const formatAadharInput = (value: string) => {
       shift: shift as ShiftType | undefined,
       countryCode,
       phone: formatPhoneNumber(phone.replace(/[^0-9]/g, ''), countryCode),
-      photoUrl
+      photoUrl,
+      managerId
     } as Partial<Employee>);
+
+    // Set selected departments for HR/Manager roles
+    setSelectedDepartments(departmentList);
 
     setImagePreview(photoUrl);
     setIsEditDialogOpen(true);
@@ -1651,32 +1745,56 @@ const formatAadharInput = (value: string) => {
                         <p className="text-red-500 text-sm mt-1">{emailError}</p>
                       )}
                     </div>
-                    <div>
-                      <Label htmlFor="create-department">Department *</Label>
-                      <Select
-                        value={formData.department || ''}
-                        onValueChange={(value) => setFormData((prev) => ({ ...prev, department: value }))}
-                      >
-                        <SelectTrigger className="mt-1">
-                          <SelectValue placeholder="Select Department" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {departments.map((dept) => (
-                            <SelectItem key={dept} value={dept}>
-                              {dept}
-                            </SelectItem>
-                          ))}
-                          {formData.department && !departments.some(d => d.toLowerCase() === formData.department?.toLowerCase()) && (
-                            <SelectItem value={formData.department}>{formData.department}</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    {/* Single Department Selection for other roles */}
+                    {formData.role !== 'HR' && formData.role !== 'Manager' && (
+                      <div>
+                        <Label htmlFor="create-department">Department *</Label>
+                        <Select
+                          value={formData.department || ''}
+                          onValueChange={(value) => setFormData((prev) => ({ ...prev, department: value }))}
+                          disabled={departments.length === 0}
+                        >
+                          <SelectTrigger className="mt-1">
+                            <SelectValue placeholder={departments.length === 0 ? "No departments available" : "Select Department"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {departments.length === 0 ? (
+                              <SelectItem value="no-departments" disabled>
+                                No active departments found. Please create departments first.
+                              </SelectItem>
+                            ) : (
+                              departments.map((dept) => (
+                                <SelectItem key={dept} value={dept}>
+                                  {dept}
+                                </SelectItem>
+                              ))
+                            )}
+                            {formData.department && !departments.some(d => d.toLowerCase() === formData.department?.toLowerCase()) && (
+                              <SelectItem value={formData.department}>{formData.department}</SelectItem>
+                            )}
+                          </SelectContent>
+                        </Select>
+                        {departments.length === 0 && (
+                          <p className="text-sm text-amber-600 mt-1">
+                            ⚠️ No departments available. Please go to Department Management to create departments first.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <div>
                       <Label htmlFor="create-role">Role *</Label>
                       <Select
                         value={formData.role || 'employee'}
-                        onValueChange={(value) => setFormData((prev) => ({ ...prev, role: value as string }))}
+                        onValueChange={(value) => {
+                          setFormData((prev) => ({ ...prev, role: value as string }));
+                          // Reset department selections when role changes
+                          if (value === 'HR' || value === 'Manager') {
+                            setSelectedDepartments([]);
+                          } else {
+                            setSelectedDepartments([]);
+                            setFormData((prev) => ({ ...prev, department: '' }));
+                          }
+                        }}
                       >
                         <SelectTrigger className="mt-1">
                           <SelectValue placeholder="Select Role" />
@@ -1690,6 +1808,44 @@ const formatAadharInput = (value: string) => {
                         </SelectContent>
                       </Select>
                     </div>
+                    
+                    {/* Multiple Department Selection for HR and Manager */}
+                    {(formData.role === 'HR' || formData.role === 'Manager') && (
+                      <div>
+                        <Label>Assigned Departments *</Label>
+                        <div className="mt-2 space-y-2 max-h-32 overflow-y-auto border rounded-md p-2">
+                          {departments.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No departments available</p>
+                          ) : (
+                            departments.map((dept) => (
+                              <div key={dept} className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  id={`dept-${dept}`}
+                                  checked={selectedDepartments.includes(dept)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedDepartments([...selectedDepartments, dept]);
+                                    } else {
+                                      setSelectedDepartments(selectedDepartments.filter(d => d !== dept));
+                                    }
+                                  }}
+                                  className="rounded border-gray-300"
+                                />
+                                <Label htmlFor={`dept-${dept}`} className="text-sm font-normal">
+                                  {dept}
+                                </Label>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        {selectedDepartments.length > 0 && (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Selected: {selectedDepartments.join(', ')}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <div>
                       <Label htmlFor="create-designation">Designation</Label>
                       <Input
@@ -1699,6 +1855,32 @@ const formatAadharInput = (value: string) => {
                         className="mt-1"
                       />
                     </div>
+                    
+                    {/* Manager Selection - Show for all roles except Admin */}
+                    {formData.role !== 'Admin' && (
+                      <div>
+                        <Label htmlFor="create-manager">Reporting Manager</Label>
+                        <Select
+                          value={formData.managerId?.toString() || ''}
+                          onValueChange={(value) => setFormData((prev) => ({ ...prev, managerId: value ? parseInt(value) : undefined }))}
+                        >
+                          <SelectTrigger className="mt-1">
+                            <SelectValue placeholder="Select Manager (Optional)" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="">No Manager</SelectItem>
+                            {managers.map((manager) => (
+                              <SelectItem key={manager.id} value={manager.id.toString()}>
+                                {manager.name} ({manager.role}) - {manager.department || 'No Dept'}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          Available managers: HR, Manager, and Team Lead roles
+                        </p>
+                      </div>
+                    )}
                     <div>
                       <Label htmlFor="create-joiningDate">Joining Date</Label>
                       <Input
@@ -2000,7 +2182,7 @@ const formatAadharInput = (value: string) => {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredEmployees.map((employee) => (
+                  paginatedEmployees.map((employee) => (
                     <TableRow key={employee.employeeId} className="hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors border-b">
                       <TableCell className="hidden sm:table-cell">
                         <Avatar className="h-10 w-10 border-2 border-blue-200 dark:border-blue-800">
@@ -2012,9 +2194,19 @@ const formatAadharInput = (value: string) => {
                       <TableCell className="font-medium">{employee.name}</TableCell>
                       <TableCell className="hidden sm:table-cell text-muted-foreground">{employee.email}</TableCell>
                       <TableCell>
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-gradient-to-r from-slate-100 to-gray-100 dark:from-slate-800 dark:to-gray-800 text-sm font-medium">
-                          {employee.department}
-                        </span>
+                        {employee.department && employee.department.includes(',') ? (
+                          <div className="flex flex-wrap gap-1">
+                            {employee.department.split(',').map((dept, index) => (
+                              <span key={index} className="inline-flex items-center px-2 py-0.5 rounded-md bg-gradient-to-r from-slate-100 to-gray-100 dark:from-slate-800 dark:to-gray-800 text-xs font-medium">
+                                {dept.trim()}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-gradient-to-r from-slate-100 to-gray-100 dark:from-slate-800 dark:to-gray-800 text-sm font-medium">
+                            {employee.department || 'No Dept'}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
                         <Badge className={`${
@@ -2089,6 +2281,21 @@ const formatAadharInput = (value: string) => {
               </TableBody>
             </Table>
           </div>
+          
+          {/* Pagination */}
+          {filteredEmployees.length > 0 && (
+            <div className="mt-6 px-2">
+              <Pagination
+                currentPage={currentPage}
+                totalPages={totalPages}
+                totalItems={filteredEmployees.length}
+                itemsPerPage={itemsPerPage}
+                onPageChange={setCurrentPage}
+                onItemsPerPageChange={setItemsPerPage}
+                showItemsPerPage={true}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -2184,32 +2391,51 @@ const formatAadharInput = (value: string) => {
                 <p className="text-red-500 text-sm mt-1">{emailError}</p>
               )}
             </div>
-            <div>
-              <Label htmlFor="edit-department">Department *</Label>
-              <Select
-                value={formData.department || ''}
-                onValueChange={(value) => setFormData((prev) => ({ ...prev, department: value }))}
-              >
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select Department" />
-                </SelectTrigger>
-                <SelectContent>
-                  {departments.map((dept) => (
-                    <SelectItem key={dept} value={dept}>
-                      {dept}
-                    </SelectItem>
-                  ))}
-                  {formData.department && !departments.some(d => d.toLowerCase() === formData.department?.toLowerCase()) && (
-                    <SelectItem value={formData.department}>{formData.department}</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Single Department Selection for other roles in Edit */}
+            {formData.role !== 'HR' && formData.role !== 'Manager' && (
+              <div>
+                <Label htmlFor="edit-department">Department *</Label>
+                <Select
+                  value={formData.department || ''}
+                  onValueChange={(value) => setFormData((prev) => ({ ...prev, department: value }))}
+                  disabled={departments.length === 0}
+                >
+                  <SelectTrigger className="mt-1">
+                    <SelectValue placeholder="Select Department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.length === 0 ? (
+                      <SelectItem value="no-departments" disabled>
+                        No active departments found. Please create departments first.
+                      </SelectItem>
+                    ) : (
+                      departments.map((dept) => (
+                        <SelectItem key={dept} value={dept}>
+                          {dept}
+                        </SelectItem>
+                      ))
+                    )}
+                    {formData.department && !departments.some(d => d.toLowerCase() === formData.department?.toLowerCase()) && (
+                      <SelectItem value={formData.department}>{formData.department}</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label htmlFor="edit-role">Role *</Label>
               <Select
                 value={formData.role || 'employee'}
-                onValueChange={(value) => setFormData((prev) => ({ ...prev, role: value as string }))}
+                onValueChange={(value) => {
+                  setFormData((prev) => ({ ...prev, role: value as string }));
+                  // Reset department selections when role changes
+                  if (value === 'HR' || value === 'Manager') {
+                    setSelectedDepartments([]);
+                  } else {
+                    setSelectedDepartments([]);
+                    setFormData((prev) => ({ ...prev, department: '' }));
+                  }
+                }}
               >
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="Select Role" />
@@ -2223,6 +2449,44 @@ const formatAadharInput = (value: string) => {
                 </SelectContent>
               </Select>
             </div>
+            
+            {/* Multiple Department Selection for HR and Manager in Edit */}
+            {(formData.role === 'HR' || formData.role === 'Manager') && (
+              <div>
+                <Label>Assigned Departments *</Label>
+                <div className="mt-2 space-y-2 max-h-32 overflow-y-auto border rounded-md p-2">
+                  {departments.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No departments available</p>
+                  ) : (
+                    departments.map((dept) => (
+                      <div key={dept} className="flex items-center space-x-2">
+                        <input
+                          type="checkbox"
+                          id={`edit-dept-${dept}`}
+                          checked={selectedDepartments.includes(dept)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedDepartments([...selectedDepartments, dept]);
+                            } else {
+                              setSelectedDepartments(selectedDepartments.filter(d => d !== dept));
+                            }
+                          }}
+                          className="rounded border-gray-300"
+                        />
+                        <Label htmlFor={`edit-dept-${dept}`} className="text-sm font-normal">
+                          {dept}
+                        </Label>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {selectedDepartments.length > 0 && (
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Selected: {selectedDepartments.join(', ')}
+                  </p>
+                )}
+              </div>
+            )}
             <div>
               <Label htmlFor="edit-designation">Designation</Label>
               <Input
@@ -2232,6 +2496,32 @@ const formatAadharInput = (value: string) => {
                 className="mt-1"
               />
             </div>
+            
+            {/* Manager Selection in Edit - Show for all roles except Admin */}
+            {formData.role !== 'Admin' && (
+              <div>
+                <Label htmlFor="edit-manager">Reporting Manager</Label>
+                <Select
+                  value={formData.managerId?.toString() || ''}
+                  onValueChange={(value) => setFormData((prev) => ({ ...prev, managerId: value ? parseInt(value) : undefined }))}
+                >
+                  <SelectTrigger className="mt-1">
+                    <SelectValue placeholder="Select Manager (Optional)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">No Manager</SelectItem>
+                    {managers.map((manager) => (
+                      <SelectItem key={manager.id} value={manager.id.toString()}>
+                        {manager.name} ({manager.role}) - {manager.department || 'No Dept'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Available managers: HR, Manager, and Team Lead roles
+                </p>
+              </div>
+            )}
             <div>
               <Label htmlFor="edit-joiningDate">Joining Date</Label>
               <Input
@@ -2465,11 +2755,31 @@ const formatAadharInput = (value: string) => {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Department</span>
-                  <span className="font-medium">{viewEmployee.department}</span>
+                  <div className="font-medium">
+                    {viewEmployee.department && viewEmployee.department.includes(',') ? (
+                      <div className="flex flex-wrap gap-1">
+                        {viewEmployee.department.split(',').map((dept, index) => (
+                          <span key={index} className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 text-xs font-medium">
+                            {dept.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span>{viewEmployee.department || 'No Department'}</span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Role</span>
                   <span className="font-medium">{viewEmployee.role ? viewEmployee.role.charAt(0).toUpperCase() + viewEmployee.role.slice(1) : '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Reporting Manager</span>
+                  <span className="font-medium">
+                    {viewEmployee.managerId ? (
+                      managers.find(m => m.id === viewEmployee.managerId)?.name || `Manager ID: ${viewEmployee.managerId}`
+                    ) : 'No Manager'}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Phone</span>

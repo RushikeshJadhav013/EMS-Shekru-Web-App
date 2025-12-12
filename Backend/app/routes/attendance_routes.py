@@ -28,6 +28,162 @@ from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_is
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
+# Logout endpoint that handles pause/resume functionality
+class LogoutPayload(BaseModel):
+    user_id: int
+    logout_timestamp: str
+
+@router.post("/logout")
+async def logout_with_pause(
+    payload: LogoutPayload,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Logout endpoint that treats logout as a pause in online status.
+    Records logout timestamp to pause Online time and start Offline time tracking.
+    """
+    try:
+        from app.db.models.online_status import OnlineStatus
+        
+        # Verify user matches current user
+        if current_user.user_id != payload.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot logout for another user"
+            )
+        
+        # Find today's active attendance record
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+        
+        attendance = db.query(Attendance).filter(
+            Attendance.user_id == payload.user_id,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            Attendance.check_out.is_(None)  # Only active attendance
+        ).first()
+        
+        if attendance:
+            # Get current online status
+            latest_status = db.query(OnlineStatus).filter(
+                OnlineStatus.user_id == payload.user_id,
+                OnlineStatus.timestamp >= today_start,
+                OnlineStatus.timestamp < today_end
+            ).order_by(OnlineStatus.timestamp.desc()).first()
+            
+            # If user is currently online, record logout as going offline
+            current_online_status = True if not latest_status else latest_status.is_online
+            
+            if current_online_status:
+                logout_timestamp = datetime.fromisoformat(payload.logout_timestamp.replace('Z', '+00:00'))
+                if logout_timestamp.tzinfo is None:
+                    logout_timestamp = logout_timestamp.replace(tzinfo=UTC_TZ)
+                logout_timestamp_utc = logout_timestamp.astimezone(UTC_TZ).replace(tzinfo=None)
+                
+                # Create offline status entry for logout
+                offline_status = OnlineStatus(
+                    attendance_id=attendance.attendance_id,
+                    user_id=payload.user_id,
+                    is_online=False,
+                    reason="Logout - session paused",
+                    timestamp=logout_timestamp_utc
+                )
+                db.add(offline_status)
+                db.commit()
+                
+                logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
+            
+        return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
+        
+    except Exception as e:
+        logger.error(f"Logout error for user {current_user.user_id}: {e}")
+        # Always allow logout even if pause recording fails
+        return {"message": "Logout successful", "user_id": current_user.user_id}
+
+
+# Login resume endpoint to handle resume functionality
+class LoginResumePayload(BaseModel):
+    user_id: int
+    login_timestamp: str
+
+@router.post("/login-resume")
+async def login_resume(
+    payload: LoginResumePayload,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Login resume endpoint that treats login as resuming from a pause.
+    Records login timestamp to resume Online time and add offline duration to Offline time.
+    """
+    try:
+        from app.db.models.online_status import OnlineStatus
+        
+        # Verify user matches current user
+        if current_user.user_id != payload.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot resume for another user"
+            )
+        
+        # Find today's active attendance record
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+        
+        attendance = db.query(Attendance).filter(
+            Attendance.user_id == payload.user_id,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            Attendance.check_out.is_(None)  # Only active attendance
+        ).first()
+        
+        if attendance:
+            # Get current online status
+            latest_status = db.query(OnlineStatus).filter(
+                OnlineStatus.user_id == payload.user_id,
+                OnlineStatus.timestamp >= today_start,
+                OnlineStatus.timestamp < today_end
+            ).order_by(OnlineStatus.timestamp.desc()).first()
+            
+            # If user is currently offline (from logout), record login as going online
+            current_online_status = True if not latest_status else latest_status.is_online
+            
+            if not current_online_status and latest_status:
+                login_timestamp = datetime.fromisoformat(payload.login_timestamp.replace('Z', '+00:00'))
+                if login_timestamp.tzinfo is None:
+                    login_timestamp = login_timestamp.replace(tzinfo=UTC_TZ)
+                login_timestamp_utc = login_timestamp.astimezone(UTC_TZ).replace(tzinfo=None)
+                
+                # Calculate offline duration
+                offline_duration = login_timestamp_utc - latest_status.timestamp
+                offline_seconds = offline_duration.total_seconds()
+                
+                # Create online status entry for login resume
+                online_status = OnlineStatus(
+                    attendance_id=attendance.attendance_id,
+                    user_id=payload.user_id,
+                    is_online=True,
+                    reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
+                    timestamp=login_timestamp_utc
+                )
+                db.add(online_status)
+                db.commit()
+                
+                logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
+                
+                return {
+                    "message": "Login successful - session resumed", 
+                    "user_id": current_user.user_id,
+                    "offline_duration_seconds": int(offline_seconds)
+                }
+            
+        return {"message": "Login successful", "user_id": current_user.user_id}
+        
+    except Exception as e:
+        logger.error(f"Login resume error for user {current_user.user_id}: {e}")
+        return {"message": "Login successful", "user_id": current_user.user_id}
+
 
 class AttendanceJSONPayload(BaseModel):
     user_id: int
@@ -36,6 +192,7 @@ class AttendanceJSONPayload(BaseModel):
     location_data: Optional[Dict[str, Any]] = None
     work_summary: Optional[str] = None
     work_report: Optional[str] = None  # base64 data URL or raw base64
+    task_deadline_reason: Optional[str] = None  # Reason for incomplete tasks on deadline
 
 # ---------------------------------
 # Helper functions for Attendance
@@ -414,6 +571,8 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
         "workReport": work_report_url,
         "work_location": getattr(attendance, "work_location", "office"),
         "workLocation": getattr(attendance, "work_location", "office"),
+        "task_deadline_reason": getattr(attendance, "task_deadline_reason", None),
+        "taskDeadlineReason": getattr(attendance, "task_deadline_reason", None),
     }
 
 def get_attendance_summary(db: Session) -> Dict[str, Any]:
@@ -835,6 +994,45 @@ async def employee_check_in_route(
         db.commit()
         db.refresh(attendance)
         
+        # Set user as online after check-in (respects previous offline status from same day)
+        from app.db.models.online_status import OnlineStatus
+        
+        # Check if user was offline yesterday - if so, reset to online for new day
+        yesterday_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Get user's last status from yesterday
+        last_status_yesterday = db.query(OnlineStatus).filter(
+            OnlineStatus.user_id == user_id,
+            OnlineStatus.timestamp >= yesterday_start,
+            OnlineStatus.timestamp < today_start
+        ).order_by(OnlineStatus.timestamp.desc()).first()
+        
+        # Check if user already has a status today
+        existing_status_today = db.query(OnlineStatus).filter(
+            OnlineStatus.user_id == user_id,
+            OnlineStatus.timestamp >= today_start
+        ).first()
+        
+        # Only create new online status if:
+        # 1. No status exists today, OR
+        # 2. User was offline yesterday (daily reset)
+        should_set_online = (
+            not existing_status_today or 
+            (last_status_yesterday and not last_status_yesterday.is_online)
+        )
+        
+        if should_set_online:
+            online_status = OnlineStatus(
+                attendance_id=attendance.attendance_id,
+                user_id=user_id,
+                is_online=True,
+                reason="Online status after check-in" + (" (daily reset)" if last_status_yesterday and not last_status_yesterday.is_online else ""),
+                timestamp=datetime.utcnow()
+            )
+            db.add(online_status)
+            db.commit()
+        
         print(f"Successfully created check-in for user {user_id}, attendance ID: {attendance.attendance_id}")
         
         return _prepare_attendance_payload(attendance)
@@ -908,6 +1106,46 @@ async def employee_check_in_json(
         db.add(attendance)
         db.commit()
         db.refresh(attendance)
+        
+        # Set user as online after check-in (respects previous offline status from same day)
+        from app.db.models.online_status import OnlineStatus
+        
+        # Check if user was offline yesterday - if so, reset to online for new day
+        yesterday_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Get user's last status from yesterday
+        last_status_yesterday = db.query(OnlineStatus).filter(
+            OnlineStatus.user_id == payload.user_id,
+            OnlineStatus.timestamp >= yesterday_start,
+            OnlineStatus.timestamp < today_start
+        ).order_by(OnlineStatus.timestamp.desc()).first()
+        
+        # Check if user already has a status today
+        existing_status_today = db.query(OnlineStatus).filter(
+            OnlineStatus.user_id == payload.user_id,
+            OnlineStatus.timestamp >= today_start
+        ).first()
+        
+        # Only create new online status if:
+        # 1. No status exists today, OR
+        # 2. User was offline yesterday (daily reset)
+        should_set_online = (
+            not existing_status_today or 
+            (last_status_yesterday and not last_status_yesterday.is_online)
+        )
+        
+        if should_set_online:
+            online_status = OnlineStatus(
+                attendance_id=attendance.attendance_id,
+                user_id=payload.user_id,
+                is_online=True,
+                reason="Online status after check-in" + (" (daily reset)" if last_status_yesterday and not last_status_yesterday.is_online else ""),
+                timestamp=datetime.utcnow()
+            )
+            db.add(online_status)
+            db.commit()
+        
         return _prepare_attendance_payload(attendance)
     except HTTPException:
         raise
@@ -924,8 +1162,9 @@ async def employee_check_out_route(
     gps_location: Optional[str] = Form(None),
     selfie: Optional[UploadFile] = File(None),
     location_data: Optional[str] = Form(None),
-    work_summary: str = Form(..., description="Required summary of today's work"),
+    work_summary: Optional[str] = Form(None, description="Summary of today's work"),
     work_report: Optional[UploadFile] = File(None),
+    task_deadline_reason: Optional[str] = Form(None, description="Reason for incomplete tasks on deadline"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -952,12 +1191,47 @@ async def employee_check_out_route(
                 "longitude": None,
             }
 
+        # Check for overdue tasks before allowing checkout
+        from app.db.models.task import Task
+        from app.enums import TaskStatus
+        from datetime import date
+        
+        today = date.today()
+        overdue_tasks = db.query(Task).filter(
+            Task.assigned_to == user_id,
+            Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+            Task.due_date == today
+        ).all()
+        
+        # If there are tasks due today, require a reason
+        if overdue_tasks:
+            reason_text = (task_deadline_reason or "").strip()
+            if not reason_text:
+                task_titles = [task.title for task in overdue_tasks]
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"You have tasks due today that are not completed: {', '.join(task_titles)}. Please provide a reason for not completing them before checkout."
+                )
+            
+            # Validate reason length and content
+            if len(reason_text) < 15:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Task deadline reason must be at least 15 characters long."
+                )
+            
+            # Check if reason contains only numbers
+            if reason_text.isdigit():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Task deadline reason cannot contain only numbers. Please provide a meaningful explanation."
+                )
+
         summary_text = (work_summary or "").strip()
         if not summary_text:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Work summary is required for check-out"
-            )
+            # Provide a default work summary if none is provided (for automatic logout scenarios)
+            summary_text = "Automatic check-out (no summary provided)"
+            logger.info(f"User {user_id} checked out without work summary - using default")
 
         # Save selfie if provided
         selfie_path = save_selfie(user_id, selfie, 'checkout') if selfie else None
@@ -994,10 +1268,23 @@ async def employee_check_out_route(
         attendance.work_summary = summary_text
         if work_report_path:
             attendance.work_report = work_report_path
+        if overdue_tasks and task_deadline_reason:
+            attendance.task_deadline_reason = task_deadline_reason.strip()
 
         # Calculate total hours worked
         time_worked = attendance.check_out - attendance.check_in
         attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)  # Convert to hours with 2 decimal places
+        
+        # Automatically set user as offline after check-out
+        from app.db.models.online_status import OnlineStatus
+        offline_status = OnlineStatus(
+            attendance_id=attendance.attendance_id,
+            user_id=user_id,
+            is_online=False,
+            reason="Automatic offline status after check-out",
+            timestamp=datetime.utcnow()
+        )
+        db.add(offline_status)
         
         db.commit()
         db.refresh(attendance)
@@ -1052,12 +1339,47 @@ async def employee_check_out_json(
                 f.write(raw)
             selfie_path = file_path
 
+        # Check for overdue tasks before allowing checkout
+        from app.db.models.task import Task
+        from app.enums import TaskStatus
+        from datetime import date
+        
+        today = date.today()
+        overdue_tasks = db.query(Task).filter(
+            Task.assigned_to == payload.user_id,
+            Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+            Task.due_date == today
+        ).all()
+        
+        # If there are tasks due today, require a reason
+        if overdue_tasks:
+            reason_text = (payload.task_deadline_reason or "").strip()
+            if not reason_text:
+                task_titles = [task.title for task in overdue_tasks]
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"You have tasks due today that are not completed: {', '.join(task_titles)}. Please provide a reason for not completing them before checkout."
+                )
+            
+            # Validate reason length and content
+            if len(reason_text) < 15:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Task deadline reason must be at least 15 characters long."
+                )
+            
+            # Check if reason contains only numbers
+            if reason_text.isdigit():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Task deadline reason cannot contain only numbers. Please provide a meaningful explanation."
+                )
+
         summary_text = (payload.work_summary or "").strip()
         if not summary_text:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Work summary is required for check-out"
-            )
+            # Provide a default work summary if none is provided (for automatic logout scenarios)
+            summary_text = "Automatic check-out (no summary provided)"
+            logger.info(f"User {payload.user_id} checked out without work summary - using default")
 
         work_report_path = None
         if payload.work_report:
@@ -1103,9 +1425,23 @@ async def employee_check_out_json(
         attendance.work_summary = summary_text
         if work_report_path:
             attendance.work_report = work_report_path
+        if overdue_tasks and payload.task_deadline_reason:
+            attendance.task_deadline_reason = payload.task_deadline_reason.strip()
 
         time_worked = attendance.check_out - attendance.check_in
         attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)
+        
+        # Automatically set user as offline after check-out
+        from app.db.models.online_status import OnlineStatus
+        offline_status = OnlineStatus(
+            attendance_id=attendance.attendance_id,
+            user_id=payload.user_id,
+            is_online=False,
+            reason="Automatic offline status after check-out",
+            timestamp=datetime.utcnow()  # Use utcnow() instead of now(UTC_TZ)
+        )
+        db.add(offline_status)
+        
         db.commit()
         db.refresh(attendance)
         return _prepare_attendance_payload(attendance)
@@ -1523,7 +1859,7 @@ def update_online_status(
         user_id=current_user.user_id,
         is_online=payload.is_online,
         reason=payload.reason.strip() if payload.reason else None,
-        timestamp=datetime.now(UTC_TZ)
+        timestamp=datetime.utcnow()
     )
     db.add(status_log)
     db.commit()
@@ -1607,7 +1943,7 @@ def get_all_current_online_status(
         )
     
     # Get today's date in UTC
-    today_start = datetime.now(UTC_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     # Get all attendance records for today that haven't checked out
@@ -1620,12 +1956,14 @@ def get_all_current_online_status(
     status_map = {}
     
     for attendance in today_attendances:
-        # Get the latest status log for this attendance
+        # Get the latest status log for this user today
         latest_status = db.query(OnlineStatus).filter(
-            OnlineStatus.attendance_id == attendance.attendance_id
+            OnlineStatus.user_id == attendance.user_id,
+            OnlineStatus.timestamp >= today_start,
+            OnlineStatus.timestamp < today_end
         ).order_by(OnlineStatus.timestamp.desc()).first()
         
-        # Default to online if no status logs (just checked in)
+        # Default to online if no status logs today (just checked in)
         is_online = True if not latest_status else latest_status.is_online
         
         status_map[attendance.user_id] = {
@@ -1658,7 +1996,7 @@ def get_user_current_online_status(
             )
     
     # Get today's attendance for this user
-    today_start = datetime.now(UTC_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     attendance = db.query(Attendance).filter(
@@ -1683,9 +2021,11 @@ def get_user_current_online_status(
             "check_out_time": attendance.check_out.isoformat()
         }
     
-    # Get latest status
+    # Get latest status for today
     latest_status = db.query(OnlineStatus).filter(
-        OnlineStatus.attendance_id == attendance.attendance_id
+        OnlineStatus.user_id == user_id,
+        OnlineStatus.timestamp >= today_start,
+        OnlineStatus.timestamp < today_end
     ).order_by(OnlineStatus.timestamp.desc()).first()
     
     is_online = True if not latest_status else latest_status.is_online
@@ -1709,75 +2049,119 @@ def calculate_working_hours(
     Calculate actual working hours based on online/offline status.
     Only counts time when user was online.
     """
-    from app.db.models.online_status import OnlineStatus
-    
-    # Verify attendance
-    attendance = db.query(Attendance).filter(
-        Attendance.attendance_id == attendance_id
-    ).first()
-    
-    if not attendance:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Attendance record not found"
-        )
-    
-    # Check permissions
-    if attendance.user_id != current_user.user_id:
-        if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
-            )
-    
-    # Get status history
-    status_logs = db.query(OnlineStatus).filter(
-        OnlineStatus.attendance_id == attendance_id
-    ).order_by(OnlineStatus.timestamp.asc()).all()
-    
-    # Calculate working hours
-    total_online_seconds = 0
-    last_online_time = None
-    current_status = True  # Assume online after check-in (default)
-    
-    # Start from check-in time
-    check_in_time = attendance.check_in
-    last_online_time = check_in_time
-    
-    # If no status logs exist, user has been online since check-in
-    if not status_logs:
-        end_time = attendance.check_out if attendance.check_out else datetime.now(UTC_TZ)
-        total_online_seconds = (end_time - check_in_time).total_seconds()
-    else:
-        # Process status logs
-        for log in status_logs:
-            if log.is_online:
-                # Going online
-                last_online_time = log.timestamp
-                current_status = True
-            else:
-                # Going offline - calculate time since last online
-                if last_online_time:
-                    duration = (log.timestamp - last_online_time).total_seconds()
-                    total_online_seconds += duration
-                current_status = False
-                last_online_time = None
+    try:
+        from app.db.models.online_status import OnlineStatus
         
-        # If currently online, add time until now or checkout
-        if current_status and last_online_time:
-            end_time = attendance.check_out if attendance.check_out else datetime.now(UTC_TZ)
-            duration = (end_time - last_online_time).total_seconds()
-            total_online_seconds += duration
-    
-    # Convert to hours
-    working_hours = total_online_seconds / 3600
-    
-    return {
-        "attendance_id": attendance_id,
-        "working_hours": round(working_hours, 2),
-        "total_seconds": int(total_online_seconds),
-        "is_currently_online": current_status,
-        "check_in": attendance.check_in.isoformat(),
-        "check_out": attendance.check_out.isoformat() if attendance.check_out else None
-    }
-    return None
+        # Verify attendance
+        attendance = db.query(Attendance).filter(
+            Attendance.attendance_id == attendance_id
+        ).first()
+        
+        if not attendance:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attendance record not found"
+            )
+        
+        # Check permissions
+        if attendance.user_id != current_user.user_id:
+            if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied"
+                )
+        
+        # Get status history
+        status_logs = db.query(OnlineStatus).filter(
+            OnlineStatus.attendance_id == attendance_id
+        ).order_by(OnlineStatus.timestamp.asc()).all()
+        
+        # Calculate working hours with proper pause/resume logic
+        total_online_seconds = 0
+        total_offline_seconds = 0
+        last_online_time = None
+        current_status = True  # Assume online after check-in (default)
+        
+        # Helper function to ensure timezone consistency
+        def ensure_utc_timezone(dt):
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                # Assume naive datetime is in UTC
+                return dt.replace(tzinfo=UTC_TZ)
+            return dt.astimezone(UTC_TZ)
+        
+        # Start from check-in time
+        check_in_time = ensure_utc_timezone(attendance.check_in)
+        last_online_time = check_in_time
+        last_status_change_time = check_in_time
+        
+        # If no status logs exist, user has been online since check-in
+        if not status_logs:
+            end_time = ensure_utc_timezone(attendance.check_out) if attendance.check_out else ensure_utc_timezone(datetime.utcnow())
+            total_online_seconds = (end_time - check_in_time).total_seconds()
+            total_offline_seconds = 0
+        else:
+            # Process status logs chronologically
+            for log in status_logs:
+                log_timestamp = ensure_utc_timezone(log.timestamp)
+                
+                if log.is_online:
+                    # Going online (resume)
+                    if not current_status:
+                        # Was offline, now online - add offline duration
+                        if last_status_change_time:
+                            offline_duration = (log_timestamp - last_status_change_time).total_seconds()
+                            total_offline_seconds += offline_duration
+                    
+                    last_online_time = log_timestamp
+                    last_status_change_time = log_timestamp
+                    current_status = True
+                else:
+                    # Going offline (pause)
+                    if current_status and last_online_time:
+                        # Was online, now offline - add online duration
+                        online_duration = (log_timestamp - last_online_time).total_seconds()
+                        total_online_seconds += online_duration
+                    
+                    last_online_time = None
+                    last_status_change_time = log_timestamp
+                    current_status = False
+            
+            # Handle final period until now or checkout
+            end_time = ensure_utc_timezone(attendance.check_out) if attendance.check_out else ensure_utc_timezone(datetime.utcnow())
+            
+            if current_status and last_online_time:
+                # Currently online - add remaining online time
+                final_online_duration = (end_time - last_online_time).total_seconds()
+                total_online_seconds += final_online_duration
+            elif not current_status and last_status_change_time:
+                # Currently offline - add remaining offline time
+                final_offline_duration = (end_time - last_status_change_time).total_seconds()
+                total_offline_seconds += final_offline_duration
+        
+        # Convert to hours
+        working_hours = total_online_seconds / 3600
+        offline_hours = total_offline_seconds / 3600
+        
+        return {
+            "attendance_id": attendance_id,
+            "working_hours": round(working_hours, 2),
+            "total_seconds": int(total_online_seconds),
+            "total_offline_seconds": int(total_offline_seconds),
+            "offline_hours": round(offline_hours, 2),
+            "is_currently_online": current_status,
+            "check_in": attendance.check_in.isoformat(),
+            "check_out": attendance.check_out.isoformat() if attendance.check_out else None
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 404, 403)
+        raise
+    except Exception as e:
+        # Log the error and return a generic 500 error
+        logger.error(f"Error calculating working hours for attendance {attendance_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to calculate working hours"
+        )

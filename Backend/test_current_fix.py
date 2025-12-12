@@ -7,7 +7,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://staffly.space"
 
 def test_dashboard():
     """Test the admin dashboard response"""

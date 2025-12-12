@@ -72,7 +72,7 @@ export interface Task {
   assignedTo: string[];
   assignedBy: string;
   priority: 'low' | 'medium' | 'high' | 'urgent';
-  status: 'todo' | 'in-progress' | 'review' | 'completed' | 'cancelled';
+  status: 'todo' | 'in-progress' | 'completed' | 'cancelled';
   deadline: string;
   startDate: string;
   completedDate?: string;

@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
+
+    @property
+    def OTP_EXPIRY_MINUTES(self) -> float:
+        """Calculate OTP expiry in minutes from seconds"""
+        return self.OTP_EXPIRY_SECONDS / 60
     
 
     
@@ -63,5 +68,8 @@ def ist_to_utc(ist_dt: datetime) -> datetime:
     if ist_dt.tzinfo is None:
         ist_dt = APP_TIMEZONE.localize(ist_dt)
     return ist_dt.astimezone(pytz.utc)
+
+    class Config:
+        env_file = ".env.production"
 
 settings = Settings()

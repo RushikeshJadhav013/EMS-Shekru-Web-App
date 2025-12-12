@@ -11,6 +11,7 @@ interface LoginResponse {
   department?: string;
   designation?: string;
   joining_date?: string;
+  profile_photo?: string;
   access_token: string;
 }
 
@@ -21,6 +22,8 @@ interface AuthContextType {
   login: (userData: LoginResponse) => Promise<void>;
   logout: () => void;
   updateUser: (user: User) => void;
+  showDeadlineWarnings: boolean;
+  setShowDeadlineWarnings: (show: boolean) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -96,6 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [otpSent, setOtpSent] = useState(false);
+  const [showDeadlineWarnings, setShowDeadlineWarnings] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -151,6 +155,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         department: userData.department || '',
         designation: userData.designation || '',
         joiningDate: userData.joining_date || new Date().toISOString(),
+        profilePhoto: userData.profile_photo ? `https://staffly.space/${userData.profile_photo}` : undefined,
         status: 'active',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -192,6 +197,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
+      // Call login resume endpoint to handle pause/resume functionality
+      try {
+        await fetch('https://staffly.space/attendance/login-resume', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${userData.access_token}`,
+          },
+          body: JSON.stringify({
+            user_id: parseInt(user.id),
+            login_timestamp: new Date().toISOString(),
+          }),
+        });
+      } catch (error) {
+        // Don't block login if the resume API call fails
+        console.warn('Failed to record login resume:', error);
+      }
+
+      // Show deadline warnings after successful login
+      setTimeout(() => {
+        setShowDeadlineWarnings(true);
+      }, 1000); // Small delay to let the navigation complete
+
       navigate(redirectPath);
     } catch (error) {
       console.error('Login error:', error);
@@ -206,7 +234,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setOtpSent(false);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // Before logging out, record logout timestamp for pause/resume functionality
+    try {
+      const token = localStorage.getItem('token');
+      if (token && user?.id) {
+        // Call the logout endpoint to record pause timestamp
+        await fetch('https://staffly.space/attendance/logout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            user_id: parseInt(user.id),
+            logout_timestamp: new Date().toISOString(),
+          }),
+        });
+      }
+    } catch (error) {
+      // Don't block logout if the API call fails
+      console.warn('Failed to record logout timestamp:', error);
+    }
+
     setUser(null);
     localStorage.removeItem('user');
     localStorage.removeItem('token');
@@ -236,6 +286,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     login,
     logout,
     updateUser,
+    showDeadlineWarnings,
+    setShowDeadlineWarnings,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

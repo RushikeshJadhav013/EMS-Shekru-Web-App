@@ -27,7 +27,6 @@ import { apiService, type Department as ApiDepartment } from '@/lib/api';
 
 interface ExtendedDepartment extends Department {
   employeeCount?: number;
-  budget?: number;
   location?: string;
 }
 
@@ -51,7 +50,9 @@ export default function DepartmentManagement() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [selectedManagerFilter, setSelectedManagerFilter] = useState<'all' | string>('all');
-  const [sortBy, setSortBy] = useState<'name' | 'employees' | 'budget'>('name');
+  const [sortBy, setSortBy] = useState<'name' | 'employees'>('name');
+  const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
+  const [viewDepartment, setViewDepartment] = useState<ExtendedDepartment | null>(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [selectedDepartment, setSelectedDepartment] = useState<ExtendedDepartment | null>(null);
@@ -62,7 +63,6 @@ export default function DepartmentManagement() {
     description: '',
     status: 'active',
     employeeCount: undefined,
-    budget: undefined,
     location: ''
   });
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
@@ -97,9 +97,6 @@ export default function DepartmentManagement() {
       if (sortBy === 'employees') {
         return (b.employeeCount || 0) - (a.employeeCount || 0);
       }
-      if (sortBy === 'budget') {
-        return (b.budget || 0) - (a.budget || 0);
-      }
       return 0;
     });
 
@@ -107,10 +104,10 @@ export default function DepartmentManagement() {
   }, [departments, searchQuery, selectedStatus, selectedManagerFilter, sortBy]);
 
   const handleCreateDepartment = () => {
-    if (!formData.name || !formData.code || !formData.managerId) {
+    if (!formData.name || !formData.code) {
       toast({
         title: 'Error',
-        description: 'Please fill in all required fields',
+        description: 'Please fill in department name and code',
         variant: 'destructive'
       });
       return;
@@ -125,7 +122,6 @@ export default function DepartmentManagement() {
         description: formData.description || '',
         status: formData.status || 'active',
         employee_count: formData.employeeCount ?? 0,
-        budget: formData.budget ?? 0,
         location: formData.location || '',
       })
       .then((created: ApiDepartment) => {
@@ -137,7 +133,6 @@ export default function DepartmentManagement() {
           description: created.description ?? '',
           status: (created.status as 'active' | 'inactive') || 'active',
           employeeCount: created.employee_count ?? 0,
-          budget: created.budget ?? 0,
           location: created.location ?? '',
           createdAt: created.created_at,
           updatedAt: created.updated_at,
@@ -167,6 +162,10 @@ export default function DepartmentManagement() {
   const handleUpdateDepartment = () => {
     if (!selectedDepartment) return;
 
+    const oldManagerId = selectedDepartment.managerId;
+    const newManagerId = formData.managerId;
+    const managerChanged = oldManagerId !== newManagerId;
+
     setIsSaving(true);
     apiService
       .updateDepartment(Number(selectedDepartment.id), {
@@ -176,7 +175,6 @@ export default function DepartmentManagement() {
         description: formData.description,
         status: formData.status,
         employee_count: formData.employeeCount,
-        budget: formData.budget,
         location: formData.location,
       })
       .then((updated: ApiDepartment) => {
@@ -187,10 +185,10 @@ export default function DepartmentManagement() {
                   ...dept,
                   name: updated.name,
                   code: updated.code,
+                  managerId: updated.manager_id?.toString() ?? '',
                   description: updated.description ?? '',
                   status: updated.status as 'active' | 'inactive',
                   employeeCount: updated.employee_count ?? dept.employeeCount,
-                  budget: updated.budget ?? dept.budget,
                   location: updated.location ?? '',
                   updatedAt: updated.updated_at,
                 }
@@ -199,9 +197,27 @@ export default function DepartmentManagement() {
         );
         setIsEditDialogOpen(false);
         resetForm();
+        
+        // Reload managers to reflect any role changes
+        loadManagers();
+        
+        let successMessage = 'Department updated successfully';
+        if (managerChanged) {
+          const newManager = managers.find(m => m.id === newManagerId);
+          const oldManager = managers.find(m => m.id === oldManagerId);
+          
+          if (newManager && oldManager) {
+            successMessage += `. Manager changed from ${oldManager.name} to ${newManager.name}. User roles have been updated automatically.`;
+          } else if (newManager) {
+            successMessage += `. ${newManager.name} has been assigned as manager and promoted to Manager role.`;
+          } else if (oldManager) {
+            successMessage += `. ${oldManager.name} has been removed as manager. Their role may have been updated.`;
+          }
+        }
+        
         toast({
           title: 'Success',
-          description: 'Department updated successfully',
+          description: successMessage,
         });
       })
       .catch((error) => {
@@ -255,7 +271,6 @@ export default function DepartmentManagement() {
       description: '',
       status: 'active',
       employeeCount: undefined,
-      budget: undefined,
       location: ''
     });
     setSelectedDepartment(null);
@@ -280,8 +295,13 @@ export default function DepartmentManagement() {
     setIsEditDialogOpen(true);
   };
 
+  const openViewDialog = (department: ExtendedDepartment) => {
+    setViewDepartment(department);
+    setIsViewDialogOpen(true);
+  };
+
   const totalEmployees = departments.reduce((sum, dept) => sum + (dept.employeeCount || 0), 0);
-  const totalBudget = departments.reduce((sum, dept) => sum + (dept.budget || 0), 0);
+
   const activeDepartments = departments.filter(dept => dept.status === 'active').length;
 
   // Stable handlers to prevent input focus loss
@@ -309,13 +329,7 @@ export default function DepartmentManagement() {
     }));
   }, []);
 
-  const handleBudgetChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const { value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      budget: value === '' ? undefined : Number(value),
-    }));
-  }, []);
+
 
   const handleLocationChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData((prev) => ({ ...prev, location: e.target.value }));
@@ -337,7 +351,6 @@ export default function DepartmentManagement() {
         description: dept.description ?? '',
         status: (dept.status as 'active' | 'inactive') || 'active',
         employeeCount: dept.employee_count ?? 0,
-        budget: dept.budget ?? 0,
         location: dept.location ?? '',
         createdAt: dept.created_at,
         updatedAt: dept.updated_at,
@@ -410,8 +423,7 @@ export default function DepartmentManagement() {
     loadEmployees();
   }, []);
 
-  useEffect(() => {
-    const loadManagers = async () => {
+  const loadManagers = useCallback(async () => {
       setIsManagersLoading(true);
       try {
         setManagerLoadError(null);
@@ -472,10 +484,11 @@ export default function DepartmentManagement() {
       } finally {
         setIsManagersLoading(false);
       }
-    };
+    }, []);
 
+  useEffect(() => {
     loadManagers();
-  }, []);
+  }, [loadManagers]);
 
   // Auto-calculate employee count when department name changes
   useEffect(() => {
@@ -553,7 +566,6 @@ export default function DepartmentManagement() {
                     onManagerChange={handleManagerChange}
                     onStatusChange={handleStatusChange}
                     onEmployeeCountChange={handleEmployeeCountChange}
-                    onBudgetChange={handleBudgetChange}
                     onLocationChange={handleLocationChange}
                     onDescriptionChange={handleDescriptionChange}
                     onCancel={handleCreateCancel}
@@ -566,7 +578,7 @@ export default function DepartmentManagement() {
         </div>
 
         {/* Top Stats */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
           <Card className="border-0 bg-gradient-to-br from-indigo-500/90 to-sky-500/90 text-white shadow-md">
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -606,21 +618,7 @@ export default function DepartmentManagement() {
               </div>
             </CardContent>
           </Card>
-          <Card className="border-0 bg-gradient-to-br from-purple-500 to-fuchsia-500 text-white shadow-md">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-white/80">
-                    Total Budget
-                  </p>
-                  <p className="mt-1 text-2xl font-bold">
-                    ₹{(totalBudget / 100000).toFixed(1)}L
-                  </p>
-                </div>
-                <ChevronRight className="h-8 w-8 text-white/80" />
-              </div>
-            </CardContent>
-          </Card>
+
         </div>
       </div>
 
@@ -677,7 +675,7 @@ export default function DepartmentManagement() {
               <Select
                 value={sortBy}
                 onValueChange={(value) =>
-                  setSortBy(value as 'name' | 'employees' | 'budget')
+                  setSortBy(value as 'name' | 'employees')
                 }
               >
                 <SelectTrigger className="w-[140px] h-10 text-xs sm:text-sm">
@@ -686,7 +684,6 @@ export default function DepartmentManagement() {
                 <SelectContent>
                   <SelectItem value="name">Name (A-Z)</SelectItem>
                   <SelectItem value="employees">Employees</SelectItem>
-                  <SelectItem value="budget">Budget</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -701,7 +698,6 @@ export default function DepartmentManagement() {
                   <TableHead>Department</TableHead>
                   <TableHead>Manager</TableHead>
                   <TableHead>Employees</TableHead>
-                  <TableHead>Budget</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-center">Actions</TableHead>
@@ -710,13 +706,13 @@ export default function DepartmentManagement() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-sm">
+                    <TableCell colSpan={7} className="py-8 text-center text-sm">
                       Loading departments...
                     </TableCell>
                   </TableRow>
                 ) : filteredDepartments.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
                       No departments match your filters.
                     </TableCell>
                   </TableRow>
@@ -758,9 +754,6 @@ export default function DepartmentManagement() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-sm">
-                          ₹{((department.budget || 0) / 100000).toFixed(1)}L
-                        </TableCell>
-                        <TableCell className="text-sm">
                           {department.location || (
                             <span className="text-muted-foreground">-</span>
                           )}
@@ -781,6 +774,7 @@ export default function DepartmentManagement() {
                             <Button
                               size="sm"
                               variant="ghost"
+                              onClick={() => openViewDialog(department)}
                               className="h-8 w-8 p-0 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
                             >
                               <Eye className="h-4 w-4" />
@@ -878,13 +872,102 @@ export default function DepartmentManagement() {
               onManagerChange={handleManagerChange}
               onStatusChange={handleStatusChange}
               onEmployeeCountChange={handleEmployeeCountChange}
-              onBudgetChange={handleBudgetChange}
               onLocationChange={handleLocationChange}
               onDescriptionChange={handleDescriptionChange}
               onCancel={handleEditCancel}
               onSubmit={handleUpdateDepartment}
             />
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Dialog */}
+      <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
+        <DialogContent className="w-[95vw] max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3">
+              <Building2 className="h-6 w-6 text-indigo-600" />
+              Department Details
+            </DialogTitle>
+          </DialogHeader>
+          {viewDepartment && (
+            <div className="space-y-6 py-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-sm font-medium text-muted-foreground">Department Name</Label>
+                    <p className="text-lg font-semibold">{viewDepartment.name}</p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-muted-foreground">Department Code</Label>
+                    <p className="text-lg font-mono font-semibold text-indigo-600">{viewDepartment.code}</p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-muted-foreground">Status</Label>
+                    <div className="mt-1">
+                      <Badge
+                        className={
+                          viewDepartment.status === 'active'
+                            ? 'bg-emerald-500 text-white border-0 px-3 py-1'
+                            : 'bg-slate-400 text-white border-0 px-3 py-1'
+                        }
+                      >
+                        {viewDepartment.status.charAt(0).toUpperCase() + viewDepartment.status.slice(1)}
+                      </Badge>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-sm font-medium text-muted-foreground">Manager</Label>
+                    <p className="text-lg font-semibold">
+                      {managers.find(m => m.id === viewDepartment.managerId)?.name || 'Unassigned'}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-muted-foreground">Employee Count</Label>
+                    <p className="text-lg font-semibold">{viewDepartment.employeeCount || 0} employees</p>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-muted-foreground">Location</Label>
+                    <p className="text-lg">{viewDepartment.location || 'Not specified'}</p>
+                  </div>
+                </div>
+              </div>
+              {viewDepartment.description && (
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Description</Label>
+                  <p className="mt-2 text-sm text-muted-foreground bg-slate-50 dark:bg-slate-900 p-3 rounded-lg">
+                    {viewDepartment.description}
+                  </p>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-4 border-t">
+                <div className="text-xs text-muted-foreground">
+                  Created: {viewDepartment.createdAt ? new Date(viewDepartment.createdAt).toLocaleDateString() : 'Unknown'}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Updated: {viewDepartment.updatedAt ? new Date(viewDepartment.updatedAt).toLocaleDateString() : 'Unknown'}
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsViewDialogOpen(false)}>
+              Close
+            </Button>
+            <Button 
+              onClick={() => {
+                setIsViewDialogOpen(false);
+                if (viewDepartment) {
+                  openEditDialog(viewDepartment);
+                }
+              }}
+              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+            >
+              Edit Department
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
@@ -904,7 +987,6 @@ interface DepartmentFormProps {
   onManagerChange: (value: string) => void;
   onStatusChange: (value: string) => void;
   onEmployeeCountChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onBudgetChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onLocationChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onDescriptionChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onCancel: () => void;
@@ -992,7 +1074,7 @@ function DepartmentForm({
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="manager">Department Manager *</Label>
+              <Label htmlFor="manager">Department Manager (Optional)</Label>
               <Select
                 value={formData.managerId}
               onValueChange={onManagerChange}
@@ -1037,6 +1119,9 @@ function DepartmentForm({
             {managerLoadError && !isManagersLoading && (
               <p className="text-xs text-amber-600">{managerLoadError}</p>
             )}
+            <p className="text-xs text-muted-foreground">
+              💡 When you assign a manager, their role will be automatically updated to "Manager" in the Employee Management system.
+            </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="status">Status</Label>
@@ -1055,43 +1140,29 @@ function DepartmentForm({
 
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 p-4 space-y-4">
           <div>
-          <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Size & Budget</p>
+          <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Department Size</p>
             <p className="text-xs text-muted-foreground">
-              Track headcount and yearly allocation for this department.
+              Track headcount for this department.
             </p>
           </div>
-          <div className="grid sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="employeeCount" className="flex items-center gap-2">
-                Number of Employees
-                <Badge variant="secondary" className="text-xs">Auto-calculated</Badge>
-              </Label>
-              <Input
-                id="employeeCount"
-                type="number"
-                min="0"
-              value={formData.employeeCount ?? 0}
-              onChange={onEmployeeCountChange}
-                className="h-11 bg-slate-50 dark:bg-slate-900"
-                readOnly
-                disabled
-              />
-              <p className="text-xs text-muted-foreground">
-                Automatically counted from employees in this department
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="budget">Annual Budget (₹)</Label>
-              <Input
-                id="budget"
-                type="number"
-                min="0"
-              value={formData.budget ?? ''}
-              onChange={onBudgetChange}
-                placeholder="5000000"
-                className="h-11"
-              />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="employeeCount" className="flex items-center gap-2">
+              Number of Employees
+              <Badge variant="secondary" className="text-xs">Auto-calculated</Badge>
+            </Label>
+            <Input
+              id="employeeCount"
+              type="number"
+              min="0"
+            value={formData.employeeCount ?? 0}
+            onChange={onEmployeeCountChange}
+              className="h-11 bg-slate-50 dark:bg-slate-900"
+              readOnly
+              disabled
+            />
+            <p className="text-xs text-muted-foreground">
+              Automatically counted from employees in this department
+            </p>
           </div>
         </div>
 

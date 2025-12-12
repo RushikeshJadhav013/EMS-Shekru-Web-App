@@ -5,7 +5,7 @@
 ### Problem
 When uploading attendance with selfies, you get:
 ```
-Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at https://staffly.space/attendance/check-out/json. (Reason: CORS header 'Access-Control-Allow-Origin' missing). Status code: 413.
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at http://localhost:8080/attendance/check-out/json. (Reason: CORS header 'Access-Control-Allow-Origin' missing). Status code: 413.
 ```
 
 ### Root Cause
@@ -74,9 +74,9 @@ sudo systemctl reload nginx
 Multiple API requests fail with:
 ```
 API request failed: Error: Invalid or expired token
-XHR GET https://staffly.space/tasks/notifications [HTTP/1.1 401 Unauthorized]
-XHR GET https://staffly.space/leave/notifications [HTTP/1.1 401 Unauthorized]
-XHR GET https://staffly.space/shift/notifications [HTTP/1.1 401 Unauthorized]
+XHR GET http://localhost:8080/tasks/notifications [HTTP/1.1 401 Unauthorized]
+XHR GET http://localhost:8080/leave/notifications [HTTP/1.1 401 Unauthorized]
+XHR GET http://localhost:8080/shift/notifications [HTTP/1.1 401 Unauthorized]
 ```
 
 ### Root Cause
@@ -142,7 +142,7 @@ Already implemented in `Backend/app/main.py`:
 ### Test Server Configuration
 ```bash
 # Test with a large payload
-curl -X POST https://staffly.space/attendance/check-out/json \
+curl -X POST http://localhost:8080/attendance/check-out/json \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d @large_payload.json

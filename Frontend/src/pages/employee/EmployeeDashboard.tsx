@@ -80,10 +80,25 @@ const EmployeeDashboard: React.FC = () => {
   }, []);
 
   const formatWorkHours = (hours: number) => {
-    if (!hours) return '0.00';
+    if (!hours || hours === 0) {
+      return '0 hrs - 0 mins';
+    }
+    
     const parsed = Number(hours);
-    if (Number.isNaN(parsed)) return '0.00';
-    return parsed.toFixed(2);
+    if (Number.isNaN(parsed)) return '0 hrs - 0 mins';
+    
+    const totalHours = Math.floor(parsed);
+    const minutes = Math.round((parsed - totalHours) * 60);
+    
+    if (totalHours === 0 && minutes === 0) {
+      return '0 hrs - 0 mins';
+    } else if (totalHours === 0) {
+      return `0 hrs - ${minutes} mins`;
+    } else if (minutes === 0) {
+      return `${totalHours} hrs - 0 mins`;
+    } else {
+      return `${totalHours} hrs - ${minutes} mins`;
+    }
   };
 
   
@@ -178,7 +193,7 @@ const EmployeeDashboard: React.FC = () => {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{formatWorkHours(stats.currentMonthHours)}h</div>
+            <div className="text-2xl font-bold font-mono">{formatWorkHours(stats.currentMonthHours)}</div>
             <div className="flex items-center gap-1 mt-2">
               <TrendingUp className="h-4 w-4 text-rose-100" />
               <span className="text-sm text-rose-100">{t.dashboard.onTrack}</span>

@@ -16,8 +16,9 @@ class UserBase(BaseModel):
     resignation_date: Optional[datetime] = Field(None, description="Resignation date if applicable")
     pan_card: Optional[constr(min_length=10, max_length=10, strip_whitespace=True)] = Field(None, description="PAN card number (10 characters)")
     aadhar_card: Optional[constr(min_length=14, max_length=14, strip_whitespace=True)] = Field(None, description="Aadhar card number (format: 1234-5678-9012)")
-    shift_type: Optional[Literal['general', 'morning', 'afternoon', 'night', 'rotational']] = Field(None, description="Shift type")
-    employee_type: Optional[Literal['contract', 'permanent']] = Field(None, description="Employment type")
+    shift_type: Optional[Literal['general', 'morning', 'afternoon', 'day', 'night', 'rotational', 'rotating']] = Field(None, description="Shift type")
+    employee_type: Optional[str] = Field(None, description="Employment type")
+    manager_id: Optional[int] = Field(None, description="Reporting manager user ID")
 
     @field_validator('name')
     @classmethod

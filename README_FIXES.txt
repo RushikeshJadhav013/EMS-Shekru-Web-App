@@ -171,12 +171,12 @@ Database:
 - Password: staff9612
 
 Backend:
-- URL: http://localhost:8000
-- Docs: http://localhost:8000/docs
+- URL: https://staffly.space
+- Docs: https://staffly.space/docs
 
 Frontend:
 - URL: http://localhost:5173 (dev)
-- Production: https://staffly.space
+- Production: http://localhost:8080
 
 ================================================================================
 

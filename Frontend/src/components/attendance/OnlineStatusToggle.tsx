@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Wifi, WifiOff, Clock, Send } from 'lucide-react';
+import { Wifi, WifiOff, Clock, Send, Timer, History } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,18 +11,32 @@ interface OnlineStatusToggleProps {
   isOnline: boolean;
   onStatusChange: (isOnline: boolean, reason?: string) => Promise<void>;
   workingHours: string;
+  totalOfflineTime?: string;
+  currentSessionOfflineTime?: string;
   isVisible: boolean;
+  attendanceId?: number;
+  userId?: number;
 }
 
 export const OnlineStatusToggle: React.FC<OnlineStatusToggleProps> = ({
   isOnline,
   onStatusChange,
   workingHours,
-  isVisible
+  totalOfflineTime = '0 hrs - 0 mins',
+  currentSessionOfflineTime = '0:00:00',
+  isVisible,
+  attendanceId,
+  userId
 }) => {
   const [showReasonDialog, setShowReasonDialog] = useState(false);
   const [offlineReason, setOfflineReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+
+
+
+
+
 
   if (!isVisible) return null;
 
@@ -122,15 +136,54 @@ export const OnlineStatusToggle: React.FC<OnlineStatusToggleProps> = ({
                   {isOnline ? 'Online' : 'Offline'}
                 </Badge>
               </div>
-              <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-                <Clock className="h-4 w-4" />
-                <span>Working Hours: <strong className="text-slate-900 dark:text-slate-100">{workingHours}</strong></span>
+              <div className="space-y-2 mt-2">
+                {/* Online Working Hours */}
+                <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                  <Clock className="h-4 w-4 text-green-500" />
+                  <span>Online Time: <strong className="text-green-700 dark:text-green-400 font-mono">{workingHours}</strong></span>
+                </div>
+                
+                {/* Total Offline Time */}
+                {totalOfflineTime !== '0 hrs - 0 mins' && (
+                  <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                    <History className="h-4 w-4 text-slate-500" />
+                    <span>Total Offline: <strong className="text-slate-700 dark:text-slate-300 font-mono">{totalOfflineTime}</strong></span>
+                  </div>
+                )}
+                
+                {/* Current Offline Session */}
+                {!isOnline && (
+                  <div className="mt-2 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Timer className="h-4 w-4 text-amber-500 animate-pulse" />
+                      <span className="text-amber-700 dark:text-amber-300">
+                        Current Offline Session: <strong className="font-mono text-amber-800 dark:text-amber-200">
+                          {currentSessionOfflineTime}
+                        </strong>
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+                      <span>⚠️</span>
+                      <span>Work hours tracking is paused</span>
+                    </p>
+                  </div>
+                )}
+                
+                {/* Online Status Info */}
+                {isOnline && (
+                  <div className="mt-2 p-3 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg">
+                    <div className="flex items-center gap-2 text-sm">
+                      <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
+                      <span className="text-green-700 dark:text-green-300">
+                        Work hours tracking is active
+                      </span>
+                    </div>
+                    <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                      Only online time counts towards working hours
+                    </p>
+                  </div>
+                )}
               </div>
-              {!isOnline && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                  ⚠️ Hours tracking is paused while offline
-                </p>
-              )}
             </div>
           </div>
 
@@ -165,6 +218,61 @@ export const OnlineStatusToggle: React.FC<OnlineStatusToggleProps> = ({
               </>
             )}
           </Button>
+        </div>
+      </div>
+
+      {/* Time Summary Card */}
+      <div className="mt-4 bg-gradient-to-br from-slate-50 to-gray-50 dark:from-slate-800 dark:to-gray-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-2">
+          <Clock className="h-4 w-4" />
+          Today's Time Breakdown
+        </h4>
+        
+        <div className="grid grid-cols-2 gap-4">
+          {/* Online Time */}
+          <div className="bg-white dark:bg-slate-900 rounded-lg p-3 border border-green-200 dark:border-green-800">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="h-2 w-2 rounded-full bg-green-500"></div>
+              <span className="text-xs font-medium text-green-700 dark:text-green-300">ONLINE TIME</span>
+            </div>
+            <div className="text-lg font-bold text-green-800 dark:text-green-200 font-mono">
+              {workingHours}
+            </div>
+            <p className="text-xs text-green-600 dark:text-green-400">Started from 0 hrs - 0 mins on check-in</p>
+          </div>
+          
+          {/* Offline Time */}
+          <div className="bg-white dark:bg-slate-900 rounded-lg p-3 border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="h-2 w-2 rounded-full bg-slate-500"></div>
+              <span className="text-xs font-medium text-slate-700 dark:text-slate-300">OFFLINE TIME</span>
+            </div>
+            <div className="text-lg font-bold text-slate-800 dark:text-slate-200 font-mono">
+              {totalOfflineTime}
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400">Break time (not counted)</p>
+          </div>
+        </div>
+        
+        {/* Current Session Info */}
+        {!isOnline && currentSessionOfflineTime !== '0:00:00' && (
+          <div className="mt-3 p-3 bg-amber-100 dark:bg-amber-900/30 rounded-lg border border-amber-300 dark:border-amber-700">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Timer className="h-4 w-4 text-amber-600 animate-pulse" />
+                <span className="text-sm font-medium text-amber-800 dark:text-amber-200">Current Break</span>
+              </div>
+              <div className="text-sm font-bold text-amber-900 dark:text-amber-100 font-mono">
+                {currentSessionOfflineTime}
+              </div>
+            </div>
+          </div>
+        )}
+        
+        <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+          <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+            💡 Timer starts from 0 hrs - 0 mins on check-in and counts only online time
+          </p>
         </div>
       </div>
 

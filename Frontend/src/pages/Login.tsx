@@ -29,6 +29,7 @@ const API_ENDPOINTS = {
 // Configure axios defaults
 axios.defaults.baseURL = '';  // Using absolute URLs
 axios.defaults.headers.post['Content-Type'] = 'application/json';
+axios.defaults.timeout = 30000; // 30 second timeout
 
 interface ApiError {
   response?: {
@@ -126,14 +127,22 @@ const Login: React.FC = () => {
     setError('');
     
     try {
-      // Send email as query parameter instead of body
-      const response = await axios.post(`${API_ENDPOINTS.sendOtp}?email=${encodeURIComponent(email)}`);
+      // Create axios instance with timeout and proper error handling
+      const axiosInstance = axios.create({
+        timeout: 30000, // 30 seconds
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      // Send email as query parameter
+      const response = await axiosInstance.post(`${API_ENDPOINTS.sendOtp}?email=${encodeURIComponent(email)}`);
       
       // Handle successful response
       if (response.status === 200 || response.status === 201) {
         setOtpSent(true);
-        // Set OTP expiry time to 120 seconds (2 minutes)
-        const expirySeconds = 120; // Force 120 seconds regardless of backend response
+        // Use backend expiry time or default to 120 seconds
+        const expirySeconds = response.data?.expires_in_seconds || 120;
         setOtpExpiryTime(expirySeconds);
         setCanResend(false);
         const successMessage = response.data?.message || "OTP sent successfully";
@@ -143,21 +152,24 @@ const Login: React.FC = () => {
           description: successMessage,
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('OTP send error:', err);
-      const apiError = err as ApiError;
       let errorMessage = 'Failed to send OTP';
       
-      // Handle error response from backend
-      if (apiError.response?.data?.detail) {
-        if (typeof apiError.response.data.detail === 'string') {
-            errorMessage = apiError.response.data.detail;
-        } else if (Array.isArray(apiError.response.data.detail)) {
-            errorMessage = apiError.response.data.detail.map(err => err.msg).join(', ');
+      // Handle different types of errors
+      if (err.code === 'ECONNABORTED') {
+        errorMessage = 'Request timeout. Please check your internet connection and try again.';
+      } else if (err.code === 'ERR_NETWORK') {
+        errorMessage = 'Network error. Please check if the server is running and try again.';
+      } else if (err.response?.data?.detail) {
+        if (typeof err.response.data.detail === 'string') {
+            errorMessage = err.response.data.detail;
+        } else if (Array.isArray(err.response.data.detail)) {
+            errorMessage = err.response.data.detail.map((error: any) => error.msg).join(', ');
         } 
-      } else if (apiError.response?.data?.message) {
-        errorMessage = apiError.response.data.message;
-      } else if (!apiError.response) {
+      } else if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (!err.response) {
         errorMessage = 'Unable to connect to the server. Please check if the server is running.';
       }
       
@@ -186,11 +198,19 @@ const Login: React.FC = () => {
     setError('');
     
     try {
-      const response = await axios.post(`${API_ENDPOINTS.sendOtp}?email=${encodeURIComponent(email)}`);
+      // Create axios instance with timeout
+      const axiosInstance = axios.create({
+        timeout: 30000, // 30 seconds
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      const response = await axiosInstance.post(`${API_ENDPOINTS.sendOtp}?email=${encodeURIComponent(email)}`);
       
       if (response.status === 200 || response.status === 201) {
-        // Reset OTP expiry time to 120 seconds (2 minutes)
-        const expirySeconds = 120; // Force 120 seconds regardless of backend response
+        // Use backend expiry time or default to 120 seconds
+        const expirySeconds = response.data?.expires_in_seconds || 120;
         setOtpExpiryTime(expirySeconds);
         setCanResend(false);
         setOtp(''); // Clear previous OTP
@@ -200,19 +220,23 @@ const Login: React.FC = () => {
           description: "A new OTP has been sent to your email",
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('OTP resend error:', err);
-      const apiError = err as ApiError;
       let errorMessage = 'Failed to resend OTP';
       
-      if (apiError.response?.data?.detail) {
-        if (typeof apiError.response.data.detail === 'string') {
-            errorMessage = apiError.response.data.detail;
-        } else if (Array.isArray(apiError.response.data.detail)) {
-            errorMessage = apiError.response.data.detail.map(err => err.msg).join(', ');
+      // Handle different types of errors
+      if (err.code === 'ECONNABORTED') {
+        errorMessage = 'Request timeout. Please check your internet connection and try again.';
+      } else if (err.code === 'ERR_NETWORK') {
+        errorMessage = 'Network error. Please check if the server is running and try again.';
+      } else if (err.response?.data?.detail) {
+        if (typeof err.response.data.detail === 'string') {
+            errorMessage = err.response.data.detail;
+        } else if (Array.isArray(err.response.data.detail)) {
+            errorMessage = err.response.data.detail.map((error: any) => error.msg).join(', ');
         } 
-      } else if (apiError.response?.data?.message) {
-        errorMessage = apiError.response.data.message;
+      } else if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
       }
       
       setError(errorMessage);
@@ -237,8 +261,16 @@ const Login: React.FC = () => {
     setError('');
     
     try {
+      // Create axios instance with timeout
+      const axiosInstance = axios.create({
+        timeout: 30000, // 30 seconds
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
       // Send email and otp as query parameters
-      const response = await axios.post(
+      const response = await axiosInstance.post(
         `${API_ENDPOINTS.verifyOtp}?email=${encodeURIComponent(email)}&otp=${otp}`
       );
       
@@ -251,40 +283,36 @@ const Login: React.FC = () => {
         setLastShownError('');
         setLastOtpAttempt('');
         
-        // Pass the role as-is from backend, AuthContext will handle the mapping
-        // Backend returns role like "TeamLead", "Admin", etc. which needs proper mapping
-        
-        // Note: Toast notification removed here to avoid duplicate notifications
-        // AuthContext will show "Welcome back" message after successful login
-
         // Call the auth context login method with the verified data
-        // Role will be properly mapped in AuthContext
         await login({
           user_id: userData.user_id,
           email: userData.email,
           name: userData.name,
-          role: userData.role, // Pass as-is, AuthContext will map it correctly
+          role: userData.role,
           access_token: userData.access_token,
           department: userData.department,
           designation: userData.designation,
           joining_date: userData.joining_date
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('OTP verification error:', err);
-      const apiError = err as ApiError;
       let errorMessage = 'Failed to verify OTP';
       
-      // Handle error response - "Invalid or expired OTP"
-      if (apiError.response?.data?.detail) {
-        if (typeof apiError.response.data.detail === 'string') {
-            errorMessage = apiError.response.data.detail;
-        } else if (Array.isArray(apiError.response.data.detail)) {
-            errorMessage = apiError.response.data.detail.map(err => err.msg).join(', ');
+      // Handle different types of errors
+      if (err.code === 'ECONNABORTED') {
+        errorMessage = 'Request timeout. Please check your internet connection and try again.';
+      } else if (err.code === 'ERR_NETWORK') {
+        errorMessage = 'Network error. Please check if the server is running and try again.';
+      } else if (err.response?.data?.detail) {
+        if (typeof err.response.data.detail === 'string') {
+            errorMessage = err.response.data.detail;
+        } else if (Array.isArray(err.response.data.detail)) {
+            errorMessage = err.response.data.detail.map((error: any) => error.msg).join(', ');
         } 
-      } else if (apiError.response?.data?.message) {
-        errorMessage = apiError.response.data.message;
-      } else if (!apiError.response) {
+      } else if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (!err.response) {
         errorMessage = 'Unable to connect to the server. Please check if the server is running.';
       }
       

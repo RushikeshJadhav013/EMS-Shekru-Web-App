@@ -10,7 +10,6 @@ class DepartmentBase(BaseModel):
     description: Optional[str] = None
     status: str = "active"
     employee_count: Optional[int] = None
-    budget: Optional[float] = None
     location: Optional[str] = None
 
 
@@ -25,7 +24,6 @@ class DepartmentUpdate(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     employee_count: Optional[int] = None
-    budget: Optional[float] = None
     location: Optional[str] = None
 
 

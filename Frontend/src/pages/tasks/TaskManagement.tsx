@@ -170,14 +170,15 @@ const backendToFrontendStatus: Record<string, BaseTask['status']> = {
   'In Progress': 'in-progress',
   completed: 'completed',
   Completed: 'completed',
+  cancelled: 'cancelled',
+  Cancelled: 'cancelled',
 };
 
 const frontendToBackendStatus: Record<BaseTask['status'], string> = {
   'todo': 'Pending',
   'in-progress': 'In Progress',
-  'review': 'In Progress',
   'completed': 'Completed',
-  'cancelled': 'Completed',
+  'cancelled': 'Cancelled',
 };
 
 const mapBackendTaskToFrontend = (task: BackendTask): TaskWithPassMeta => {
@@ -302,6 +303,18 @@ const TaskManagement: React.FC = () => {
   const [isPassHistoryDialogOpen, setIsPassHistoryDialogOpen] = useState(false);
   const [passHistoryTask, setPassHistoryTask] = useState<TaskWithPassMeta | null>(null);
   
+  // Reassign Dialog State
+  const [isReassignDialogOpen, setIsReassignDialogOpen] = useState(false);
+  const [reassignTask, setReassignTask] = useState<TaskWithPassMeta | null>(null);
+  const [reassignForm, setReassignForm] = useState({
+    title: '',
+    description: '',
+    assignedTo: '',
+    deadline: '',
+    priority: 'medium' as BaseTask['priority'],
+  });
+  const [isReassigning, setIsReassigning] = useState(false);
+  
   // Task Comments State
   const [taskComments, setTaskComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
@@ -337,17 +350,15 @@ const TaskManagement: React.FC = () => {
 
   useEffect(() => {
     if (user?.role === 'admin') {
+      // Admin defaults to "created" section and has "all tasks" section
       setTaskOwnershipFilter('created');
-    } else if (user?.role === 'hr' || user?.role === 'manager') {
-      setTaskOwnershipFilter('created');
-      // Set manager's department as default filter
+    } else {
+      // All other roles (hr, manager, team_lead, employee) default to "received" section
+      setTaskOwnershipFilter('received');
+      // Set manager's department as default filter if applicable
       if (user?.role === 'manager' && user?.department) {
         setSelectedDepartmentFilter(user.department);
       }
-    } else {
-      setTaskOwnershipFilter((prev) =>
-        prev === 'received' || prev === 'created' ? prev : 'received'
-      );
     }
   }, [user?.role, user?.department]);
 
@@ -473,11 +484,25 @@ const TaskManagement: React.FC = () => {
       }
       const data: BackendTask[] = await response.json();
       const converted = data.map(mapBackendTaskToFrontend);
-      // Sort tasks by creation date - newest first
+      
+      // Sort tasks by status priority first, then by deadline within each status
       const sortedTasks = converted.sort((a, b) => {
-        const dateA = new Date(a.createdAt).getTime();
-        const dateB = new Date(b.createdAt).getTime();
-        return dateB - dateA; // Descending order (newest first)
+        // Define status priority order: todo -> in-progress -> completed -> cancelled
+        const statusOrder = { 'todo': 0, 'in-progress': 1, 'completed': 2, 'cancelled': 3 };
+        const aStatusPriority = statusOrder[a.status] ?? 999;
+        const bStatusPriority = statusOrder[b.status] ?? 999;
+        
+        // First sort by status priority
+        if (aStatusPriority !== bStatusPriority) {
+          return aStatusPriority - bStatusPriority;
+        }
+        
+        // Within same status, sort by deadline (earliest first)
+        // Tasks without deadline go to the end
+        const aDeadline = a.deadline ? new Date(a.deadline).getTime() : Number.MAX_SAFE_INTEGER;
+        const bDeadline = b.deadline ? new Date(b.deadline).getTime() : Number.MAX_SAFE_INTEGER;
+        
+        return aDeadline - bDeadline;
       });
       setTasks(sortedTasks);
       setTaskHistory({});
@@ -789,6 +814,22 @@ const TaskManagement: React.FC = () => {
 
   const handleCreateTask = async () => {
     if (!user || !userId) return;
+
+    // Validate deadline is not in the past
+    if (newTask.deadline) {
+      const selectedDate = new Date(newTask.deadline);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Reset time to start of day for comparison
+      
+      if (selectedDate < today) {
+        toast({
+          title: 'Invalid deadline',
+          description: 'Task deadline cannot be in the past. Please select today or a future date.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
 
     const assignedEmployee = newTask.assignedTo[0] || userId;
     const selectedEmployee = assignableEmployees.find((emp) => emp.userId === assignedEmployee || emp.email === assignedEmployee);
@@ -1127,6 +1168,165 @@ const TaskManagement: React.FC = () => {
     setIsEditDialogOpen(true);
   }, []);
 
+  const handleReassignClick = useCallback((task: TaskWithPassMeta) => {
+    setReassignTask(task);
+    // Set default deadline to today if no existing deadline or if existing deadline is in the past
+    const today = new Date();
+    const todayString = today.toISOString().split('T')[0];
+    const existingDeadline = formatDateForInput(task.deadline);
+    const defaultDeadline = existingDeadline && new Date(existingDeadline) >= today ? existingDeadline : todayString;
+    
+    setReassignForm({
+      title: task.title,
+      description: task.description,
+      assignedTo: task.assignedTo[0] || '',
+      deadline: defaultDeadline,
+      priority: task.priority,
+    });
+    setIsReassignDialogOpen(true);
+  }, []);
+
+  const resetReassignState = useCallback(() => {
+    setIsReassignDialogOpen(false);
+    setReassignTask(null);
+    setReassignForm({
+      title: '',
+      description: '',
+      assignedTo: '',
+      deadline: new Date().toISOString().split('T')[0], // Reset to today's date
+      priority: 'medium',
+    });
+    setIsReassigning(false);
+  }, []);
+
+  const handleReassignTask = useCallback(async () => {
+    if (!reassignTask) return;
+    if (!authToken) {
+      toast({
+        title: 'Authentication required',
+        description: 'Please log in again to reassign tasks.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Validate deadline is not in the past
+    if (reassignForm.deadline) {
+      const selectedDate = new Date(reassignForm.deadline);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Reset time to start of day for comparison
+      
+      if (selectedDate < today) {
+        toast({
+          title: 'Invalid deadline',
+          description: 'Task deadline cannot be in the past. Please select today or a future date.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
+    const trimmedTitle = reassignForm.title.trim();
+    const trimmedDescription = reassignForm.description.trim();
+    if (!trimmedTitle) {
+      toast({
+        title: 'Title required',
+        description: 'Task title cannot be empty.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!trimmedDescription) {
+      toast({
+        title: 'Description required',
+        description: 'Task description cannot be empty.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!reassignForm.assignedTo) {
+      toast({
+        title: 'Assignee required',
+        description: 'Please choose who the task should be assigned to.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const assignedToNumber = Number(reassignForm.assignedTo);
+    if (!Number.isFinite(assignedToNumber)) {
+      toast({
+        title: 'Invalid assignee',
+        description: 'Unable to determine the selected assignee.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const payload = {
+      title: trimmedTitle,
+      description: trimmedDescription,
+      assigned_to: assignedToNumber,
+      due_date: reassignForm.deadline || null,
+      priority: frontendToBackendPriority[reassignForm.priority],
+      status: 'Pending', // Reset status to pending when reassigning
+    };
+
+    setIsReassigning(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/tasks/${reassignTask.id}`, {
+        method: 'PUT',
+        headers: authorizedHeaders,
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const detail = errorData?.detail ?? `Failed to reassign task (${response.status})`;
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+
+      const updatedTask: BackendTask = await response.json();
+      const converted = mapBackendTaskToFrontend(updatedTask);
+      setTasks((prev) => prev.map((task) => (task.id === converted.id ? converted : task)));
+      setSelectedTask((prev) => (prev && prev.id === converted.id ? converted : prev));
+
+      await fetchAndStoreHistory(converted.id);
+
+      // Send notification to the new assignee
+      if (converted.assignedTo[0] && userId && converted.assignedTo[0] !== userId) {
+        addNotification({
+          title: 'Task Reassigned',
+          message: `${user?.name} reassigned you a task: "${converted.title}"`,
+          type: 'task',
+          metadata: {
+            taskId: converted.id,
+            requesterId: user?.id,
+            requesterName: user?.name,
+          }
+        });
+      }
+
+      toast({
+        title: 'Task reassigned successfully',
+        description: `Task "${converted.title}" has been reassigned to ${getAssigneeLabel(converted.assignedTo[0] || '')}.`,
+      });
+
+      resetReassignState();
+    } catch (error) {
+      console.error('Failed to reassign task', error);
+      const message = error instanceof Error ? error.message : 'Unable to reassign the task. Please try again.';
+      toast({
+        title: 'Task reassignment failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsReassigning(false);
+    }
+  }, [authToken, authorizedHeaders, fetchAndStoreHistory, getAssigneeLabel, reassignForm, reassignTask, resetReassignState, toast]);
+
   const handleUpdateTask = useCallback(async () => {
     if (!editingTask) return;
     if (!authToken) {
@@ -1136,6 +1336,22 @@ const TaskManagement: React.FC = () => {
         variant: 'destructive',
       });
       return;
+    }
+
+    // Validate deadline is not in the past
+    if (editTaskForm.deadline) {
+      const selectedDate = new Date(editTaskForm.deadline);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Reset time to start of day for comparison
+      
+      if (selectedDate < today) {
+        toast({
+          title: 'Invalid deadline',
+          description: 'Task deadline cannot be in the past. Please select today or a future date.',
+          variant: 'destructive',
+        });
+        return;
+      }
     }
 
     const trimmedTitle = editTaskForm.title.trim();
@@ -1298,7 +1514,7 @@ const TaskManagement: React.FC = () => {
   // Helper function to check if a status transition is allowed
   const isStatusTransitionAllowed = useCallback((currentStatus: BaseTask['status'], newStatus: BaseTask['status']): boolean => {
     // Define status hierarchy
-    const statusHierarchy: BaseTask['status'][] = ['todo', 'in-progress', 'review', 'completed', 'cancelled'];
+    const statusHierarchy: BaseTask['status'][] = ['todo', 'in-progress', 'completed', 'cancelled'];
     const currentIndex = statusHierarchy.indexOf(currentStatus);
     const newIndex = statusHierarchy.indexOf(newStatus);
     
@@ -1308,7 +1524,7 @@ const TaskManagement: React.FC = () => {
       return true;
     }
     
-    // 2. Once in 'review' or beyond, cannot go back to 'in-progress' or 'todo'
+    // 2. Once completed or cancelled, cannot go back to previous statuses
     if (currentIndex >= 2 && newIndex < 2) {
       return false;
     }
@@ -1333,6 +1549,19 @@ const TaskManagement: React.FC = () => {
     
     // Can only delete if task is still in 'todo' status (not started)
     return task.status === 'todo';
+  }, [userId]);
+
+  // Check if task can be reassigned
+  // Task can be reassigned by creator if status is 'completed' or 'cancelled'
+  const canReassignTask = useCallback((task: TaskWithPassMeta): boolean => {
+    if (!userId) return false;
+    
+    // Only the creator can reassign
+    const isCreator = task.assignedBy === userId;
+    if (!isCreator) return false;
+    
+    // Can only reassign if task is completed or cancelled
+    return task.status === 'completed' || task.status === 'cancelled';
   }, [userId]);
 
   // Update task status
@@ -1383,7 +1612,6 @@ const TaskManagement: React.FC = () => {
     switch (status) {
       case 'todo': return 'bg-slate-500';
       case 'in-progress': return 'bg-blue-500';
-      case 'review': return 'bg-yellow-500';
       case 'completed': return 'bg-green-500';
       case 'cancelled': return 'bg-red-500';
       default: return 'bg-gray-500';
@@ -1785,6 +2013,7 @@ const TaskManagement: React.FC = () => {
                     <Input
                       id="deadline"
                       type="date"
+                      min={new Date().toISOString().split('T')[0]}
                       value={newTask.deadline}
                       onChange={(e) => setNewTask({ ...newTask, deadline: e.target.value })}
                       className="h-11 border-2 focus:ring-2 focus:ring-violet-500 transition-all"
@@ -1978,53 +2207,60 @@ const TaskManagement: React.FC = () => {
                   <SelectItem value="all">All Status</SelectItem>
                   <SelectItem value="todo">To Do</SelectItem>
                   <SelectItem value="in-progress">In Progress</SelectItem>
-                  <SelectItem value="review">Review</SelectItem>
                   <SelectItem value="completed">Completed</SelectItem>
                   <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
 
               <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-1">
-                {!['admin', 'hr', 'manager'].includes(user?.role || '') && (
-                  <Button
-                    size="sm"
-                    variant={taskOwnershipFilter === 'received' ? 'default' : 'outline'}
-                    onClick={() => setTaskOwnershipFilter('received')}
-                    className={taskOwnershipFilter === 'received' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
-                  >
-                    Received
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant={taskOwnershipFilter === 'created' ? 'default' : 'outline'}
-                  onClick={() => setTaskOwnershipFilter('created')}
-                  className={taskOwnershipFilter === 'created' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
-                >
-                  Created
-                </Button>
-                {['admin', 'hr', 'manager'].includes(user?.role || '') && (
-                  <Button
-                    size="sm"
-                    variant={taskOwnershipFilter === 'all' ? 'default' : 'outline'}
-                    onClick={() => {
-                      setTaskOwnershipFilter('all');
-                      // Reset department filter when switching to All Tasks
-                      if (user?.role === 'manager' && user?.department) {
-                        setSelectedDepartmentFilter(user.department);
-                      } else {
+                {user?.role === 'admin' ? (
+                  // Admin sections: Created (default) and All Tasks
+                  <>
+                    <Button
+                      size="sm"
+                      variant={taskOwnershipFilter === 'created' ? 'default' : 'outline'}
+                      onClick={() => setTaskOwnershipFilter('created')}
+                      className={taskOwnershipFilter === 'created' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
+                    >
+                      Created
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={taskOwnershipFilter === 'all' ? 'default' : 'outline'}
+                      onClick={() => {
+                        setTaskOwnershipFilter('all');
                         setSelectedDepartmentFilter('all');
-                      }
-                    }}
-                    className={taskOwnershipFilter === 'all' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
-                  >
-                    All Tasks
-                  </Button>
+                      }}
+                      className={taskOwnershipFilter === 'all' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
+                    >
+                      All Tasks
+                    </Button>
+                  </>
+                ) : (
+                  // Other roles sections: Received (default) and Created
+                  <>
+                    <Button
+                      size="sm"
+                      variant={taskOwnershipFilter === 'received' ? 'default' : 'outline'}
+                      onClick={() => setTaskOwnershipFilter('received')}
+                      className={taskOwnershipFilter === 'received' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
+                    >
+                      Received
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={taskOwnershipFilter === 'created' ? 'default' : 'outline'}
+                      onClick={() => setTaskOwnershipFilter('created')}
+                      className={taskOwnershipFilter === 'created' ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md' : ''}
+                    >
+                      Created
+                    </Button>
+                  </>
                 )}
               </div>
 
-              {/* Department Filter - Show when viewing All Tasks for HR/Manager */}
-              {taskOwnershipFilter === 'all' && ['admin', 'hr', 'manager'].includes(user?.role || '') && (
+              {/* Department Filter - Show when viewing All Tasks for Admin only */}
+              {taskOwnershipFilter === 'all' && user?.role === 'admin' && (
                 <Select 
                   value={selectedDepartmentFilter} 
                   onValueChange={setSelectedDepartmentFilter}
@@ -2033,7 +2269,7 @@ const TaskManagement: React.FC = () => {
                     <SelectValue placeholder="Select Department" />
                   </SelectTrigger>
                   <SelectContent>
-                    {user?.role !== 'manager' && (
+                    {user?.role === 'admin' && (
                       <SelectItem value="all">All Departments</SelectItem>
                     )}
                     {departments.map((dept) => (
@@ -2111,8 +2347,10 @@ const TaskManagement: React.FC = () => {
                         {taskOwnershipFilter === 'all'
                           ? 'No tasks found in the system'
                           : taskOwnershipFilter === 'created'
-                            ? 'No created tasks found'
-                            : 'No received tasks found'}
+                            ? user?.role === 'admin' 
+                              ? 'No tasks created yet. Create your first task to get started.'
+                              : 'No tasks created by you yet'
+                            : 'No tasks assigned to you yet'}
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -2206,15 +2444,7 @@ const TaskManagement: React.FC = () => {
                                     </div>
                                   </SelectItem>
                                 )}
-                                {/* Show "Review" only if allowed */}
-                                {isStatusTransitionAllowed(task.status, 'review') && (
-                                  <SelectItem value="review" className="cursor-pointer hover:bg-yellow-50 dark:hover:bg-yellow-950 transition-colors py-2.5">
-                                    <div className="flex items-center gap-3">
-                                      <div className="h-3 w-3 rounded-full bg-gradient-to-br from-yellow-400 to-amber-600 shadow-md animate-pulse flex-shrink-0" />
-                                      <span className="font-medium text-sm">Review</span>
-                                    </div>
-                                  </SelectItem>
-                                )}
+
                                 {/* Show "Completed" only if allowed */}
                                 {isStatusTransitionAllowed(task.status, 'completed') && (
                                   <SelectItem value="completed" className="cursor-pointer hover:bg-green-50 dark:hover:bg-green-950 transition-colors py-2.5">
@@ -2225,8 +2455,8 @@ const TaskManagement: React.FC = () => {
                                     </div>
                                   </SelectItem>
                                 )}
-                                {/* Only show Cancel option to task creator and only if status is 'todo' */}
-                                {canDeleteTask(task) && (
+                                {/* Show Cancel option to task creator for any status except already cancelled/completed */}
+                                {canManageTask && task.status !== 'cancelled' && task.status !== 'completed' && (
                                   <SelectItem value="cancelled" className="cursor-pointer hover:bg-red-50 dark:hover:bg-red-950 transition-colors py-2.5">
                                     <div className="flex items-center gap-3">
                                       <div className="h-3 w-3 rounded-full bg-gradient-to-br from-red-400 to-rose-600 shadow-md flex-shrink-0" />
@@ -2301,6 +2531,17 @@ const TaskManagement: React.FC = () => {
                                     {deletingTaskId === task.id ? 'Deleting...' : 'Delete'}
                                   </Button>
                                 </>
+                              )}
+                              {canReassignTask(task) && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleReassignClick(task)}
+                                  className="flex items-center gap-1 border-green-200 text-green-700 hover:bg-green-50 hover:border-green-300"
+                                >
+                                  <RefreshCcw className="h-4 w-4" />
+                                  Reassign
+                                </Button>
                               )}
                             </div>
                           </TableCell>
@@ -2418,6 +2659,22 @@ const TaskManagement: React.FC = () => {
                           >
                             <Trash2 className="h-4 w-4" />
                             {deletingTaskId === task.id ? 'Deleting...' : 'Delete'}
+                          </Button>
+                        </div>
+                      )}
+                      {canReassignTask(task) && (
+                        <div className="flex items-center gap-2 pt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleReassignClick(task);
+                            }}
+                            className="flex items-center gap-1 border-green-200 text-green-700 hover:bg-green-50 hover:border-green-300"
+                          >
+                            <RefreshCcw className="h-4 w-4" />
+                            Reassign
                           </Button>
                         </div>
                       )}
@@ -2653,6 +2910,7 @@ const TaskManagement: React.FC = () => {
                 <Input
                   id="edit-deadline"
                   type="date"
+                  min={new Date().toISOString().split('T')[0]}
                   value={editTaskForm.deadline}
                   onChange={(e) => setEditTaskForm((prev) => ({ ...prev, deadline: e.target.value }))}
                   className="h-11 border-2 focus:ring-2 focus:ring-blue-500 transition-all"
@@ -2674,6 +2932,147 @@ const TaskManagement: React.FC = () => {
                 className="h-11 px-6 gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isUpdatingTask ? 'Updating...' : 'Save Changes'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reassign Task Dialog */}
+      <Dialog open={isReassignDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          resetReassignState();
+        } else {
+          setIsReassignDialogOpen(true);
+        }
+      }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto border-2 shadow-2xl">
+          <DialogHeader className="pb-4 border-b bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950 -m-6 mb-0 p-6 rounded-t-lg">
+            <div className="flex items-center gap-3">
+              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shadow-lg">
+                <RefreshCcw className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <DialogTitle className="text-2xl font-bold">Reassign Task</DialogTitle>
+                <DialogDescription className="mt-1">
+                  Reassign this completed/cancelled task to someone else
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-6 p-6 -m-6 mt-0">
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="reassign-title" className="text-sm font-medium">
+                  Task Title
+                </Label>
+                <Input
+                  id="reassign-title"
+                  value={reassignForm.title}
+                  onChange={(e) => setReassignForm(prev => ({ ...prev, title: e.target.value }))}
+                  placeholder="Enter task title"
+                  className="mt-1.5 h-11 bg-white dark:bg-gray-950 border-2 focus:border-green-500 dark:focus:border-green-400"
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="reassign-description" className="text-sm font-medium">
+                  Description
+                </Label>
+                <Textarea
+                  id="reassign-description"
+                  value={reassignForm.description}
+                  onChange={(e) => setReassignForm(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Describe the task requirements"
+                  className="mt-1.5 min-h-[100px] bg-white dark:bg-gray-950 border-2 focus:border-green-500 dark:focus:border-green-400 resize-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="reassign-assignee" className="text-sm font-medium">
+                    Assign To
+                  </Label>
+                  <Select
+                    value={reassignForm.assignedTo}
+                    onValueChange={(value) => setReassignForm(prev => ({ ...prev, assignedTo: value }))}
+                  >
+                    <SelectTrigger className="mt-1.5 h-11 bg-white dark:bg-gray-950 border-2 focus:border-green-500 dark:focus:border-green-400">
+                      <SelectValue placeholder="Select assignee" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {assignableEmployees.map((employee) => (
+                        <SelectItem key={employee.userId} value={employee.userId}>
+                          {employee.name} ({employee.role})
+                          {employee.department && ` - ${employee.department}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label htmlFor="reassign-priority" className="text-sm font-medium">
+                    Priority
+                  </Label>
+                  <Select
+                    value={reassignForm.priority}
+                    onValueChange={(value: BaseTask['priority']) => setReassignForm(prev => ({ ...prev, priority: value }))}
+                  >
+                    <SelectTrigger className="mt-1.5 h-11 bg-white dark:bg-gray-950 border-2 focus:border-green-500 dark:focus:border-green-400">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="urgent">Urgent</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div>
+                <Label htmlFor="reassign-deadline" className="text-sm font-medium">
+                  Deadline (Optional)
+                </Label>
+                <Input
+                  id="reassign-deadline"
+                  type="date"
+                  value={reassignForm.deadline}
+                  min={new Date().toISOString().split('T')[0]}
+                  onChange={(e) => setReassignForm(prev => ({ ...prev, deadline: e.target.value }))}
+                  className="mt-1.5 h-11 bg-white dark:bg-gray-950 border-2 focus:border-green-500 dark:focus:border-green-400"
+                />
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex justify-end gap-3 pt-6 border-t">
+              <Button
+                variant="outline"
+                onClick={resetReassignState}
+                className="h-11 px-6 border-2 hover:shadow-lg hover:border-slate-400 dark:hover:border-slate-600 transition-all"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleReassignTask}
+                disabled={isReassigning}
+                className="h-11 px-6 gap-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isReassigning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Reassigning...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCcw className="h-4 w-4" />
+                    Reassign Task
+                  </>
+                )}
               </Button>
             </div>
           </div>

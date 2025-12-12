@@ -92,6 +92,13 @@ def delete_leave(db: Session, leave_id: int, user_id: int):
     if leave.status != "Pending":
         return "not_pending"
 
+    # Get the user who is deleting the leave for notification purposes
+    requester = db.query(User).filter(User.user_id == user_id).first()
+    
+    # Create deletion notification for approvers before deleting the leave
+    if requester:
+        create_leave_deletion_notification(db, leave, requester)
+
     db.delete(leave)
     db.commit()
     return True
@@ -243,8 +250,10 @@ def list_pending_by_department(db: Session, department: str):
 
 
 def list_pending_by_requester_roles(db: Session, roles: list[str]):
+    from sqlalchemy.orm import joinedload
     return (
         db.query(Leave)
+        .options(joinedload(Leave.user))
         .join(User, User.user_id == Leave.user_id)
         .filter(Leave.status == "Pending", User.role.in_(roles))
         .all()
@@ -252,8 +261,10 @@ def list_pending_by_requester_roles(db: Session, roles: list[str]):
 
 
 def list_pending_by_department_and_roles(db: Session, department: str, roles: list[str]):
+    from sqlalchemy.orm import joinedload
     return (
         db.query(Leave)
+        .options(joinedload(Leave.user))
         .join(User, User.user_id == Leave.user_id)
         .filter(Leave.status == "Pending", User.department == department, User.role.in_(roles))
         .all()
@@ -262,9 +273,11 @@ def list_pending_by_department_and_roles(db: Session, department: str, roles: li
 
 def list_decided_by_approver(db: Session, approver_id: int):
     # Fallback implementation without approver tracking fields.
-    # Returns all leaves that have been decided (not Pending).
+    # Returns all leaves that have been decided (not Pending) with user details.
+    from sqlalchemy.orm import joinedload
     return (
         db.query(Leave)
+        .options(joinedload(Leave.user))
         .filter(Leave.status != "Pending")
         .order_by(Leave.end_date.desc())
         .all()
@@ -411,6 +424,49 @@ def create_leave_decision_notification(
     db.refresh(notification)
 
     return notification
+
+
+def create_leave_deletion_notification(db: Session, leave: Leave, requester: User) -> List[LeaveNotification]:
+    """
+    Create notifications for approvers when a leave request is withdrawn/deleted by the requester.
+    These notifications will persist after the leave is deleted by using a NULL leave_id.
+    """
+    recipients = _get_leave_notification_recipients(db, requester)
+    if not recipients:
+        return []
+
+    # Format dates
+    start_str = leave.start_date.strftime("%d %b %Y")
+    end_str = leave.end_date.strftime("%d %b %Y")
+    day_count = (leave.end_date.date() - leave.start_date.date()).days + 1
+    day_label = "day" if day_count == 1 else "days"
+
+    title = "Leave Request Withdrawn"
+    message = (
+        f"{requester.name} ({requester.employee_id or 'N/A'}) from {requester.department or 'N/A'} department "
+        f"has withdrawn their leave request for {start_str} to {end_str} ({day_count} {day_label})."
+    )
+
+    notifications: List[LeaveNotification] = []
+    for recipient in recipients:
+        # Create a standalone notification that doesn't reference the leave (to avoid CASCADE deletion)
+        notification = LeaveNotification(
+            user_id=recipient.user_id,
+            leave_id=None,  # Set to None so it won't be deleted when leave is removed
+            notification_type="Leave Withdrawal",
+            title=title,
+            message=message,
+            is_read=False,
+        )
+        db.add(notification)
+        notifications.append(notification)
+
+    # Commit the notifications before the leave is deleted
+    db.commit()
+    for notification in notifications:
+        db.refresh(notification)
+
+    return notifications
 
 
 def list_leave_notifications(db: Session, user_id: int) -> List[LeaveNotification]:

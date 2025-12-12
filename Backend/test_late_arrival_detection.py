@@ -9,7 +9,7 @@ import json
 from datetime import datetime, time
 import sys
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://staffly.space"
 
 def test_late_arrival_logic():
     """Test the late arrival detection logic"""
@@ -229,7 +229,7 @@ def main():
         response = requests.get(f"{BASE_URL}/", timeout=5)
         print(f"✅ Backend is running (Status: {response.status_code})")
     except:
-        print("❌ Cannot connect to backend. Please ensure it's running on http://localhost:8000")
+        print("❌ Cannot connect to backend. Please ensure it's running on https://staffly.space")
         return
     
     print()

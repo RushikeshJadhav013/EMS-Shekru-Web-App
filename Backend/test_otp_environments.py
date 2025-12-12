@@ -161,7 +161,7 @@ def test_api_endpoints():
     print("🌐 Testing API Endpoints")
     print("=" * 50)
     
-    base_url = "http://localhost:8000"
+    base_url = "https://staffly.space"
     
     try:
         # Test environment endpoint

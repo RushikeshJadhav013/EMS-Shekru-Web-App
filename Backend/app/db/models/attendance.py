@@ -16,5 +16,6 @@ class Attendance(Base):
     work_summary = Column(Text, nullable=True)
     work_report = Column(String(1024), nullable=True)
     work_location = Column(String(50), default='office')  # 'office' or 'work_from_home'
+    task_deadline_reason = Column(Text, nullable=True)  # Reason for incomplete tasks on deadline
 
     user = relationship("User", back_populates="attendances")

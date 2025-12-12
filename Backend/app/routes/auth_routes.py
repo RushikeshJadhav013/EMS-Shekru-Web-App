@@ -79,6 +79,7 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
         "department": user.department,
         "designation": user.designation,
         "joining_date": user.joining_date.isoformat() if user.joining_date else None,
+        "profile_photo": user.profile_photo,
         "environment": settings.ENVIRONMENT
     }
 

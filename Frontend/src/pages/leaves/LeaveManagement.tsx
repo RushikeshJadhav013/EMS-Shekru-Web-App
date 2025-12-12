@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { Pagination } from '@/components/ui/pagination';
 
 type Holiday = {
   date: Date;
@@ -166,6 +167,14 @@ export default function LeaveManagement() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [leaveToDelete, setLeaveToDelete] = useState<LeaveRequest | null>(null);
   const [isDeletingLeave, setIsDeletingLeave] = useState(false);
+
+  // Pagination states for approval requests
+  const [approvalCurrentPage, setApprovalCurrentPage] = useState(1);
+  const [approvalItemsPerPage, setApprovalItemsPerPage] = useState(20);
+
+  // Pagination states for approval history
+  const [historyCurrentPage, setHistoryCurrentPage] = useState(1);
+  const [historyItemsPerPage, setHistoryItemsPerPage] = useState(20);
 
   // Company holidays state
   const [holidays, setHolidays] = useState<Holiday[]>(loadStoredHolidays());
@@ -431,20 +440,24 @@ export default function LeaveManagement() {
   useEffect(() => {
     const loadDepartments = async () => {
       try {
-        const response = await apiService.getDepartments();
+        const response = await apiService.getDepartmentNames();
         if (Array.isArray(response)) {
           const names = response
-            .map((dept: any) => dept.name || dept.department || '')
+            .map((dept: any) => dept.name || '')
             .filter(Boolean);
           setCompanyDepartments(names);
         }
       } catch (error) {
         console.error('Failed to fetch departments for week-off planner:', error);
+        // Fallback: if user has a department, at least show their own
+        if (user?.department) {
+          setCompanyDepartments([user.department]);
+        }
       }
     };
 
     loadDepartments();
-  }, []);
+  }, [user?.department]);
 
   const loadLeaveRequests = useCallback(async (period: string = leaveHistoryPeriod) => {
     if (!user) return;
@@ -672,10 +685,12 @@ export default function LeaveManagement() {
   const colsClass = tabsCount === 3 ? 'grid-cols-3' : (tabsCount === 2 ? 'grid-cols-2' : 'grid-cols-1');
 
   const handleSubmitRequest = async () => {
-    if (!user?.id || !formData.reason.trim()) {
+    if (!user?.id || !formData.reason.trim() || formData.reason.trim().length < 10) {
       toast({
         title: 'Error',
-        description: 'Please fill in all required fields',
+        description: formData.reason.trim().length < 10 
+          ? 'Leave reason must be at least 10 characters long'
+          : 'Please fill in all required fields',
         variant: 'destructive'
       });
       return;
@@ -683,6 +698,44 @@ export default function LeaveManagement() {
 
     // Calculate number of leave days
     const leaveDays = Math.ceil((formData.endDate.getTime() - formData.startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+    // Validation 1: Sick leave minimum duration check
+    if (formData.type === 'sick' && leaveDays < 3) {
+      toast({
+        title: 'Invalid Sick Leave Duration',
+        description: 'Sick leave can only be applied for 3 or more days. For shorter periods (1-2 days), please use Casual Leave instead.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Validation 2: Advance notice requirements
+    const now = new Date();
+    const startDate = new Date(formData.startDate);
+    const timeDifference = startDate.getTime() - now.getTime();
+    const hoursDifference = timeDifference / (1000 * 60 * 60);
+
+    if (formData.type === 'sick') {
+      // Sick leave requires minimum 2 hours advance notice
+      if (hoursDifference < 2) {
+        toast({
+          title: 'Insufficient Advance Notice for Sick Leave',
+          description: 'Sick leave must be applied at least 2 hours before the start date. Please select a start date that is at least 2 hours from now.',
+          variant: 'destructive'
+        });
+        return;
+      }
+    } else {
+      // Other leaves require 24 hours advance notice
+      if (hoursDifference < 24) {
+        toast({
+          title: 'Insufficient Advance Notice',
+          description: 'Leave requests (except sick leave) must be submitted at least 24 hours in advance. Please select a start date that is at least 24 hours from now.',
+          variant: 'destructive'
+        });
+        return;
+      }
+    }
 
     // Frontend validation: Check if user has sufficient annual leave balance
     // For Annual, Sick, and Casual leave types, deduct from Annual Leave balance
@@ -889,13 +942,56 @@ export default function LeaveManagement() {
 
   const handleEditSubmit = async () => {
     if (!editingLeave) return;
-    if (!editFormData.reason.trim()) {
+    if (!editFormData.reason.trim() || editFormData.reason.trim().length < 10) {
       toast({
         title: 'Error',
-        description: 'Reason is required',
+        description: editFormData.reason.trim().length < 10 
+          ? 'Leave reason must be at least 10 characters long'
+          : 'Reason is required',
         variant: 'destructive'
       });
       return;
+    }
+
+    // Calculate number of leave days for validation
+    const leaveDays = Math.ceil((editFormData.endDate.getTime() - editFormData.startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+    // Validation 1: Sick leave minimum duration check
+    if (editingLeave.type === 'sick' && leaveDays < 3) {
+      toast({
+        title: 'Invalid Sick Leave Duration',
+        description: 'Sick leave can only be applied for 3 or more days. For shorter periods (1-2 days), please use Casual Leave instead.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Validation 2: Advance notice requirements
+    const now = new Date();
+    const startDate = new Date(editFormData.startDate);
+    const timeDifference = startDate.getTime() - now.getTime();
+    const hoursDifference = timeDifference / (1000 * 60 * 60);
+
+    if (editingLeave.type === 'sick') {
+      // Sick leave requires minimum 2 hours advance notice
+      if (hoursDifference < 2) {
+        toast({
+          title: 'Insufficient Advance Notice for Sick Leave',
+          description: 'Sick leave must be applied at least 2 hours before the start date. Please select a start date that is at least 2 hours from now.',
+          variant: 'destructive'
+        });
+        return;
+      }
+    } else {
+      // Other leaves require 24 hours advance notice
+      if (hoursDifference < 24) {
+        toast({
+          title: 'Insufficient Advance Notice',
+          description: 'Leave requests (except sick leave) must be submitted at least 24 hours in advance. Please select a start date that is at least 24 hours from now.',
+          variant: 'destructive'
+        });
+        return;
+      }
     }
 
     setIsUpdatingLeave(true);
@@ -927,28 +1023,95 @@ export default function LeaveManagement() {
   };
 
   const handleDeleteLeave = (leave: LeaveRequest) => {
+    console.log('🗑️ Delete button clicked for leave:', leave);
+    
+    // Ensure we have a valid leave request
+    if (!leave || !leave.id) {
+      console.error('❌ Invalid leave request:', leave);
+      toast({
+        title: 'Error',
+        description: 'Invalid leave request. Please refresh the page and try again.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Only allow deletion of pending requests
+    if (leave.status !== 'pending') {
+      toast({
+        title: 'Cannot Delete',
+        description: 'Only pending leave requests can be deleted.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Set the leave to delete and open dialog
+    console.log('🔄 Setting leave to delete and opening dialog...');
     setLeaveToDelete(leave);
     setIsDeleteDialogOpen(true);
+    console.log('✅ Delete dialog state set for leave ID:', leave.id);
+    
+    // Force a small delay to ensure state updates
+    setTimeout(() => {
+      console.log('🔍 Dialog state after timeout:', {
+        isDeleteDialogOpen: true,
+        leaveToDelete: leave.id
+      });
+    }, 100);
   };
 
   const confirmDeleteLeave = async () => {
-    if (!leaveToDelete) return;
+    console.log('🗑️ Confirming delete for leave:', leaveToDelete);
+    
+    if (!leaveToDelete) {
+      console.error('❌ No leave to delete');
+      return;
+    }
+    
     setIsDeletingLeave(true);
+    
     try {
+      console.log('🔄 Calling API to delete leave request:', leaveToDelete.id);
       await apiService.deleteLeaveRequest(leaveToDelete.id);
+      
+      console.log('✅ Leave request deleted successfully, refreshing data...');
+      
+      // Refresh the leave requests and balance
       await loadLeaveRequests(leaveHistoryPeriod);
       await loadLeaveBalance();
+      
+      // Show success message
       toast({
-        title: 'Leave Deleted',
-        description: 'Your leave request has been deleted.'
+        title: 'Leave Request Deleted',
+        description: `Your leave request from ${formatDateIST(leaveToDelete.startDate)} to ${formatDateIST(leaveToDelete.endDate)} has been successfully deleted.`,
       });
+      
+      // Close dialog and clear state
       setIsDeleteDialogOpen(false);
       setLeaveToDelete(null);
+      
+      console.log('✅ Delete operation completed successfully');
+      
     } catch (error) {
-      console.error('Error deleting leave request:', error);
+      console.error('❌ Error deleting leave request:', error);
+      
+      let errorMessage = 'Failed to delete leave request. Please try again.';
+      
+      // Handle specific error cases
+      if (error instanceof Error) {
+        if (error.message.includes('404')) {
+          errorMessage = 'Leave request not found. It may have already been deleted.';
+        } else if (error.message.includes('400')) {
+          errorMessage = 'Cannot delete this leave request. Only pending requests can be deleted.';
+        } else if (error.message.includes('403')) {
+          errorMessage = 'You do not have permission to delete this leave request.';
+        }
+      }
+      
       toast({
-        title: 'Error',
-        description: 'Failed to delete leave request. Please try again.',
+        title: 'Delete Failed',
+        description: errorMessage,
         variant: 'destructive'
       });
     } finally {
@@ -1014,6 +1177,32 @@ export default function LeaveManagement() {
       return requestDate >= startDate && requestDate <= endDate;
     });
   }, [approvalHistory, historyFilter, customHistoryStartDate, customHistoryEndDate]);
+
+  // Paginated approval requests
+  const paginatedApprovalRequests = useMemo(() => {
+    const startIndex = (approvalCurrentPage - 1) * approvalItemsPerPage;
+    const endIndex = startIndex + approvalItemsPerPage;
+    return approvalRequests.slice(startIndex, endIndex);
+  }, [approvalRequests, approvalCurrentPage, approvalItemsPerPage]);
+
+  // Paginated approval history
+  const paginatedApprovalHistory = useMemo(() => {
+    const startIndex = (historyCurrentPage - 1) * historyItemsPerPage;
+    const endIndex = startIndex + historyItemsPerPage;
+    return getFilteredApprovalHistory.slice(startIndex, endIndex);
+  }, [getFilteredApprovalHistory, historyCurrentPage, historyItemsPerPage]);
+
+  const approvalTotalPages = Math.ceil(approvalRequests.length / approvalItemsPerPage);
+  const historyTotalPages = Math.ceil(getFilteredApprovalHistory.length / historyItemsPerPage);
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setApprovalCurrentPage(1);
+  }, [approvalRequests.length]);
+
+  useEffect(() => {
+    setHistoryCurrentPage(1);
+  }, [historyFilter, customHistoryStartDate, customHistoryEndDate]);
 
 
   return (
@@ -1131,11 +1320,23 @@ export default function LeaveManagement() {
           <Card className="border-0 shadow-lg">
             <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-gray-50 dark:from-slate-900 dark:to-gray-900">
               <CardTitle className="text-xl font-semibold">Request Leave</CardTitle>
-              <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <p className="text-sm text-blue-800 dark:text-blue-200">
-                  <strong>Note:</strong> Annual, Sick, and Casual leave requests will deduct from your <strong>Annual Leave</strong> balance. 
-                  Only <strong>Unpaid Leave</strong> does not affect your Annual Leave balance.
-                </p>
+              <div className="mt-2 space-y-3">
+                <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                  <p className="text-sm text-blue-800 dark:text-blue-200">
+                    <strong>Note:</strong> Annual, Sick, and Casual leave requests will deduct from your <strong>Annual Leave</strong> balance. 
+                    Only <strong>Unpaid Leave</strong> does not affect your Annual Leave balance.
+                  </p>
+                </div>
+                <div className="p-3 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
+                  <p className="text-sm text-amber-800 dark:text-amber-200">
+                    <strong>Leave Restrictions:</strong>
+                  </p>
+                  <ul className="text-sm text-amber-700 dark:text-amber-300 mt-1 space-y-1">
+                    <li>• <strong>Sick Leave:</strong> Can only be applied for 3 or more days (use Casual Leave for 1-2 days)</li>
+                    <li>• <strong>Sick Leave:</strong> Must be applied at least 2 hours in advance</li>
+                    <li>• <strong>Other Leaves:</strong> Must be applied at least 24 hours in advance</li>
+                  </ul>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1175,19 +1376,105 @@ export default function LeaveManagement() {
                   </div>
                 </div>
               </div>
+              
+              {/* Dynamic validation feedback */}
+              {(() => {
+                const leaveDays = Math.ceil((formData.endDate.getTime() - formData.startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+                const now = new Date();
+                const startDate = new Date(formData.startDate);
+                const timeDifference = startDate.getTime() - now.getTime();
+                const hoursDifference = timeDifference / (1000 * 60 * 60);
+                
+                const validationMessages = [];
+                
+                // Check sick leave duration
+                if (formData.type === 'sick' && leaveDays < 3) {
+                  validationMessages.push({
+                    type: 'error',
+                    message: `Sick leave requires minimum 3 days. Current selection: ${leaveDays} day${leaveDays === 1 ? '' : 's'}. Consider using Casual Leave for shorter periods.`
+                  });
+                }
+                
+                // Check advance notice requirements
+                if (formData.type === 'sick') {
+                  // Sick leave requires 2 hours advance notice
+                  if (hoursDifference < 2 && hoursDifference >= 0) {
+                    const hoursRemaining = Math.ceil(2 - hoursDifference);
+                    const minutesRemaining = Math.ceil((2 - hoursDifference) * 60);
+                    validationMessages.push({
+                      type: 'error',
+                      message: `Sick leave must be applied 2 hours in advance. Please select a date at least ${hoursRemaining > 0 ? `${hoursRemaining} hour${hoursRemaining === 1 ? '' : 's'}` : `${minutesRemaining} minute${minutesRemaining === 1 ? '' : 's'}`} from now.`
+                    });
+                  }
+                } else {
+                  // Other leaves require 24 hours advance notice
+                  if (hoursDifference < 24 && hoursDifference >= 0) {
+                    const hoursRemaining = Math.ceil(24 - hoursDifference);
+                    validationMessages.push({
+                      type: 'error',
+                      message: `Leave must be applied 24 hours in advance. Please select a date at least ${hoursRemaining} hours from now.`
+                    });
+                  }
+                }
+                
+                // Show success message when valid
+                if (validationMessages.length === 0 && leaveDays > 0) {
+                  if (formData.type === 'sick') {
+                    validationMessages.push({
+                      type: 'success',
+                      message: `✓ Valid sick leave request for ${leaveDays} day${leaveDays === 1 ? '' : 's'} with ${Math.floor(hoursDifference)} hours advance notice.`
+                    });
+                  } else if (hoursDifference >= 24) {
+                    validationMessages.push({
+                      type: 'success',
+                      message: `✓ Valid leave request with ${Math.floor(hoursDifference)} hours advance notice.`
+                    });
+                  }
+                }
+                
+                return validationMessages.length > 0 ? (
+                  <div className="space-y-2">
+                    {validationMessages.map((msg, index) => (
+                      <div 
+                        key={index}
+                        className={`p-3 rounded-lg border text-sm ${
+                          msg.type === 'error' 
+                            ? 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200'
+                            : 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800 text-green-800 dark:text-green-200'
+                        }`}
+                      >
+                        {msg.message}
+                      </div>
+                    ))}
+                  </div>
+                ) : null;
+              })()}
+              
               <div className="space-y-2">
-                <Label>Reason</Label>
+                <Label>Reason *</Label>
                 <Textarea
                   value={formData.reason}
                   onChange={(e) => setFormData({...formData, reason: e.target.value})}
-                  placeholder="Please provide a reason for your leave request..."
+                  placeholder="Please provide a reason for your leave request (minimum 10 characters)..."
                   rows={3}
+                  className={formData.reason.trim().length > 0 && formData.reason.trim().length < 10 ? 'border-red-500' : ''}
                 />
+                <div className="flex justify-between text-sm">
+                  <span className={`${formData.reason.trim().length < 10 ? 'text-red-500' : 'text-green-600'}`}>
+                    {formData.reason.trim().length < 10 
+                      ? `${formData.reason.trim().length}/10 characters (minimum required)`
+                      : `${formData.reason.trim().length}/500 characters`
+                    }
+                  </span>
+                  {formData.reason.trim().length < 10 && formData.reason.trim().length > 0 && (
+                    <span className="text-red-500 text-xs">Minimum 10 characters required</span>
+                  )}
+                </div>
               </div>
               <Button 
                 onClick={handleSubmitRequest}
-                disabled={isSubmitting}
-                className="gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 shadow-md"
+                disabled={isSubmitting || formData.reason.trim().length < 10}
+                className="gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 shadow-md disabled:opacity-50"
               >
                 <CalendarIcon className="h-4 w-4" />
                 {isSubmitting ? 'Submitting...' : 'Submit Request'}
@@ -1794,7 +2081,7 @@ export default function LeaveManagement() {
                       <p>No leave requests to display</p>
                     </div>
                   ) : (
-                    approvalRequests.map((request) => (
+                    paginatedApprovalRequests.map((request) => (
                     <div 
                       key={request.id} 
                       id={`leave-request-${request.id}`}
@@ -1869,6 +2156,22 @@ export default function LeaveManagement() {
                       </div>
                     </div>
                   )))}
+                  
+                  {/* Pagination for Approval Requests */}
+                  {approvalRequests.length > 0 && (
+                    <div className="mt-6 px-2">
+                      <Pagination
+                        currentPage={approvalCurrentPage}
+                        totalPages={approvalTotalPages}
+                        totalItems={approvalRequests.length}
+                        itemsPerPage={approvalItemsPerPage}
+                        onPageChange={setApprovalCurrentPage}
+                        onItemsPerPageChange={setApprovalItemsPerPage}
+                        showItemsPerPage={true}
+                      />
+                    </div>
+                  )}
+                  
                   <div className="pt-6 border-t mt-6">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="font-semibold">Recent Decisions</h3>
@@ -1918,27 +2221,44 @@ export default function LeaveManagement() {
                         <p className="text-sm">No decisions found for the selected period.</p>
                       </div>
                     ) : (
-                      <div className="space-y-3">
-                        {getFilteredApprovalHistory.map((request) => (
-                          <div key={`hist-${request.id}`} className="border rounded-lg p-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors">
-                            <div className="text-sm flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-medium">{request.employeeName}</span>
-                                <Badge className={`${getLeaveTypeColor(request.type)} text-xs`}>
-                                  {request.type}
+                      <div>
+                        <div className="space-y-3">
+                          {paginatedApprovalHistory.map((request) => (
+                            <div key={`hist-${request.id}`} className="border rounded-lg p-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors">
+                              <div className="text-sm flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="font-medium">{request.employeeName}</span>
+                                  <Badge className={`${getLeaveTypeColor(request.type)} text-xs`}>
+                                    {request.type}
+                                  </Badge>
+                                </div>
+                                <div className="text-muted-foreground text-xs">
+                                  {format(request.startDate, 'MMM dd')} - {format(request.endDate, 'MMM dd, yyyy')} • {request.department}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge className={`px-4 py-1.5 text-sm font-bold capitalize transition-all duration-300 ${getStatusBadgeStyle(request.status)}`}>
+                                  {request.status}
                                 </Badge>
                               </div>
-                              <div className="text-muted-foreground text-xs">
-                                {format(request.startDate, 'MMM dd')} - {format(request.endDate, 'MMM dd, yyyy')} • {request.department}
-                              </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Badge className={`px-4 py-1.5 text-sm font-bold capitalize transition-all duration-300 ${getStatusBadgeStyle(request.status)}`}>
-                                {request.status}
-                              </Badge>
-                            </div>
+                          ))}
+                        </div>
+                        
+                        {/* Pagination for Approval History */}
+                        {getFilteredApprovalHistory.length > 0 && (
+                          <div className="mt-6 px-2">
+                            <Pagination
+                              currentPage={historyCurrentPage}
+                              totalPages={historyTotalPages}
+                              totalItems={getFilteredApprovalHistory.length}
+                              itemsPerPage={historyItemsPerPage}
+                              onPageChange={setHistoryCurrentPage}
+                              onItemsPerPageChange={setHistoryItemsPerPage}
+                              showItemsPerPage={true}
+                            />
                           </div>
-                        ))}
+                        )}
                       </div>
                     )}
                   </div>
@@ -1984,20 +2304,32 @@ export default function LeaveManagement() {
               </div>
             </div>
             <div>
-              <Label>Reason</Label>
+              <Label>Reason *</Label>
               <Textarea
                 value={editFormData.reason}
                 onChange={(e) => setEditFormData(prev => ({ ...prev, reason: e.target.value }))}
                 rows={4}
-                placeholder="Update the reason for your leave request..."
+                placeholder="Update the reason for your leave request (minimum 10 characters)..."
+                className={editFormData.reason.trim().length > 0 && editFormData.reason.trim().length < 10 ? 'border-red-500' : ''}
               />
+              <div className="flex justify-between text-sm mt-1">
+                <span className={`${editFormData.reason.trim().length < 10 ? 'text-red-500' : 'text-green-600'}`}>
+                  {editFormData.reason.trim().length < 10 
+                    ? `${editFormData.reason.trim().length}/10 characters (minimum required)`
+                    : `${editFormData.reason.trim().length}/500 characters`
+                  }
+                </span>
+                {editFormData.reason.trim().length < 10 && editFormData.reason.trim().length > 0 && (
+                  <span className="text-red-500 text-xs">Minimum 10 characters required</span>
+                )}
+              </div>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsEditDialogOpen(false)} disabled={isUpdatingLeave}>
               Cancel
             </Button>
-            <Button onClick={handleEditSubmit} disabled={isUpdatingLeave}>
+            <Button onClick={handleEditSubmit} disabled={isUpdatingLeave || editFormData.reason.trim().length < 10}>
               {isUpdatingLeave ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
@@ -2008,27 +2340,62 @@ export default function LeaveManagement() {
       <AlertDialog
         open={isDeleteDialogOpen}
         onOpenChange={(open) => {
+          console.log('🔄 Delete dialog onOpenChange:', open);
           setIsDeleteDialogOpen(open);
           if (!open) {
             setLeaveToDelete(null);
+            console.log('🔄 Dialog closed, cleared leaveToDelete');
           }
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className="sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Leave Request</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete your leave request.
+            <AlertDialogTitle className="flex items-center gap-2 text-xl">
+              <div className="h-10 w-10 rounded-full bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-lg">
+                <Trash2 className="h-5 w-5 text-white" />
+              </div>
+              Confirm Delete Leave Request
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-base">
+              Are you sure you want to delete this leave request? This action cannot be undone and will permanently remove your leave request from the system.
+              {leaveToDelete && (
+                <div className="mt-3 p-3 bg-red-50 dark:bg-red-950 rounded-lg border border-red-200 dark:border-red-800">
+                  <p className="font-medium text-red-800 dark:text-red-200">
+                    Leave Details:
+                  </p>
+                  <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                    {formatDateIST(leaveToDelete.startDate)} to {formatDateIST(leaveToDelete.endDate)}
+                  </p>
+                  <p className="text-sm text-red-700 dark:text-red-300">
+                    Type: {leaveToDelete.type.charAt(0).toUpperCase() + leaveToDelete.type.slice(1)}
+                  </p>
+                </div>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeletingLeave}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel 
+              disabled={isDeletingLeave}
+              className="bg-gray-100 hover:bg-gray-200 text-gray-800"
+            >
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
-              className="bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700"
+              className="bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-semibold"
               onClick={confirmDeleteLeave}
               disabled={isDeletingLeave}
             >
-              {isDeletingLeave ? 'Deleting...' : 'Delete'}
+              {isDeletingLeave ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Request
+                </>
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

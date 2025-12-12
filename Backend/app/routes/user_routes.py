@@ -75,7 +75,8 @@ def register_employee(
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
     shift_type: Optional[str] = Form(None),
-    employee_type: Optional[str] = Form(None),  # ✅ Added
+    employee_type: Optional[str] = Form(None),
+    manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -156,7 +157,8 @@ def register_employee(
         pan_card=pan_card,
         aadhar_card=aadhar_card,
         shift_type=shift_type,
-        employee_type=employee_type,  # ✅ Added
+        employee_type=employee_type,
+        manager_id=manager_id,  # ✅ Added
         profile_photo=profile_photo_path
     )
 
@@ -206,6 +208,9 @@ def get_all_employees_public(
 ):
     employees = list_users(db)  # ✅ fetch all users properly (no .query(list_users))
 
+    # ✅ Exclude Admin users - Admin is the boss and should not appear in employee lists
+    employees = [emp for emp in employees if emp.role != RoleEnum.ADMIN]
+
     # Apply search filter
     if search:
         employees = [
@@ -244,6 +249,7 @@ def update_employee(
     aadhar_card: Optional[str] = Form(None),
     shift_type: Optional[str] = Form(None),
     employee_type: Optional[str] = Form(None),
+    manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -327,6 +333,7 @@ def update_employee(
     employee.aadhar_card = aadhar_card
     employee.shift_type = shift_type
     employee.employee_type = employee_type
+    employee.manager_id = manager_id  # ✅ Added
     employee.profile_photo = profile_photo_path
 
     db.commit()

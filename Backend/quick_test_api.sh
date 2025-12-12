@@ -5,7 +5,7 @@ echo "================================"
 echo ""
 
 # Test the endpoint
-response=$(curl -s "http://localhost:8000/reports/executive-summary?month=11&year=2024" \
+response=$(curl -s "https://staffly.space/reports/executive-summary?month=11&year=2024" \
   -H "Authorization: Bearer test" 2>&1)
 
 # Check if we got a response
@@ -42,4 +42,4 @@ fi
 echo ""
 echo "================================"
 echo "To test with authentication, get your token from browser localStorage"
-echo "and run: curl -H 'Authorization: Bearer YOUR_TOKEN' http://localhost:8000/reports/executive-summary?month=11&year=2024"
+echo "and run: curl -H 'Authorization: Bearer YOUR_TOKEN' https://staffly.space/reports/executive-summary?month=11&year=2024"

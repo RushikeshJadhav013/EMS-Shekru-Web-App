@@ -22,6 +22,7 @@ class User(Base):
     gender = Column(String(50), nullable=True)
     phone = Column(String(20), nullable=True)
     address = Column(Text, nullable=True)
+    manager_id = Column(Integer, nullable=True)  # ✅ Added: Reporting manager user ID
 
     # PAN, Aadhaar, Shift, Employee Type
     pan_card = Column(String(20), nullable=True)

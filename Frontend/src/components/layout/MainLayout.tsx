@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { useNavigationGuard } from '@/hooks/useNavigationGuard';
+import TaskDeadlineWarnings from '@/components/tasks/TaskDeadlineWarnings';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
@@ -54,7 +55,7 @@ import { Language } from '@/i18n/translations';
 import { Badge } from '@/components/ui/badge';
 
 const MainLayout: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, showDeadlineWarnings, setShowDeadlineWarnings } = useAuth();
   const { language, setLanguage, t } = useLanguage();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -301,21 +302,24 @@ const MainLayout: React.FC = () => {
           </nav>
           
           {/* Sidebar Footer */}
-          {sidebarOpen && (
-            <div className="p-4 border-t border-border/50">
-              <div className="rounded-xl bg-gradient-to-br from-blue-500/10 via-indigo-500/10 to-purple-500/10 p-4 backdrop-blur-sm border border-blue-500/20">
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">
-                    <User className="h-4 w-4 text-white" />
-                  </div>
+          <div className="p-4 border-t border-border/50 bg-gradient-to-b from-card via-card/95 to-card/90">
+            <div className={`rounded-xl bg-gradient-to-br from-blue-500/10 via-indigo-500/10 to-purple-500/10 p-4 backdrop-blur-sm border border-blue-500/20 ${!sidebarOpen ? 'flex justify-center' : ''}`}>
+              <div className={`flex items-center gap-3 ${!sidebarOpen ? 'justify-center' : 'mb-2'}`}>
+                <Avatar className="h-8 w-8 border-2 border-blue-200 dark:border-blue-800 shadow-md">
+                  <AvatarImage src={user.profilePhoto} alt={user.name} className="object-cover" />
+                  <AvatarFallback className="bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-bold text-xs">
+                    {user.name.split(' ').map(n => n[0]).join('')}
+                  </AvatarFallback>
+                </Avatar>
+                {sidebarOpen && (
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold truncate">{user.name}</p>
                     <p className="text-xs text-muted-foreground truncate">{t.roles[user.role]}</p>
                   </div>
-                </div>
+                )}
               </div>
             </div>
-          )}
+          </div>
         </aside>
 
         {/* Mobile Sidebar */}
@@ -358,12 +362,15 @@ const MainLayout: React.FC = () => {
               </nav>
               
               {/* Mobile Sidebar Footer */}
-              <div className="p-4 border-t border-border/50">
+              <div className="p-4 border-t border-border/50 bg-gradient-to-b from-card via-card/95 to-card/90">
                 <div className="rounded-xl bg-gradient-to-br from-blue-500/10 via-indigo-500/10 to-purple-500/10 p-4 backdrop-blur-sm border border-blue-500/20">
                   <div className="flex items-center gap-3">
-                    <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">
-                      <User className="h-4 w-4 text-white" />
-                    </div>
+                    <Avatar className="h-8 w-8 border-2 border-blue-200 dark:border-blue-800 shadow-md">
+                      <AvatarImage src={user.profilePhoto} alt={user.name} className="object-cover" />
+                      <AvatarFallback className="bg-gradient-to-br from-blue-500 to-indigo-600 text-white font-bold text-xs">
+                        {user.name.split(' ').map(n => n[0]).join('')}
+                      </AvatarFallback>
+                    </Avatar>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold truncate">{user.name}</p>
                       <p className="text-xs text-muted-foreground truncate">{t.roles[user.role]}</p>
@@ -403,6 +410,13 @@ const MainLayout: React.FC = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Task Deadline Warnings Dialog */}
+      <TaskDeadlineWarnings
+        isOpen={showDeadlineWarnings}
+        onClose={() => setShowDeadlineWarnings(false)}
+        userId={user?.id}
+      />
     </div>
   );
 };

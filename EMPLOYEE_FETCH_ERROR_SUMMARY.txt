@@ -57,7 +57,7 @@ QUICK TEST:
 mysql -u staffly -pstaff9612 -e "USE empl; SHOW TABLES;"
 
 # Test backend endpoint
-curl http://localhost:8000/employees
+curl https://staffly.space/employees
 
 VERIFICATION:
 -------------

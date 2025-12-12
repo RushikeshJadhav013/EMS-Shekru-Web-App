@@ -14,7 +14,8 @@ interface EmployeeData {
   pan_card?: string;
   aadhar_card?: string;
   shift_type?: string;
-  employee_type?: string;  // ✅ Added
+  employee_type?: string;
+  manager_id?: number;  // ✅ Added for reporting manager
   profile_photo?: File | string;
   is_verified?: boolean;
   created_at?: string;
@@ -41,6 +42,7 @@ interface Employee {
   pan_card?: string;
   aadhar_card?: string;
   shift_type?: string;
+  managerId?: number;  // ✅ Added for reporting manager
 }
 
 interface LeaveRequestData {
@@ -86,7 +88,6 @@ export interface DepartmentData {
   description?: string | null;
   status?: string;
   employee_count?: number | null;
-  budget?: number | null;
   location?: string | null;
 }
 
@@ -98,7 +99,6 @@ export interface Department {
   description?: string | null;
   status: string;
   employee_count?: number | null;
-  budget?: number | null;
   location?: string | null;
   created_at: string;
   updated_at: string;
@@ -154,18 +154,28 @@ class ApiService {
         
         if (response.status === 401) {
           // Token is invalid or expired - clear auth data and redirect to login
-          if (errorMessage.includes('Invalid or expired token')) {
+          console.error('Authentication failed - token invalid or expired');
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          localStorage.removeItem('userId');
+          // Redirect to login page
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login';
+          }
+          throw new Error(errorMessage || 'Invalid or expired token - please log in again');
+        }
+        if (response.status === 403) {
+          // Check if it's an authentication issue
+          if (errorMessage && errorMessage.toLowerCase().includes('not authenticated')) {
+            console.error('Authentication required but token missing or invalid');
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             localStorage.removeItem('userId');
-            // Redirect to login page
             if (window.location.pathname !== '/login') {
               window.location.href = '/login';
             }
+            throw new Error('Not authenticated - please log in again');
           }
-          throw new Error(errorMessage || 'Invalid or expired token');
-        }
-        if (response.status === 403) {
           throw new Error(errorMessage || 'Access denied');
         }
         throw new Error(errorMessage);
@@ -235,6 +245,10 @@ class ApiService {
   // Department APIs
   async getDepartments(): Promise<Department[]> {
     return this.request('/departments');
+  }
+
+  async getDepartmentNames(): Promise<{name: string, code: string}[]> {
+    return this.request('/departments/names');
   }
 
   async createDepartment(data: DepartmentData): Promise<Department> {
@@ -720,6 +734,14 @@ class ApiService {
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
     const query = params.toString();
+    
+    // Debug authentication for shift schedule
+    const token = localStorage.getItem('token');
+    if (!token) {
+      console.error('No authentication token found for shift schedule request');
+      throw new Error('Not authenticated - please log in again');
+    }
+    
     return this.request(`/shift/schedule/my${query ? `?${query}` : ''}`);
   }
 

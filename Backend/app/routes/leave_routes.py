@@ -20,6 +20,7 @@ from app.crud.leave_crud import (
     list_decided_by_approver,
     create_leave_request_notifications,
     create_leave_decision_notification,
+    create_leave_deletion_notification,
     list_leave_notifications,
     mark_leave_notification_as_read,
     get_leave_balance,
@@ -34,6 +35,8 @@ from app.schemas.leave_schema import (
     LeaveCreate,
     LeaveOut,
     LeaveWithUserOut,
+    LeaveHistoryOut,
+    LeaveDisplayOut,
     LeaveNotificationOut,
     LeaveUpdate,
     LeaveBalanceResponse,
@@ -44,6 +47,7 @@ from app.schemas.leave_config_schema import (
     LeaveAllocationConfigUpdate,
 )
 from app.db.models.user import User
+from app.db.models.leave import Leave
 from fastapi import Body
 from app.enums import RoleEnum
 
@@ -58,6 +62,40 @@ def request_leave(
 ):
     start_dt = datetime.combine(leave.start_date, datetime.min.time())
     end_dt = datetime.combine(leave.end_date, datetime.min.time())
+    
+    # Calculate leave duration
+    leave_days = (end_dt - start_dt).days + 1
+    
+    # Validation 1: Sick leave minimum duration check
+    if leave.leave_type.lower() == 'sick' and leave_days < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Sick leave can only be applied for 3 or more days. For shorter periods (1-2 days), please use Casual Leave instead."
+        )
+    
+    # Validation 2: Advance notice requirements
+    now = now_ist()
+    # Convert start_dt to timezone-aware datetime for comparison
+    from app.utils.timezone import localize_ist
+    start_dt_aware = localize_ist(start_dt)
+    time_difference = start_dt_aware - now
+    hours_difference = time_difference.total_seconds() / 3600
+    
+    if leave.leave_type.lower() == 'sick':
+        # Sick leave requires minimum 2 hours advance notice
+        if hours_difference < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave must be applied at least 2 hours before the start date."
+            )
+    else:
+        # Other leaves require 24 hours advance notice
+        if hours_difference < 24:
+            raise HTTPException(
+                status_code=400,
+                detail="Leave requests (except sick leave) must be submitted at least 24 hours in advance."
+            )
+    
     new_leave = apply_leave(
         db,
         user.user_id,
@@ -92,7 +130,7 @@ def approve_leave_request(
 
 
 # View logged-in user's leave requests
-@router.get("/", response_model=list[LeaveOut])
+@router.get("/", response_model=list[LeaveDisplayOut])
 def view_my_leave(
     period: str = Query(default="current_month", description="Time period: current_month, last_3_months, last_6_months, last_1_year"),
     db: Session = Depends(get_db),
@@ -126,6 +164,13 @@ def update_leave_request(
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
+    # Get the existing leave to check its type
+    existing_leave = db.query(Leave).filter(Leave.leave_id == leave_id, Leave.user_id == user.user_id).first()
+    if not existing_leave:
+        raise HTTPException(status_code=404, detail="Leave not found")
+    if existing_leave.status != "Pending":
+        raise HTTPException(status_code=400, detail="Only pending leave requests can be updated")
+    
     start_date = None
     end_date = None
     leave_type = None
@@ -135,6 +180,44 @@ def update_leave_request(
         end_date = datetime.combine(leave_update.end_date, datetime.min.time())
     if leave_update.leave_type:
         leave_type = leave_update.leave_type.lower()
+    
+    # Use existing values if not provided in update
+    final_start_date = start_date or existing_leave.start_date
+    final_end_date = end_date or existing_leave.end_date
+    final_leave_type = leave_type or existing_leave.leave_type.lower()
+    
+    # Calculate leave duration for validation
+    leave_days = (final_end_date - final_start_date).days + 1
+    
+    # Validation 1: Sick leave minimum duration check
+    if final_leave_type == 'sick' and leave_days < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Sick leave can only be applied for 3 or more days. For shorter periods (1-2 days), please use Casual Leave instead."
+        )
+    
+    # Validation 2: Advance notice requirements
+    now = now_ist()
+    # Convert final_start_date to timezone-aware datetime for comparison
+    from app.utils.timezone import localize_ist
+    final_start_date_aware = localize_ist(final_start_date)
+    time_difference = final_start_date_aware - now
+    hours_difference = time_difference.total_seconds() / 3600
+    
+    if final_leave_type == 'sick':
+        # Sick leave requires minimum 2 hours advance notice
+        if hours_difference < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave must be applied at least 2 hours before the start date."
+            )
+    else:
+        # Other leaves require 24 hours advance notice
+        if hours_difference < 24:
+            raise HTTPException(
+                status_code=400,
+                detail="Leave requests (except sick leave) must be submitted at least 24 hours in advance."
+            )
 
     updated_leave = update_leave_db(
         db,
@@ -169,7 +252,7 @@ def delete_leave_request(
 
 
 # Approvals inbox for approvers based on hierarchy
-@router.get("/approvals", response_model=list[LeaveWithUserOut])
+@router.get("/approvals", response_model=list[LeaveHistoryOut])
 def approvals_inbox(
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
@@ -208,7 +291,7 @@ def approvals_inbox(
 
 
 # Approver's decision history
-@router.get("/approvals/history", response_model=list[LeaveWithUserOut])
+@router.get("/approvals/history", response_model=list[LeaveHistoryOut])
 def approvals_history(
     db: Session = Depends(get_db),
     user=Depends(get_current_user)

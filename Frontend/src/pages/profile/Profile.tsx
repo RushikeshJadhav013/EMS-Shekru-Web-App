@@ -21,9 +21,6 @@ import {
   Building,
   MapPin,
   Calendar,
-  Edit,
-  Save,
-  X,
   Camera,
   Shield,
   Clock,
@@ -41,7 +38,6 @@ const Profile: React.FC = () => {
   const { t } = useLanguage();
   const { toast } = useToast();
   const { colorTheme, setColorTheme } = useTheme();
-  const [isEditing, setIsEditing] = useState(false);
   const [editedUser, setEditedUser] = useState(user);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [employeeData, setEmployeeData] = useState<any>(null);
@@ -119,35 +115,30 @@ const Profile: React.FC = () => {
     );
   }
 
-  const handleSave = () => {
-    if (editedUser) {
-      updateUser(editedUser);
-      if (selectedImage) {
-        updateUser({ ...editedUser, profilePhoto: selectedImage });
-      }
-      setIsEditing(false);
-      toast({
-        title: 'Profile Updated',
-        description: 'Your profile has been successfully updated.',
-      });
-    }
-  };
-
-  const handleCancel = () => {
-    setEditedUser(user);
-    setSelectedImage(null);
-    setIsEditing(false);
-  };
-
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setSelectedImage(reader.result as string);
+        const imageData = reader.result as string;
+        setSelectedImage(imageData);
+        updateUser({ ...editedUser, profilePhoto: imageData });
+        toast({
+          title: 'Profile Photo Updated',
+          description: 'Your profile photo has been saved.',
+        });
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleRemovePhoto = () => {
+    setSelectedImage(null);
+    updateUser({ ...editedUser, profilePhoto: '' });
+    toast({
+      title: 'Profile Photo Removed',
+      description: 'Your profile photo has been removed.',
+    });
   };
 
   const getRoleBadgeColor = (role: string) => {
@@ -185,17 +176,15 @@ const Profile: React.FC = () => {
                     {user.name.split(' ').map(n => n[0]).join('')}
                   </AvatarFallback>
                 </Avatar>
-                {isEditing && (
-                  <label className="absolute bottom-0 right-0 p-2 bg-primary rounded-full cursor-pointer hover:bg-primary/90 transition-colors shadow-lg">
-                    <Camera className="h-5 w-5 text-primary-foreground" />
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageChange}
-                      className="hidden"
-                    />
-                  </label>
-                )}
+                <label className="absolute bottom-0 right-0 p-2 bg-primary rounded-full cursor-pointer hover:bg-primary/90 transition-colors shadow-lg">
+                  <Camera className="h-5 w-5 text-primary-foreground" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    className="hidden"
+                  />
+                </label>
               </div>
               
               <div className="flex-1 text-center md:text-left space-y-2">
@@ -224,23 +213,9 @@ const Profile: React.FC = () => {
               </div>
 
               <div className="flex gap-2">
-                {!isEditing ? (
-                  <Button onClick={() => setIsEditing(true)} className="shadow-lg">
-                    <Edit className="h-4 w-4 mr-2" />
-                    Edit Profile
-                  </Button>
-                ) : (
-                  <>
-                    <Button onClick={handleSave} className="shadow-lg">
-                      <Save className="h-4 w-4 mr-2" />
-                      Save
-                    </Button>
-                    <Button variant="outline" onClick={handleCancel}>
-                      <X className="h-4 w-4 mr-2" />
-                      Cancel
-                    </Button>
-                  </>
-                )}
+                <Button onClick={handleRemovePhoto} variant="outline" className="shadow-lg">
+                  Remove Photo
+                </Button>
               </div>
             </div>
           </CardContent>
@@ -290,8 +265,7 @@ const Profile: React.FC = () => {
                   <Input
                     id="name"
                     value={editedUser.name}
-                    onChange={(e) => setEditedUser({ ...editedUser, name: e.target.value })}
-                    disabled={!isEditing}
+                    disabled
                     className="disabled:opacity-60"
                   />
                 </div>
@@ -301,8 +275,7 @@ const Profile: React.FC = () => {
                     id="email"
                     type="email"
                     value={editedUser.email}
-                    onChange={(e) => setEditedUser({ ...editedUser, email: e.target.value })}
-                    disabled={!isEditing}
+                    disabled
                     className="disabled:opacity-60"
                   />
                 </div>
@@ -311,8 +284,7 @@ const Profile: React.FC = () => {
                   <Input
                     id="phone"
                     value={editedUser.phone || ''}
-                    onChange={(e) => setEditedUser({ ...editedUser, phone: e.target.value })}
-                    disabled={!isEditing}
+                    disabled
                     placeholder="+91 98765 43210"
                     className="disabled:opacity-60"
                   />
@@ -322,8 +294,7 @@ const Profile: React.FC = () => {
                   <Input
                     id="address"
                     value={editedUser.address || ''}
-                    onChange={(e) => setEditedUser({ ...editedUser, address: e.target.value })}
-                    disabled={!isEditing}
+                    disabled
                     placeholder="Enter your address"
                     className="disabled:opacity-60"
                   />
@@ -358,8 +329,7 @@ const Profile: React.FC = () => {
                   <Input
                     id="department"
                     value={editedUser.department}
-                    onChange={(e) => setEditedUser({ ...editedUser, department: e.target.value })}
-                    disabled={!isEditing}
+                    disabled
                     className="disabled:opacity-60"
                   />
                 </div>
@@ -368,8 +338,7 @@ const Profile: React.FC = () => {
                   <Input
                     id="designation"
                     value={editedUser.designation}
-                    onChange={(e) => setEditedUser({ ...editedUser, designation: e.target.value })}
-                    disabled={!isEditing}
+                    disabled
                     className="disabled:opacity-60"
                   />
                 </div>
@@ -397,7 +366,7 @@ const Profile: React.FC = () => {
                 <Textarea
                   placeholder="Tell us about yourself, your skills, and experience..."
                   className="min-h-[120px] disabled:opacity-60"
-                  disabled={!isEditing}
+                  disabled
                 />
               </CardContent>
             </Card>

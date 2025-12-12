@@ -8,7 +8,7 @@ import requests
 import json
 
 # Configuration
-API_BASE_URL = "https://staffly.space"
+API_BASE_URL = "http://localhost:8080"
 # You'll need to replace this with a valid token
 AUTH_TOKEN = "Bearer YOUR_TOKEN_HERE"
 

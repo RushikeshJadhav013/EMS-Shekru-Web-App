@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from '@/hooks/use-toast';
 import AttendanceCamera from '@/components/attendance/AttendanceCamera';
+import WorkSummaryDialog from '@/components/attendance/WorkSummaryDialog';
 import { Clock, MapPin, Calendar, LogIn, LogOut, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { AttendanceRecord } from '@/types';
 import { format } from 'date-fns';
@@ -28,9 +29,10 @@ const AttendancePage: React.FC = () => {
   const { t } = useLanguage();
   const [showCamera, setShowCamera] = useState(false);
   const [isCheckingIn, setIsCheckingIn] = useState(true);
-  const [showCheckoutDialog, setShowCheckoutDialog] = useState(false);
+  const [showWorkSummaryDialog, setShowWorkSummaryDialog] = useState(false);
   const [todaysWork, setTodaysWork] = useState('');
   const [workPdf, setWorkPdf] = useState<File | null>(null);
+  const [isSubmittingCheckout, setIsSubmittingCheckout] = useState(false);
   const [currentAttendance, setCurrentAttendance] = useState<AttendanceRecord | null>(null);
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
   const [location, setLocation] = useState<GeoLocation | null>(null);
@@ -324,21 +326,72 @@ const AttendancePage: React.FC = () => {
       });
       return;
     }
-    setShowCheckoutDialog(true);
+    setShowWorkSummaryDialog(true);
   };
 
-  const confirmCheckOut = () => {
-    if (!todaysWork.trim()) {
-      toast({
-        title: 'Work Summary Required',
-        description: 'Please provide today\'s work summary before checking out.',
-        variant: 'destructive',
+  const handleWorkSummarySubmit = async (workSummary: string, deadlineReason?: string) => {
+    setIsSubmittingCheckout(true);
+    try {
+      const activeLocation = await refreshLocation().catch(() => location);
+      if (!activeLocation || !user?.id) throw new Error('Location or user missing');
+      
+      const formData = new FormData();
+      formData.append('user_id', String(user.id));
+
+      const locationPayload = {
+        latitude: activeLocation.latitude,
+        longitude: activeLocation.longitude,
+        accuracy: activeLocation.accuracy ?? null,
+        address: activeLocation.address ?? '',
+        timestamp: new Date().toISOString(),
+      };
+      const locationJson = JSON.stringify(locationPayload);
+      formData.append('gps_location', locationJson);
+      formData.append('location_data', locationJson);
+      formData.append('work_summary', workSummary.trim());
+      
+      if (deadlineReason) {
+        formData.append('task_deadline_reason', deadlineReason.trim());
+      }
+      
+      if (workPdf) {
+        formData.append('work_report', workPdf, workPdf.name);
+      }
+
+      // For now, we'll skip the selfie requirement for checkout
+      // In a real implementation, you might want to add selfie capture here
+      const response = await fetch('https://staffly.space/attendance/check-out', { 
+        method: 'POST', 
+        body: formData 
       });
-      return;
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(errorData.detail || 'Checkout failed');
+      }
+      
+      // Fetch updated attendance
+      await fetchTodayAttendance();
+      
+      toast({ 
+        title: 'Success', 
+        description: 'Successfully checked out!',
+        variant: 'default'
+      });
+      
+      setTodaysWork('');
+      setWorkPdf(null);
+    } catch (error) {
+      console.error('Checkout error:', error);
+      toast({ 
+        title: 'Checkout Failed', 
+        description: error instanceof Error ? error.message : 'Failed to check out', 
+        variant: 'destructive' 
+      });
+      throw error; // Re-throw to prevent dialog from closing
+    } finally {
+      setIsSubmittingCheckout(false);
     }
-    setIsCheckingIn(false);
-    setShowCamera(true);
-    setShowCheckoutDialog(false);
   };
 
   const handleCameraCapture = async (imageData: string) => {
@@ -742,55 +795,13 @@ const AttendancePage: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* Checkout Confirmation Dialog */}
-      <Dialog open={showCheckoutDialog} onOpenChange={setShowCheckoutDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-xl font-semibold">Confirm Check-out</DialogTitle>
-            <DialogDescription>
-              Please provide today's work summary before checking out. You can optionally upload a work report PDF.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div>
-              <Label htmlFor="work-summary">Today's Work Summary <span className="text-red-500">*</span></Label>
-              <Input
-                id="work-summary"
-                placeholder="Brief description of today's work..."
-                value={todaysWork}
-                onChange={(e) => setTodaysWork(e.target.value)}
-                className="mt-2"
-                required
-              />
-            </div>
-            <div>
-              <Label htmlFor="work-pdf">Upload Work Report PDF (Optional)</Label>
-              <div className="mt-2 flex items-center gap-2">
-                <Input
-                  id="work-pdf"
-                  type="file"
-                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
-                  onChange={handleFileUpload}
-                />
-                {workPdf && (
-                  <Badge variant="outline">
-                    <FileText className="h-3 w-3 mr-1" />
-                    {workPdf.name}
-                  </Badge>
-                )}
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCheckoutDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={confirmCheckOut} className="bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700">
-              Proceed to Check-out
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Work Summary Dialog with Deadline Reason */}
+      <WorkSummaryDialog
+        isOpen={showWorkSummaryDialog}
+        onClose={() => setShowWorkSummaryDialog(false)}
+        onSubmit={handleWorkSummarySubmit}
+        isSubmitting={isSubmittingCheckout}
+      />
     </div>
   );
 };
