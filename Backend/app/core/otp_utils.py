@@ -28,17 +28,20 @@ def generate_otp(email: str) -> int:
 
 def verify_otp(email: str, otp: int) -> bool:
     """Verify OTP with environment-aware logic"""
+    # In testing/development, allow the testing OTP even without a record
+    # This allows testing OTP to work even if send-otp wasn't called
+    if settings.should_use_fixed_otp and otp == int(settings.TESTING_OTP):
+        logger.info(f"Accepted testing OTP {otp} for email {email} in {settings.ENVIRONMENT} environment (no record required)")
+        # Clean up if record exists
+        if email in OTP_STORE:
+            del OTP_STORE[email]
+        return True
+    
     record = OTP_STORE.get(email)
     
     if not record:
         logger.warning(f"No OTP record found for email {email}")
         return False
-    
-    # In testing/development, allow the testing OTP even if different from stored
-    if settings.should_use_fixed_otp and otp == int(settings.TESTING_OTP):
-        logger.info(f"Accepted testing OTP {otp} for email {email} in {settings.ENVIRONMENT}")
-        del OTP_STORE[email]
-        return True
     
     # Verify the actual stored OTP
     if record["otp"] != otp:

@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     def should_send_email(self) -> bool:
         """Send email only in production or when explicitly enabled"""
         return self.is_production or self.ENABLE_EMAIL_OTP
+    
+    class Config:
+        env_file = ".env.production"
 
 def get_ist_now() -> datetime:
     """Get current datetime in IST timezone"""
@@ -68,8 +71,5 @@ def ist_to_utc(ist_dt: datetime) -> datetime:
     if ist_dt.tzinfo is None:
         ist_dt = APP_TIMEZONE.localize(ist_dt)
     return ist_dt.astimezone(pytz.utc)
-
-    class Config:
-        env_file = ".env.production"
 
 settings = Settings()
