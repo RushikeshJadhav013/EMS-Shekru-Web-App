@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     
     # Environment-based OTP settings
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")  # development, testing, production
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development", "testing")  # development, testing, production
     TESTING_OTP: str = os.getenv("TESTING_OTP", "123456")  # Fixed OTP for testing
     ENABLE_EMAIL_OTP: bool = os.getenv("ENABLE_EMAIL_OTP", "false").lower() == "true"
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
@@ -54,7 +54,8 @@ class Settings(BaseSettings):
         return self.is_production or self.ENABLE_EMAIL_OTP
     
     class Config:
-        env_file = ".env.production"
+        # Default to testing env file; override via ENV_FILE for other modes
+        env_file = os.getenv("ENV_FILE", ".env.testing")
 
 def get_ist_now() -> datetime:
     """Get current datetime in IST timezone"""
