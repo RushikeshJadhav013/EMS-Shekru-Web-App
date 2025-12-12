@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     
     # Environment-based OTP settings
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development", "testing")  # development, testing, production
+    ENVIRONMENT: str = os.getenv("development", "testing")  # development, testing, production
     TESTING_OTP: str = os.getenv("TESTING_OTP", "123456")  # Fixed OTP for testing
     ENABLE_EMAIL_OTP: bool = os.getenv("ENABLE_EMAIL_OTP", "false").lower() == "true"
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
