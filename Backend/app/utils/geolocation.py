@@ -4,6 +4,7 @@ from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import logging
 import time
 from datetime import datetime
+from app.utils.timezone import now_ist
 
 logger = logging.getLogger(__name__)
 
