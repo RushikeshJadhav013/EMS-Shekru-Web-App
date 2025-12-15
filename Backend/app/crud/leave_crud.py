@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from datetime import datetime, timedelta
 from typing import List, Optional
+from app.utils.timezone import now_ist
 from app.db.models.leave import Leave
 from app.db.models.notification import LeaveNotification
 from app.db.models.user import User
@@ -177,7 +178,7 @@ def list_leave_by_period(db: Session, user_id: int, period: str = "current_month
     Shows ALL leaves (pending, approved, rejected) for the user within the specified period.
     period options: "current_month", "last_3_months", "last_6_months", "last_1_year"
     """
-    now = datetime.utcnow()
+    now = now_ist()
     
     if period == "current_month":
         # Current month only - show leaves that start or end in current month

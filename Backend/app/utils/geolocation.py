@@ -108,7 +108,7 @@ class LocationService:
             'address': address_info.get('address') if address_info else f"{lat}, {lon}",
             'place_name': self._extract_place_name(address_info),
             'accuracy': None,  # Can be set from GPS data if available
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': now_ist().isoformat(),
             'is_valid': True
         }
 

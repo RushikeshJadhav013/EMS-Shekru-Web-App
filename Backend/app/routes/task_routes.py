@@ -18,7 +18,7 @@ from app.crud.task_crud import (
     update_task_status,
 )
 from app.dependencies import get_current_user
-from app.utils.timezone import now_ist, utc_to_ist
+from app.utils.timezone import now_ist
 
 from app.schemas.task_schema import TaskCreate, TaskHistoryOut, TaskNotificationOut, TaskOut, TaskPassRequest, TaskUpdate
 from app.enums import RoleEnum, TaskStatus

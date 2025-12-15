@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
+from app.utils.timezone import now_ist
 import os
 import shutil
 from pathlib import Path
@@ -157,7 +158,7 @@ async def create_task_comment(
     
     if file:
         # Generate unique filename
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = now_ist().strftime("%Y%m%d_%H%M%S")
         file_extension = Path(file.filename).suffix
         unique_filename = f"task_{task_id}_user_{user_id}_{timestamp}{file_extension}"
         file_path = UPLOAD_DIR / unique_filename

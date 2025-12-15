@@ -5,7 +5,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.db.database import get_db
-from app.utils.timezone import now_ist, utc_to_ist
+from app.utils.timezone import now_ist
 from app.crud.leave_crud import (
     apply_leave,
     approve_leave as approve_leave_db,
@@ -75,10 +75,7 @@ def request_leave(
     
     # Validation 2: Advance notice requirements
     now = now_ist()
-    # Convert start_dt to timezone-aware datetime for comparison
-    from app.utils.timezone import localize_ist
-    start_dt_aware = localize_ist(start_dt)
-    time_difference = start_dt_aware - now
+    time_difference = start_dt - now
     hours_difference = time_difference.total_seconds() / 3600
     
     if leave.leave_type.lower() == 'sick':
@@ -198,10 +195,7 @@ def update_leave_request(
     
     # Validation 2: Advance notice requirements
     now = now_ist()
-    # Convert final_start_date to timezone-aware datetime for comparison
-    from app.utils.timezone import localize_ist
-    final_start_date_aware = localize_ist(final_start_date)
-    time_difference = final_start_date_aware - now
+    time_difference = final_start_date - now
     hours_difference = time_difference.total_seconds() / 3600
     
     if final_leave_type == 'sick':

@@ -8,14 +8,14 @@ from app.db.models import User, Attendance, Leave, Task
 from app.db.models.office_timing import OfficeTiming
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user
-from app.utils.timezone import now_ist, get_today_bounds_ist, utc_to_ist, localize_ist
+from app.utils.timezone import now_ist, get_today_bounds_ist
 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
 def _today_bounds():
-    """Get today's bounds in UTC for database queries (converted from IST)"""
+    """Get today's bounds in IST for database queries"""
     return get_today_bounds_ist()
 
 
@@ -170,12 +170,8 @@ def admin_dashboard(db: Session = Depends(get_db)):
             else:
                 status = 'late'
         
-        # Convert check_in time to IST for frontend display.
-        # If stored as naive datetime (no tzinfo), treat it as IST to avoid shifting by 5.5h.
-        if att.check_in.tzinfo is None:
-            ist_check_in = localize_ist(att.check_in)
-        else:
-            ist_check_in = utc_to_ist(att.check_in)
+        # Check-in time is stored in IST (naive)
+        ist_check_in = att.check_in
         recent_activities.append({
             "id": att.attendance_id,
             "type": "check-in",
@@ -293,7 +289,7 @@ def hr_dashboard(db: Session = Depends(get_db)):
         # Convert leave start_date to IST for frontend display
         leave_time = leave.start_date or now_ist()
         if leave_time.tzinfo is None:
-            leave_time = utc_to_ist(leave_time)
+            leave_time = leave_time
         recent_activities.append({
             "id": f"leave-{leave.leave_id}",
             "type": "leave",
@@ -347,7 +343,7 @@ def hr_dashboard(db: Session = Depends(get_db)):
         
         # Convert UTC check_in time to IST for frontend display
         check_in_time = att.check_in if att.check_in else now_ist()
-        ist_check_in = utc_to_ist(check_in_time)
+        ist_check_in = check_in_time
         recent_activities.append({
             "id": f"attendance-{att.attendance_id}",
             "type": "attendance",
@@ -361,7 +357,7 @@ def hr_dashboard(db: Session = Depends(get_db)):
         # Convert joining date to IST for frontend display
         join_time = joiner.joining_date or joiner.created_at or now_ist()
         if join_time.tzinfo is None:
-            join_time = utc_to_ist(join_time)
+            join_time = join_time
         recent_activities.append({
             "id": f"join-{joiner.user_id}",
             "type": "join",
@@ -443,7 +439,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
             User.department == dept,
             Task.status != TaskStatus.COMPLETED.value,
             Task.due_date.isnot(None),
-            Task.due_date < datetime.utcnow()
+            Task.due_date < now_ist()
         )
         .scalar() or 0
     )
@@ -504,7 +500,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
                 status = 'late'
         
         # Convert UTC check_in time to IST for frontend display
-        ist_check_in = utc_to_ist(att.check_in)
+        ist_check_in = att.check_in
         activities.append({
             "id": f"attendance-{att.attendance_id}",
             "type": "attendance",
@@ -529,7 +525,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     )
     for leave, usr in pending_leaves:
         # Convert leave start_date to IST for frontend display
-        ist_start_date = utc_to_ist(leave.start_date) if leave.start_date else now_ist()
+        ist_start_date = leave.start_date if leave.start_date else now_ist()
         activities.append({
             "id": f"leave-{leave.leave_id}",
             "type": "leave",
@@ -551,7 +547,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         # Convert task due_date to IST for frontend display
         task_time = task.due_date or now_ist()
         if task_time.tzinfo is None:
-            task_time = utc_to_ist(task_time)
+            task_time = task_time
         activities.append({
             "id": f"task-{task.task_id}",
             "type": "task",
@@ -694,7 +690,7 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
                 status = 'late'
         
         # Convert UTC check_in time to IST for frontend display
-        ist_check_in = utc_to_ist(att.check_in)
+        ist_check_in = att.check_in
         recent_activities.append({
             "id": att.attendance_id,
             "type": "check-in",

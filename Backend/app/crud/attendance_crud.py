@@ -2,22 +2,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
-from zoneinfo import ZoneInfo
 
 from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
 from app.db.models.office_timing import OfficeTiming
-from app.utils.timezone import now_ist, get_today_bounds_ist, utc_to_ist, ist_to_utc
+from app.utils.timezone import now_ist, get_today_bounds_ist
 import csv
 import io
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
-
-INDIA_TZ = ZoneInfo("Asia/Kolkata")
-UTC_TZ = ZoneInfo("UTC")
-
 
 def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
     try:
@@ -36,15 +31,13 @@ def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = 
         )
         
         if attendance:
-            # Update existing check-in (store in UTC for database)
-            attendance.check_in = ist_to_utc(now_ist())
+            attendance.check_in = now_ist()
             attendance.gps_location = gps_location or attendance.gps_location
             attendance.selfie = selfie or attendance.selfie
         else:
-            # Create new check-in (store in UTC for database)
             attendance = Attendance(
                 user_id=user_id,
-                check_in=ist_to_utc(now_ist()),
+                check_in=now_ist(),
                 gps_location=gps_location,
                 selfie=selfie,
                 total_hours=0.0  # Initialize total_hours
@@ -69,16 +62,16 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
     if not attendance:
         return None
 
-    # Update checkout and calculate total hours (store in UTC for database)
-    now_utc = ist_to_utc(now_ist())
+    # Update checkout and calculate total hours (IST naive)
+    now_ist_value = now_ist()
     if attendance.check_out:
         # Add hours from previous checkout to now
-        delta = now_utc - attendance.check_out
+        delta = now_ist_value - attendance.check_out
     else:
         # First checkout today
-        delta = now_utc - attendance.check_in
+        delta = now_ist_value - attendance.check_in
 
-    attendance.check_out = now_utc
+    attendance.check_out = now_ist_value
     attendance.total_hours += delta.total_seconds() / 3600  # hours
     attendance.gps_location = gps_location or attendance.gps_location
     attendance.selfie = selfie or attendance.selfie
@@ -88,7 +81,7 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
     return attendance
 
 def list_attendance(db: Session, user_id: int):
-    six_months_ago = ist_to_utc(now_ist() - timedelta(days=180))
+    six_months_ago = now_ist() - timedelta(days=180)
     return (
         db.query(Attendance)
         .filter(Attendance.user_id == user_id, Attendance.check_in >= six_months_ago)
@@ -159,12 +152,7 @@ def _resolve_office_timing(
 
 
 def _to_local_timezone(dt: Optional[datetime]) -> Optional[datetime]:
-    if not dt:
-        return None
-    value = dt
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC_TZ)
-    return value.astimezone(INDIA_TZ)
+    return dt
 
 
 def _evaluate_attendance_status(
@@ -193,7 +181,7 @@ def _evaluate_attendance_status(
     check_out_status = "pending"
 
     if timing:
-        start_dt = datetime.combine(local_check_in.date(), timing.start_time, tzinfo=INDIA_TZ)
+        start_dt = datetime.combine(local_check_in.date(), timing.start_time)
         if timing.check_in_grace_minutes:
             start_dt += timedelta(minutes=timing.check_in_grace_minutes)
         if local_check_in > start_dt:
@@ -204,7 +192,7 @@ def _evaluate_attendance_status(
         check_out_status = "on_time"
         if timing:
             ref_date = local_check_out.date() if local_check_out else local_check_in.date()
-            end_dt = datetime.combine(ref_date, timing.end_time, tzinfo=INDIA_TZ)
+            end_dt = datetime.combine(ref_date, timing.end_time)
             if timing.check_out_grace_minutes:
                 end_dt -= timedelta(minutes=timing.check_out_grace_minutes)
             if local_check_out < end_dt:
@@ -273,7 +261,7 @@ def get_today_attendance_status(db: Session, department: str = None):
 
 def get_today_attendance_records(db: Session):
     """Get today's attendance records with user details for manager view"""
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     # Join attendance with user to get employee details
@@ -315,7 +303,7 @@ def get_today_attendance_records(db: Session):
 
 def get_attendance_summary(db: Session):
     """Get attendance summary with statistics"""
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     total_employees = db.query(User).count()

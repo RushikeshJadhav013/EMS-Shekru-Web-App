@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from datetime import datetime, timedelta
 from typing import Optional, List
-from app.utils.timezone import now_ist, get_date_bounds_ist, utc_to_ist
+from app.utils.timezone import now_ist, get_date_bounds_ist
 import traceback
 import io
 import csv

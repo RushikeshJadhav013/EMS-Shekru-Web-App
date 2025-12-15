@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, func
+from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 from app.enums import RoleEnum
+from app.utils.timezone import now_ist
 
 class User(Base):
     __tablename__ = "users"
@@ -31,15 +32,15 @@ class User(Base):
     employee_type = Column(String(50), nullable=True)  # ✅ Added: contract or permanent
 
     # Dates
-    joining_date = Column(DateTime(timezone=True), server_default=func.now())
-    resignation_date = Column(DateTime(timezone=True), nullable=True)
+    joining_date = Column(DateTime, default=now_ist)
+    resignation_date = Column(DateTime, nullable=True)
 
     # Profile & status
     profile_photo = Column(String(1024), nullable=True)
     is_active = Column(Boolean, default=True)  # Active/Deactivate status
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime, default=now_ist)
 
     # Relationships
     attendances = relationship("Attendance", back_populates="user", cascade="all, delete-orphan")

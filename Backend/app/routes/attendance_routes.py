@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, case, or_
 from datetime import datetime, timedelta, time, date
-from zoneinfo import ZoneInfo
 from app.db.database import get_db
 from app.db.models.attendance import Attendance
 from app.db.models.user import User
@@ -23,7 +22,7 @@ import logging
 import json
 from ..utils.geolocation import location_service
 from app.schemas.office_timing_schema import OfficeTimingOut, OfficeTimingCreate
-from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_ist, utc_to_ist, ist_to_utc
+from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_ist
 
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
@@ -54,7 +53,7 @@ async def logout_with_pause(
             )
         
         # Find today's active attendance record
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
         
         attendance = db.query(Attendance).filter(
@@ -76,10 +75,8 @@ async def logout_with_pause(
             current_online_status = True if not latest_status else latest_status.is_online
             
             if current_online_status:
-                logout_timestamp = datetime.fromisoformat(payload.logout_timestamp.replace('Z', '+00:00'))
-                if logout_timestamp.tzinfo is None:
-                    logout_timestamp = logout_timestamp.replace(tzinfo=UTC_TZ)
-                logout_timestamp_utc = logout_timestamp.astimezone(UTC_TZ).replace(tzinfo=None)
+                logout_timestamp = datetime.fromisoformat(payload.logout_timestamp.replace('Z', ''))
+                logout_timestamp = logout_timestamp.replace(tzinfo=None)
                 
                 # Create offline status entry for logout
                 offline_status = OnlineStatus(
@@ -87,7 +84,7 @@ async def logout_with_pause(
                     user_id=payload.user_id,
                     is_online=False,
                     reason="Logout - session paused",
-                    timestamp=logout_timestamp_utc
+                    timestamp=logout_timestamp
                 )
                 db.add(offline_status)
                 db.commit()
@@ -128,7 +125,7 @@ async def login_resume(
             )
         
         # Find today's active attendance record
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
         
         attendance = db.query(Attendance).filter(
@@ -150,13 +147,11 @@ async def login_resume(
             current_online_status = True if not latest_status else latest_status.is_online
             
             if not current_online_status and latest_status:
-                login_timestamp = datetime.fromisoformat(payload.login_timestamp.replace('Z', '+00:00'))
-                if login_timestamp.tzinfo is None:
-                    login_timestamp = login_timestamp.replace(tzinfo=UTC_TZ)
-                login_timestamp_utc = login_timestamp.astimezone(UTC_TZ).replace(tzinfo=None)
+                login_timestamp = datetime.fromisoformat(payload.login_timestamp.replace('Z', ''))
+                login_timestamp = login_timestamp.replace(tzinfo=None)
                 
                 # Calculate offline duration
-                offline_duration = login_timestamp_utc - latest_status.timestamp
+                offline_duration = login_timestamp - latest_status.timestamp
                 offline_seconds = offline_duration.total_seconds()
                 
                 # Create online status entry for login resume
@@ -165,7 +160,7 @@ async def login_resume(
                     user_id=payload.user_id,
                     is_online=True,
                     reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
-                    timestamp=login_timestamp_utc
+                    timestamp=login_timestamp
                 )
                 db.add(online_status)
                 db.commit()
@@ -198,9 +193,6 @@ class AttendanceJSONPayload(BaseModel):
 # Helper functions for Attendance
 # ---------------------------------
 logger = logging.getLogger(__name__)
-
-INDIA_TZ = ZoneInfo("Asia/Kolkata")
-UTC_TZ = ZoneInfo("UTC")
 
 
 def _ensure_location_dict(location_input: Optional[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
@@ -466,10 +458,7 @@ def _resolve_office_timing(
 def _to_local_timezone(dt: Optional[datetime]) -> Optional[datetime]:
     if not dt:
         return None
-    value = dt
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC_TZ)
-    return value.astimezone(INDIA_TZ)
+    return dt
 
 
 def _evaluate_attendance_status(
@@ -501,7 +490,7 @@ def _evaluate_attendance_status(
     check_out_status = "pending"
 
     if timing:
-        start_dt = datetime.combine(local_check_in.date(), timing.start_time, tzinfo=INDIA_TZ)
+        start_dt = datetime.combine(local_check_in.date(), timing.start_time)
         if timing.check_in_grace_minutes:
             start_dt += timedelta(minutes=timing.check_in_grace_minutes)
         if local_check_in > start_dt:
@@ -512,7 +501,7 @@ def _evaluate_attendance_status(
         check_out_status = "on_time"
         if timing:
             end_reference_date = local_check_out.date() if local_check_out else local_check_in.date()
-            end_dt = datetime.combine(end_reference_date, timing.end_time, tzinfo=INDIA_TZ)
+            end_dt = datetime.combine(end_reference_date, timing.end_time)
             if timing.check_out_grace_minutes:
                 end_dt -= timedelta(minutes=timing.check_out_grace_minutes)
             if local_check_out < end_dt:
@@ -578,7 +567,7 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
 def get_attendance_summary(db: Session) -> Dict[str, Any]:
     """Compute today's summary using configured office timings."""
     try:
-        today = datetime.utcnow().date()
+        today = now_ist().date()
         
         total_employees = db.query(User).filter(User.is_active.is_(True)).count()
         if total_employees == 0:
@@ -684,7 +673,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
         if target_date:
             today_start = datetime.combine(target_date, datetime.min.time())
         else:
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
 
         # Get only users who have checked in today
@@ -962,7 +951,7 @@ async def employee_check_in_route(
         selfie_path = save_selfie(user_id, selfie, 'checkin') if selfie else None
 
         # Check for existing check-in today without check-out
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         existing_attendance = (
             db.query(Attendance)
             .filter(
@@ -983,7 +972,7 @@ async def employee_check_in_route(
         # Create new check-in with location data
         attendance = Attendance(
             user_id=user_id,
-            check_in=datetime.utcnow(),
+            check_in=now_ist(),
             gps_location=_compose_location_entry(None, "Check-in", processed_location),
             selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
             total_hours=0.0,
@@ -998,8 +987,8 @@ async def employee_check_in_route(
         from app.db.models.online_status import OnlineStatus
         
         # Check if user was offline yesterday - if so, reset to online for new day
-        yesterday_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         
         # Get user's last status from yesterday
         last_status_yesterday = db.query(OnlineStatus).filter(
@@ -1028,7 +1017,7 @@ async def employee_check_in_route(
                 user_id=user_id,
                 is_online=True,
                 reason="Online status after check-in" + (" (daily reset)" if last_status_yesterday and not last_status_yesterday.is_online else ""),
-                timestamp=datetime.utcnow()
+                timestamp=now_ist()
             )
             db.add(online_status)
             db.commit()
@@ -1076,7 +1065,7 @@ async def employee_check_in_json(
         location_payload = _ensure_location_dict(payload.gps_location)
         processed_location = validate_and_process_location(location_payload)
 
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         existing_attendance = (
             db.query(Attendance)
             .filter(
@@ -1097,7 +1086,7 @@ async def employee_check_in_json(
         # Create new check-in with location data
         attendance = Attendance(
             user_id=payload.user_id,
-            check_in=datetime.utcnow(),
+            check_in=now_ist(),
             gps_location=_compose_location_entry(None, "Check-in", processed_location),
             selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
             total_hours=0.0,
@@ -1111,8 +1100,8 @@ async def employee_check_in_json(
         from app.db.models.online_status import OnlineStatus
         
         # Check if user was offline yesterday - if so, reset to online for new day
-        yesterday_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         
         # Get user's last status from yesterday
         last_status_yesterday = db.query(OnlineStatus).filter(
@@ -1141,7 +1130,7 @@ async def employee_check_in_json(
                 user_id=payload.user_id,
                 is_online=True,
                 reason="Online status after check-in" + (" (daily reset)" if last_status_yesterday and not last_status_yesterday.is_online else ""),
-                timestamp=datetime.utcnow()
+                timestamp=now_ist()
             )
             db.add(online_status)
             db.commit()
@@ -1238,7 +1227,7 @@ async def employee_check_out_route(
         work_report_path = save_work_report_file(user_id, work_report) if work_report else None
 
         # Find today's check-in
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         attendance = (
             db.query(Attendance)
             .filter(
@@ -1257,7 +1246,7 @@ async def employee_check_out_route(
             )
 
         # Update check-out with location data
-        attendance.check_out = datetime.utcnow()
+        attendance.check_out = now_ist()
         if selfie_path:
             attendance.selfie = _dump_selfie_data(attendance.selfie, check_out=selfie_path)
         attendance.gps_location = _compose_location_entry(
@@ -1282,7 +1271,7 @@ async def employee_check_out_route(
             user_id=user_id,
             is_online=False,
             reason="Automatic offline status after check-out",
-            timestamp=datetime.utcnow()
+            timestamp=now_ist()
         )
         db.add(offline_status)
         
@@ -1399,7 +1388,7 @@ async def employee_check_out_json(
                 "longitude": None,
             }
 
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         attendance = (
             db.query(Attendance)
             .filter(
@@ -1414,7 +1403,7 @@ async def employee_check_out_json(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active check-in found for today")
 
         # Update check-out with location data
-        attendance.check_out = datetime.utcnow()
+        attendance.check_out = now_ist()
         if selfie_path:
             attendance.selfie = _dump_selfie_data(attendance.selfie, check_out=selfie_path)
         attendance.gps_location = _compose_location_entry(
@@ -1438,7 +1427,7 @@ async def employee_check_out_json(
             user_id=payload.user_id,
             is_online=False,
             reason="Automatic offline status after check-out",
-            timestamp=datetime.utcnow()  # Use utcnow() instead of now(UTC_TZ)
+            timestamp=now_ist()
         )
         db.add(offline_status)
         
@@ -1454,7 +1443,7 @@ async def employee_check_out_json(
 # Employee Self-Attendance (Last 6 Months)
 @router.get("/my-attendance/{user_id}", response_model=list[AttendanceOut])
 def get_self_attendance(user_id: int, db: Session = Depends(get_db)):
-    six_months_ago = datetime.utcnow() - timedelta(days=180)
+    six_months_ago = now_ist() - timedelta(days=180)
     records = (
         db.query(Attendance)
         .filter(Attendance.user_id == user_id, Attendance.check_in >= six_months_ago)
@@ -1757,7 +1746,7 @@ def upsert_office_timing(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid time format. Use HH:MM") from exc
 
-    if datetime.combine(datetime.utcnow().date(), end_time_obj) <= datetime.combine(datetime.utcnow().date(), start_time_obj):
+    if datetime.combine(now_ist().date(), end_time_obj) <= datetime.combine(now_ist().date(), start_time_obj):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End time must be after start time")
 
     query = db.query(OfficeTiming).filter(OfficeTiming.is_active.is_(True))
@@ -1859,7 +1848,7 @@ def update_online_status(
         user_id=current_user.user_id,
         is_online=payload.is_online,
         reason=payload.reason.strip() if payload.reason else None,
-        timestamp=datetime.utcnow()
+        timestamp=now_ist()
     )
     db.add(status_log)
     db.commit()
@@ -1943,7 +1932,7 @@ def get_all_current_online_status(
         )
     
     # Get today's date in UTC
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     # Get all attendance records for today that haven't checked out
@@ -1996,7 +1985,7 @@ def get_user_current_online_status(
             )
     
     # Get today's attendance for this user
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     attendance = db.query(Attendance).filter(
@@ -2082,29 +2071,20 @@ def calculate_working_hours(
         last_online_time = None
         current_status = True  # Assume online after check-in (default)
         
-        # Helper function to ensure timezone consistency
-        def ensure_utc_timezone(dt):
-            if dt is None:
-                return None
-            if dt.tzinfo is None:
-                # Assume naive datetime is in UTC
-                return dt.replace(tzinfo=UTC_TZ)
-            return dt.astimezone(UTC_TZ)
-        
-        # Start from check-in time
-        check_in_time = ensure_utc_timezone(attendance.check_in)
+        # Start from check-in time (naive IST)
+        check_in_time = attendance.check_in
         last_online_time = check_in_time
         last_status_change_time = check_in_time
         
         # If no status logs exist, user has been online since check-in
         if not status_logs:
-            end_time = ensure_utc_timezone(attendance.check_out) if attendance.check_out else ensure_utc_timezone(datetime.utcnow())
+            end_time = attendance.check_out if attendance.check_out else now_ist()
             total_online_seconds = (end_time - check_in_time).total_seconds()
             total_offline_seconds = 0
         else:
             # Process status logs chronologically
             for log in status_logs:
-                log_timestamp = ensure_utc_timezone(log.timestamp)
+                log_timestamp = log.timestamp
                 
                 if log.is_online:
                     # Going online (resume)
@@ -2129,7 +2109,7 @@ def calculate_working_hours(
                     current_status = False
             
             # Handle final period until now or checkout
-            end_time = ensure_utc_timezone(attendance.check_out) if attendance.check_out else ensure_utc_timezone(datetime.utcnow())
+            end_time = attendance.check_out if attendance.check_out else now_ist()
             
             if current_status and last_online_time:
                 # Currently online - add remaining online time

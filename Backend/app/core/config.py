@@ -1,10 +1,6 @@
 from pydantic_settings import BaseSettings
 import os
 from datetime import datetime
-import pytz
-
-# Application timezone - Indian Standard Time
-APP_TIMEZONE = pytz.timezone('Asia/Kolkata')
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
@@ -58,19 +54,15 @@ class Settings(BaseSettings):
         env_file = os.getenv("ENV_FILE", ".env.testing")
 
 def get_ist_now() -> datetime:
-    """Get current datetime in IST timezone"""
-    return datetime.now(APP_TIMEZONE)
+    """Get current datetime in IST (server is set to IST)."""
+    return datetime.now()
 
 def utc_to_ist(utc_dt: datetime) -> datetime:
-    """Convert UTC datetime to IST"""
-    if utc_dt.tzinfo is None:
-        utc_dt = pytz.utc.localize(utc_dt)
-    return utc_dt.astimezone(APP_TIMEZONE)
+    """Deprecated: project is IST-only. Returns input unchanged."""
+    return utc_dt
 
 def ist_to_utc(ist_dt: datetime) -> datetime:
-    """Convert IST datetime to UTC for database storage"""
-    if ist_dt.tzinfo is None:
-        ist_dt = APP_TIMEZONE.localize(ist_dt)
-    return ist_dt.astimezone(pytz.utc)
+    """Deprecated: project is IST-only. Returns input unchanged."""
+    return ist_dt
 
 settings = Settings()
