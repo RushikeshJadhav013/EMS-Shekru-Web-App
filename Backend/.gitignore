@@ -288,3 +288,6 @@ config/secrets.json
 *.tar
 *.zip
 
+# Ignore all __pycache__ directories and .pyc files
+__pycache__/
+*.pyc
