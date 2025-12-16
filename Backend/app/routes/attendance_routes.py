@@ -7,7 +7,7 @@ from app.db.database import get_db
 from app.db.models.attendance import Attendance
 from app.db.models.user import User
 from app.db.models.office_timing import OfficeTiming
-from app.schemas.attendance_schema import AttendanceOut, LocationData
+from app.schemas.attendance_schema import AttendanceOut, LocationData, WFHRequestCreate, WFHRequestOut
 from fastapi.responses import StreamingResponse, JSONResponse
 from app.dependencies import get_current_user
 from app.enums import RoleEnum
@@ -2144,4 +2144,82 @@ def calculate_working_hours(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to calculate working hours"
+        )
+
+
+# Work From Home (WFH) Request
+@router.post("/wfh-request", response_model=WFHRequestOut, status_code=status.HTTP_201_CREATED)
+async def submit_wfh_request(
+    wfh_request: WFHRequestCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Submit a Work From Home (WFH) request.
+    
+    Requirements:
+    - Valid start date and end date
+    - Clear reason for the request (10-500 characters)
+    - Must be submitted at least 24 hours in advance
+    - All WFH requests will be reviewed and approved by Manager and HR
+    """
+    try:
+        from app.db.models.leave import Leave
+        from app.crud.leave_crud import apply_leave, create_leave_request_notifications
+        
+        # Convert dates to datetime objects
+        start_dt = datetime.combine(wfh_request.start_date, datetime.min.time())
+        end_dt = datetime.combine(wfh_request.end_date, datetime.min.time())
+        
+        # Validation: 24 hours advance notice requirement
+        now = now_ist()
+        time_difference = start_dt - now
+        hours_difference = time_difference.total_seconds() / 3600
+        
+        if hours_difference < 24:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="WFH requests must be submitted at least 24 hours in advance."
+            )
+        
+        # Validate user exists and is active
+        user = db.query(User).filter(User.user_id == current_user.user_id, User.is_active == True).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found or inactive"
+            )
+        
+        # Create WFH request using Leave model with leave_type='wfh'
+        wfh_leave = apply_leave(
+            db=db,
+            user_id=current_user.user_id,
+            start_date=start_dt,
+            end_date=end_dt,
+            reason=wfh_request.reason,
+            leave_type='wfh'
+        )
+        
+        # Create notifications for Manager and HR
+        create_leave_request_notifications(db, wfh_leave, user)
+        
+        return WFHRequestOut(
+            leave_id=wfh_leave.leave_id,
+            user_id=wfh_leave.user_id,
+            start_date=wfh_request.start_date,
+            end_date=wfh_request.end_date,
+            reason=wfh_request.reason,
+            status=wfh_leave.status,
+            leave_type='wfh',
+            message="WFH request submitted successfully. Your request will be reviewed by your Manager and HR."
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error submitting WFH request for user {current_user.user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while submitting WFH request: {str(e)}"
         )
