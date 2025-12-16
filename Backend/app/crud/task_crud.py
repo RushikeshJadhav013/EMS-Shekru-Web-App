@@ -81,7 +81,15 @@ def _record_history(
     return entry
 
 
-def create_task(db: Session, title: str, description: str, assigned_by: int, assigned_to: int, due_date: Optional[datetime]):
+def create_task(
+    db: Session,
+    title: str,
+    description: str,
+    assigned_by: int,
+    assigned_to: int,
+    due_date: Optional[datetime],
+    priority: Optional[str] = "Medium",
+):
     _ensure_task_pass_columns(db)
     task = Task(
         title=title,
@@ -89,6 +97,7 @@ def create_task(db: Session, title: str, description: str, assigned_by: int, ass
         assigned_by=assigned_by,
         assigned_to=assigned_to,
         due_date=due_date,
+        priority=priority or "Medium",
         status=TaskStatus.PENDING,
     )
     db.add(task)

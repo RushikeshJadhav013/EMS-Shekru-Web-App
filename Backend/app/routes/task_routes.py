@@ -57,6 +57,7 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         user.user_id,
         task.assigned_to,
         task.due_date,
+        task.priority or "Medium",
     )
 
 @router.get("/", response_model=list[TaskOut])
