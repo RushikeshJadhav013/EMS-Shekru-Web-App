@@ -4,7 +4,6 @@ from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import logging
 import time
 from datetime import datetime
-from app.utils.timezone import now_ist
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +94,9 @@ class LocationService:
 
     def get_location_details(self, lat: float, lon: float) -> Dict[str, Any]:
         """Get detailed location information"""
+        # Import here to avoid potential circular import issues
+        from app.utils.timezone import now_ist
+        
         cache_key = self._cache_key(lat, lon)
         cached = self._cache.get(cache_key)
         now = time.time()
