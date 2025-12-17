@@ -57,6 +57,8 @@ class TaskOut(BaseModel):
     last_passed_to: Optional[int] = Field(None, gt=0, description="Last user task was passed to")
     last_pass_note: Optional[constr(max_length=500)] = Field(None, description="Note from last pass")
     last_passed_at: Optional[datetime] = Field(None, description="Timestamp of last pass")
+    assigned_to_name: Optional[str] = Field(None, description="Name of the assignee")
+    assigned_by_name: Optional[str] = Field(None, description="Name of the task creator")
 
     model_config = {"from_attributes": True}
 
