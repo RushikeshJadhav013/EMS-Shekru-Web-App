@@ -4,6 +4,7 @@ from app.db.database import Base
 from app.enums import RoleEnum
 from app.utils.timezone import now_ist
 
+
 class User(Base):
     __tablename__ = "users"
 
@@ -53,3 +54,15 @@ class User(Base):
     task_notifications = relationship("TaskNotification", back_populates="user", cascade="all, delete-orphan")
     shift_assignments = relationship("ShiftAssignment", foreign_keys="ShiftAssignment.user_id", back_populates="user", cascade="all, delete-orphan")
     shift_notifications = relationship("ShiftNotification", back_populates="user", cascade="all, delete-orphan")
+
+    # Chat-related relationships
+    created_chat_sessions = relationship(
+        "ChatSession",
+        back_populates="created_by",
+        cascade="all, delete-orphan",
+    )
+    chat_memberships = relationship(
+        "ChatMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

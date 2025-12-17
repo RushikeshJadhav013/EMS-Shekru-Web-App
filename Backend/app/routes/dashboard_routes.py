@@ -4,7 +4,10 @@ from sqlalchemy import func, and_
 from datetime import datetime, timedelta
 
 from app.db.database import get_db
-from app.db.models import User, Attendance, Leave, Task
+from app.db.models.user import User
+from app.db.models.attendance import Attendance
+from app.db.models.leave import Leave
+from app.db.models.task import Task
 from app.db.models.office_timing import OfficeTiming
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user

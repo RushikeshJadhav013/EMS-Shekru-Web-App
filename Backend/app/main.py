@@ -5,8 +5,23 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
-from app.db import models
-from app.db.database import engine
+from app.db.database import engine, Base
+
+# Import models so SQLAlchemy knows about all tables before create_all
+from app.db.models import (  # noqa: F401
+    user,
+    attendance,
+    leave,
+    task,
+    department,
+    shift,
+    notification,
+    office_timing,
+    online_status,
+    task_comment,
+    hiring,
+    leave_config,
+)
 from app.routes import (
     user_routes,
     attendance_routes,
@@ -26,7 +41,7 @@ import os
 
 # Create all database tables
 try:
-    models.Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     print("✅ Database tables created/verified successfully")
 except Exception as e:
     print(f"⚠️ Warning: Could not create database tables: {e}")

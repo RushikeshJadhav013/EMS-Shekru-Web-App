@@ -97,7 +97,6 @@ def create_task(
         assigned_by=assigned_by,
         assigned_to=assigned_to,
         due_date=due_date,
-        priority=priority or "Medium",
         status=TaskStatus.PENDING,
         priority=priority or "Medium",
     )
