@@ -35,11 +35,24 @@ def get_current_user(token: str = Depends(api_key_header), db: Session = Depends
     return user
 
 def require_roles(*roles: RoleEnum):
+    """
+    Accept roles as variadic args or iterables.
+    Some routes pass a list (e.g., require_roles([ADMIN, HR])).
+    Normalize to a flat set for membership checks.
+    """
+    allowed = set()
+    for role in roles:
+        if isinstance(role, (list, tuple, set)):
+            allowed.update(role)
+        else:
+            allowed.add(role)
+
     def wrapper(current_user: User = Depends(get_current_user)):
-        if current_user.role not in roles:
+        if current_user.role not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Operation not permitted"
             )
         return current_user
+
     return wrapper

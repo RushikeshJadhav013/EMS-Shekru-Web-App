@@ -78,6 +78,7 @@ class TaskUpdate(BaseModel):
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Updated description")
     assigned_to: Optional[int] = Field(None, gt=0, description="New assignee user ID")
     due_date: Optional[date] = Field(None, description="Updated due date")
+    priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field(None, description="Updated task priority")
 
     @field_validator('title')
     @classmethod

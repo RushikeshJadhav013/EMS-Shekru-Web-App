@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, ConfigDict, validator
 
 
 class OfficeTimingBase(BaseModel):
@@ -27,5 +27,4 @@ class OfficeTimingCreate(OfficeTimingBase):
 class OfficeTimingOut(OfficeTimingBase):
     id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

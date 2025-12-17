@@ -99,6 +99,7 @@ def create_task(
         due_date=due_date,
         priority=priority or "Medium",
         status=TaskStatus.PENDING,
+        priority=priority or "Medium",
     )
     db.add(task)
     db.flush()
