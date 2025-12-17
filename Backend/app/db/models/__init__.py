@@ -10,6 +10,7 @@ from .hiring import Vacancy, Candidate
 from .shift import Shift, ShiftAssignment, ShiftNotification
 from .online_status import OnlineStatus
 from .department import Department
+from .wfh_request import WFHRequest
 
 # Base import
 from app.db.database import Base

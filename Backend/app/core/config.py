@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
     #DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
     DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
-    JWT_SECRET: str = "supersecretjwtkey"
+    JWT_SECRET: str = "supersecretjwtkey" 
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
 

@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, field_validator, constr
+from pydantic import BaseModel, Field, field_validator, constr, computed_field
 from typing import Optional, Dict, Any, Union, Literal
-from datetime import datetime, date, timedelta
+from datetime import datetime
 import json
 
 class LocationData(BaseModel):
@@ -63,6 +63,14 @@ class AttendanceOut(AttendanceBase):
     work_location: Optional[Literal['office', 'work_from_home']] = Field('office', description="Work location type")
     task_deadline_reason: Optional[str] = Field(None, description="Reason for incomplete tasks on deadline")
 
+    @computed_field
+    @property
+    def total_hours_formatted(self) -> str:
+        """Format total_hours as HH:MM (e.g., 2.58 → '2:35')"""
+        hours = int(self.total_hours)
+        minutes = int(round((self.total_hours - hours) * 60))
+        return f"{hours}:{minutes:02d}"
+
     @field_validator('check_out')
     @classmethod
     def validate_check_out(cls, v: Optional[datetime], info) -> Optional[datetime]:
@@ -110,64 +118,5 @@ class AttendanceOut(AttendanceBase):
                 raise ValueError('Task deadline reason cannot exceed 500 characters')
             return v.strip()
         return None
-
-    model_config = {"from_attributes": True}
-
-
-class WFHRequestCreate(BaseModel):
-    """Schema for creating a Work From Home request"""
-    start_date: date = Field(..., description="WFH start date")
-    end_date: date = Field(..., description="WFH end date")
-    reason: constr(min_length=10, max_length=500, strip_whitespace=True) = Field(..., description="Reason for WFH request (10-500 characters)")
-
-    @field_validator('end_date')
-    @classmethod
-    def validate_end_date(cls, v: date, info) -> date:
-        """Validate end date is not before start date"""
-        if 'start_date' in info.data:
-            start_date = info.data['start_date']
-            if v < start_date:
-                raise ValueError('End date cannot be before start date')
-            # Validate reasonable WFH duration (max 365 days)
-            duration = (v - start_date).days + 1
-            if duration > 365:
-                raise ValueError('WFH duration cannot exceed 365 days')
-        return v
-
-    @field_validator('start_date')
-    @classmethod
-    def validate_start_date(cls, v: date) -> date:
-        """Validate start date is not too far in the past"""
-        if v < date(2000, 1, 1):
-            raise ValueError('Start date cannot be before year 2000')
-        # Allow backdated WFH requests up to 30 days
-        if v < date.today() - timedelta(days=30):
-            raise ValueError('Cannot apply for WFH more than 30 days in the past')
-        return v
-
-    @field_validator('reason')
-    @classmethod
-    def validate_reason(cls, v: str) -> str:
-        """Validate reason is meaningful"""
-        if not v or not v.strip():
-            raise ValueError('WFH reason is required')
-        v = v.strip()
-        if len(v) < 10:
-            raise ValueError('WFH reason must be at least 10 characters')
-        if len(v) > 500:
-            raise ValueError('WFH reason cannot exceed 500 characters')
-        return v
-
-
-class WFHRequestOut(BaseModel):
-    """Schema for WFH request response"""
-    leave_id: int = Field(..., gt=0, description="Leave/WFH request ID")
-    user_id: int = Field(..., gt=0, description="User ID")
-    start_date: date = Field(..., description="WFH start date")
-    end_date: date = Field(..., description="WFH end date")
-    reason: str = Field(..., description="Reason for WFH request")
-    status: str = Field(default="Pending", description="Request status")
-    leave_type: str = Field(default="wfh", description="Leave type (wfh)")
-    message: str = Field(..., description="Response message")
 
     model_config = {"from_attributes": True}
