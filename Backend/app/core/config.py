@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "supersecretjwtkey" 
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
-    FIREBASE_CREDENTIALS_PATH: str = "/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json"
+    FIREBASE_CREDENTIALS_PATH: str = os.gotenv("/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json")
 
     @property
     def OTP_EXPIRY_MINUTES(self) -> float:
