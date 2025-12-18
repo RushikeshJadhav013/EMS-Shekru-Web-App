@@ -7,7 +7,7 @@ from app.db.database import get_db
 from app.db.models.attendance import Attendance
 from app.db.models.user import User
 from app.db.models.office_timing import OfficeTiming
-from app.schemas.attendance_schema import AttendanceOut, LocationData, WFHRequestCreate, WFHRequestOut
+from app.schemas.attendance_schema import AttendanceOut, LocationData
 from fastapi.responses import StreamingResponse, JSONResponse
 from app.dependencies import get_current_user
 from app.enums import RoleEnum
@@ -75,8 +75,8 @@ async def logout_with_pause(
             current_online_status = True if not latest_status else latest_status.is_online
             
             if current_online_status:
-                logout_timestamp = datetime.fromisoformat(payload.logout_timestamp.replace('Z', ''))
-                logout_timestamp = logout_timestamp.replace(tzinfo=None)
+                # Use server-side IST timestamp to avoid timezone and client clock issues
+                logout_timestamp = now_ist()
                 
                 # Create offline status entry for logout
                 offline_status = OnlineStatus(
@@ -147,10 +147,10 @@ async def login_resume(
             current_online_status = True if not latest_status else latest_status.is_online
             
             if not current_online_status and latest_status:
-                login_timestamp = datetime.fromisoformat(payload.login_timestamp.replace('Z', ''))
-                login_timestamp = login_timestamp.replace(tzinfo=None)
+                # Use server-side IST timestamp to avoid timezone and client clock issues
+                login_timestamp = now_ist()
                 
-                # Calculate offline duration
+                # Calculate offline duration between last offline log and this login
                 offline_duration = login_timestamp - latest_status.timestamp
                 offline_seconds = offline_duration.total_seconds()
                 
@@ -527,6 +527,15 @@ def _evaluate_attendance_status(
     }
 
 
+def _format_hours_to_hhmm(total_hours: float) -> str:
+    """Format decimal hours to HH:MM format (e.g., 2.58 → '2:35')"""
+    if total_hours is None:
+        return "0:00"
+    hours = int(total_hours)
+    minutes = int(round((total_hours - hours) * 60))
+    return f"{hours}:{minutes:02d}"
+
+
 def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
     selfie_data = _load_selfie_data(getattr(attendance, "selfie", None))
     location_sections = _split_location_labels(getattr(attendance, "gps_location", None))
@@ -547,6 +556,8 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
         "check_in": attendance.check_in,
         "check_out": attendance.check_out,
         "total_hours": total_hours_value,
+        "total_hours_formatted": _format_hours_to_hhmm(total_hours_value or 0),
+        "totalHoursFormatted": _format_hours_to_hhmm(total_hours_value or 0),
         "gps_location": location_label,
         "locationLabel": location_label,
         "checkInLocationLabel": location_sections.get("check_in"),
@@ -2144,82 +2155,4 @@ def calculate_working_hours(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to calculate working hours"
-        )
-
-
-# Work From Home (WFH) Request
-@router.post("/wfh-request", response_model=WFHRequestOut, status_code=status.HTTP_201_CREATED)
-async def submit_wfh_request(
-    wfh_request: WFHRequestCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Submit a Work From Home (WFH) request.
-    
-    Requirements:
-    - Valid start date and end date
-    - Clear reason for the request (10-500 characters)
-    - Must be submitted at least 24 hours in advance
-    - All WFH requests will be reviewed and approved by Manager and HR
-    """
-    try:
-        from app.db.models.leave import Leave
-        from app.crud.leave_crud import apply_leave, create_leave_request_notifications
-        
-        # Convert dates to datetime objects
-        start_dt = datetime.combine(wfh_request.start_date, datetime.min.time())
-        end_dt = datetime.combine(wfh_request.end_date, datetime.min.time())
-        
-        # Validation: 24 hours advance notice requirement
-        now = now_ist()
-        time_difference = start_dt - now
-        hours_difference = time_difference.total_seconds() / 3600
-        
-        if hours_difference < 24:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="WFH requests must be submitted at least 24 hours in advance."
-            )
-        
-        # Validate user exists and is active
-        user = db.query(User).filter(User.user_id == current_user.user_id, User.is_active == True).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found or inactive"
-            )
-        
-        # Create WFH request using Leave model with leave_type='wfh'
-        wfh_leave = apply_leave(
-            db=db,
-            user_id=current_user.user_id,
-            start_date=start_dt,
-            end_date=end_dt,
-            reason=wfh_request.reason,
-            leave_type='wfh'
-        )
-        
-        # Create notifications for Manager and HR
-        create_leave_request_notifications(db, wfh_leave, user)
-        
-        return WFHRequestOut(
-            leave_id=wfh_leave.leave_id,
-            user_id=wfh_leave.user_id,
-            start_date=wfh_request.start_date,
-            end_date=wfh_request.end_date,
-            reason=wfh_request.reason,
-            status=wfh_leave.status,
-            leave_type='wfh',
-            message="WFH request submitted successfully. Your request will be reviewed by your Manager and HR."
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error submitting WFH request for user {current_user.user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred while submitting WFH request: {str(e)}"
         )

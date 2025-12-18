@@ -62,7 +62,28 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
 
 @router.get("/", response_model=list[TaskOut])
 def my_tasks(db: Session = Depends(get_db), user = Depends(get_current_user)):
-    return list_tasks(db, user.user_id)
+    tasks = list_tasks(db, user.user_id)
+    # Enrich tasks with human-readable names for assigned_by and assigned_to
+    return [
+        TaskOut(
+            task_id=t.task_id,
+            title=t.title,
+            description=t.description,
+            status=t.status,
+            due_date=t.due_date.date() if t.due_date else None,
+            priority=t.priority,
+            assigned_to=t.assigned_to,
+            assigned_by=t.assigned_by,
+            created_at=t.created_at,
+            last_passed_by=t.last_passed_by,
+            last_passed_to=t.last_passed_to,
+            last_pass_note=t.last_pass_note,
+            last_passed_at=t.last_passed_at,
+            assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+            assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+        )
+        for t in tasks
+    ]
 
 ROLE_HIERARCHY = [
     RoleEnum.ADMIN,
