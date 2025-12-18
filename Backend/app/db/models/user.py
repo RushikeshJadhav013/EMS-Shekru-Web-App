@@ -1,7 +1,9 @@
-from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, func
+from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 from app.enums import RoleEnum
+from app.utils.timezone import now_ist
+
 
 class User(Base):
     __tablename__ = "users"
@@ -22,6 +24,7 @@ class User(Base):
     gender = Column(String(50), nullable=True)
     phone = Column(String(20), nullable=True)
     address = Column(Text, nullable=True)
+    manager_id = Column(Integer, nullable=True)  # ✅ Added: Reporting manager user ID
 
     # PAN, Aadhaar, Shift, Employee Type
     pan_card = Column(String(20), nullable=True)
@@ -30,18 +33,15 @@ class User(Base):
     employee_type = Column(String(50), nullable=True)  # ✅ Added: contract or permanent
 
     # Dates
-    joining_date = Column(DateTime(timezone=True), server_default=func.now())
-    resignation_date = Column(DateTime(timezone=True), nullable=True)
+    joining_date = Column(DateTime, default=now_ist)
+    resignation_date = Column(DateTime, nullable=True)
 
     # Profile & status
     profile_photo = Column(String(1024), nullable=True)
     is_active = Column(Boolean, default=True)  # Active/Deactivate status
 
-    # Timestamps & Audit fields
-    created_on = Column(DateTime(timezone=True), server_default=func.now())
-    updated_on = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
-    created_by = Column(Integer, nullable=True)  # Can reference super_admin_id or user_id
-    updated_by = Column(Integer, nullable=True)  # Can reference super_admin_id or user_id
+    # Timestamps
+    created_at = Column(DateTime, default=now_ist)
 
     # Relationships
     attendances = relationship("Attendance", back_populates="user", cascade="all, delete-orphan")
@@ -54,3 +54,15 @@ class User(Base):
     task_notifications = relationship("TaskNotification", back_populates="user", cascade="all, delete-orphan")
     shift_assignments = relationship("ShiftAssignment", foreign_keys="ShiftAssignment.user_id", back_populates="user", cascade="all, delete-orphan")
     shift_notifications = relationship("ShiftNotification", back_populates="user", cascade="all, delete-orphan")
+
+    # Chat-related relationships
+    created_chat_sessions = relationship(
+        "ChatSession",
+        back_populates="created_by",
+        cascade="all, delete-orphan",
+    )
+    chat_memberships = relationship(
+        "ChatMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

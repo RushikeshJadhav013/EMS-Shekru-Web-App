@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, DateTime, ForeignKey, String, Boolean, Text, func
+from sqlalchemy import Column, Integer, DateTime, ForeignKey, String, Boolean, Text
 from sqlalchemy.orm import relationship
 from app.db.database import Base
+from app.utils.timezone import now_ist
 
 class OnlineStatus(Base):
     __tablename__ = "online_status_logs"
@@ -10,7 +11,7 @@ class OnlineStatus(Base):
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     is_online = Column(Boolean, nullable=False)
     reason = Column(Text, nullable=True)  # Reason for going offline
-    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    timestamp = Column(DateTime, default=now_ist, nullable=False)
     
     # Relationships
     attendance = relationship("Attendance")

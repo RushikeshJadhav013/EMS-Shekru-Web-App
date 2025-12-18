@@ -9,6 +9,7 @@ from app.db.models.task import Task, TaskHistory
 from app.db.models.notification import TaskNotification
 from app.db.models.user import User
 from app.enums import TaskAction, TaskStatus
+from app.utils.timezone import now_ist
 
 
 _TASK_PASS_COLUMNS_READY = False
@@ -74,13 +75,21 @@ def _record_history(
         user_id=user_id,
         action=action.value,
         details=json.dumps(details or {}, default=_json_default),
-        created_at=ist_to_utc(now_ist()),
+        created_at=now_ist(),
     )
     db.add(entry)
     return entry
 
 
-def create_task(db: Session, title: str, description: str, assigned_by: int, assigned_to: int, due_date: Optional[datetime]):
+def create_task(
+    db: Session,
+    title: str,
+    description: str,
+    assigned_by: int,
+    assigned_to: int,
+    due_date: Optional[datetime],
+    priority: Optional[str] = "Medium",
+):
     _ensure_task_pass_columns(db)
     task = Task(
         title=title,
@@ -89,6 +98,7 @@ def create_task(db: Session, title: str, description: str, assigned_by: int, ass
         assigned_to=assigned_to,
         due_date=due_date,
         status=TaskStatus.PENDING,
+        priority=priority or "Medium",
     )
     db.add(task)
     db.flush()
@@ -226,7 +236,7 @@ def pass_task(
     task.last_passed_by = current_user_id
     task.last_passed_to = new_assignee_id
     task.last_pass_note = note
-    task.last_passed_at = ist_to_utc(now_ist())
+    task.last_passed_at = now_ist()
     
     # Reset status to Pending when task is passed to a new assignee
     # This ensures the new assignee starts fresh with the task

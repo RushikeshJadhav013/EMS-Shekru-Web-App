@@ -15,7 +15,6 @@ class Department(Base):
     description = Column(Text, nullable=True)
     status = Column(String(50), nullable=False, default="active")
     employee_count = Column(Integer, nullable=True)
-    budget = Column(Float, nullable=True)
     location = Column(String(255), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

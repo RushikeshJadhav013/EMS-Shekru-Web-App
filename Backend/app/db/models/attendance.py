@@ -8,13 +8,14 @@ class Attendance(Base):
 
     attendance_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
-    check_in = Column(DateTime(timezone=True), nullable=False)
-    check_out = Column(DateTime(timezone=True), nullable=True)
+    check_in = Column(DateTime, nullable=False)
+    check_out = Column(DateTime, nullable=True)
     total_hours = Column(Float, default=0.0)  # Total hours worked today
     gps_location = Column(String(255), nullable=True)
     selfie = Column(String(1024), nullable=True)
     work_summary = Column(Text, nullable=True)
     work_report = Column(String(1024), nullable=True)
     work_location = Column(String(50), default='office')  # 'office' or 'work_from_home'
+    task_deadline_reason = Column(Text, nullable=True)  # Reason for incomplete tasks on deadline
 
     user = relationship("User", back_populates="attendances")

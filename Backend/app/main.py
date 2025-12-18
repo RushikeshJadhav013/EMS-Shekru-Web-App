@@ -7,8 +7,23 @@ from fastapi.encoders import jsonable_encoder
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from app.db import models
-from app.db.database import engine, SessionLocal
+from app.db.database import engine, SessionLocal, Base
+
+# Import models so SQLAlchemy knows about all tables before create_all
+from app.db.models import (  # noqa: F401
+    user,
+    attendance,
+    leave,
+    task,
+    department,
+    shift,
+    notification,
+    office_timing,
+    online_status,
+    task_comment,
+    hiring,
+    leave_config,
+)
 from app.routes import (
     user_routes,
     attendance_routes,
@@ -23,6 +38,8 @@ from app.routes import (
     report_routes,
     super_admin_routes,
     subscription_routes
+    chat_routes,
+    wfh_routes,
 )
 from app.db.models.super_admin import SuperAdmin
 import os
@@ -30,7 +47,7 @@ import os
 
 # Create all database tables
 try:
-    models.Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     print("✅ Database tables created/verified successfully")
 except Exception as e:
     print(f"⚠️ Warning: Could not create database tables: {e}")
@@ -137,14 +154,14 @@ origins = [
     "http://127.0.0.1:3000",   # React dev server alternative
     "http://localhost:5173",    # Vite dev server
     # "http://127.0.0.1:5173",   # Vite dev server alternative
-    # "http://localhost:8000",    # Direct backend access
-    "https://staffly.space",   # Direct backend access alternative
-    # "http://localhost:8080",    # Common frontend port
-    # "http://127.0.0.1:8080",   # Common frontend port alternative
+    "https://staffly.space",    # Direct backend access
+    "http://localhost:8080",    # Common frontend port
+    "http://127.0.0.1:8080",   # Common frontend port alternative
     # "http://localhost:4173",    # Vite preview server
     # "http://127.0.0.1:4173",   # Vite preview server alternative
     "https://stafflyhrms.netlify.app",  # Production deployment
-    "https://staffly.space"                         # Allow all origins (for development)
+    "http://localhost:8080"
+    "https://staffly.space"           # Allow all origins (for development)
 ]
 
 # Configure CORS middleware with detailed settings
@@ -173,6 +190,8 @@ app.include_router(department_routes.router)
 app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
+app.include_router(chat_routes.router)
+app.include_router(wfh_routes.router)
 
 # Global exception handlers to ensure CORS headers are always included
 @app.exception_handler(StarletteHTTPException)

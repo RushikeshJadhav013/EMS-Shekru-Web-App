@@ -8,7 +8,7 @@ class LeaveNotification(Base):
 
     notification_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    leave_id = Column(Integer, ForeignKey("leaves.leave_id", ondelete="CASCADE"), nullable=False)
+    leave_id = Column(Integer, ForeignKey("leaves.leave_id", ondelete="CASCADE"), nullable=True)
     notification_type = Column(String(100), nullable=False)
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)

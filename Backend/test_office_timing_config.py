@@ -6,7 +6,7 @@ Test to check office timing configuration
 import requests
 import json
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://staffly.space"
 
 def test_office_timing_config():
     """Test if office timings are configured"""

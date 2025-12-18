@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator, constr
+from pydantic import BaseModel, Field, field_validator, constr, computed_field
 from typing import Optional, Dict, Any, Union, Literal
 from datetime import datetime
 import json
@@ -59,9 +59,18 @@ class AttendanceOut(AttendanceBase):
     check_in: datetime = Field(..., description="Check-in timestamp")
     check_out: Optional[datetime] = Field(None, description="Check-out timestamp")
     total_hours: float = Field(default=0.0, ge=0, le=24, description="Total work hours (0-24)")
-    work_summary: Optional[constr(min_length=10, max_length=1000)] = Field(None, description="Work summary (10-1000 characters)")
+    work_summary: Optional[str] = Field(None, description="Work summary")
     work_report: Optional[str] = Field(None, description="Work report file path or URL")
-    # work_location is inherited from AttendanceBase
+    work_location: Optional[Literal['office', 'work_from_home']] = Field('office', description="Work location type")
+    task_deadline_reason: Optional[str] = Field(None, description="Reason for incomplete tasks on deadline")
+
+    @computed_field
+    @property
+    def total_hours_formatted(self) -> str:
+        """Format total_hours as HH:MM (e.g., 2.58 → '2:35')"""
+        hours = int(self.total_hours)
+        minutes = int(round((self.total_hours - hours) * 60))
+        return f"{hours}:{minutes:02d}"
 
     @field_validator('check_out')
     @classmethod
@@ -86,5 +95,29 @@ class AttendanceOut(AttendanceBase):
         if v > 24:
             raise ValueError('Total hours cannot exceed 24 hours in a day')
         return round(v, 2)
+
+    @field_validator('work_summary')
+    @classmethod
+    def validate_work_summary(cls, v: Optional[str]) -> Optional[str]:
+        """Validate work summary - allow existing short summaries for backward compatibility"""
+        if v is not None and v.strip():
+            # For backward compatibility, allow existing short summaries
+            # Only enforce minimum length for new entries (this is handled at input validation)
+            if len(v.strip()) > 1000:
+                raise ValueError('Work summary cannot exceed 1000 characters')
+            return v.strip()
+        return None
+
+    @field_validator('task_deadline_reason')
+    @classmethod
+    def validate_task_deadline_reason(cls, v: Optional[str]) -> Optional[str]:
+        """Validate task deadline reason - allow existing short reasons for backward compatibility"""
+        if v is not None and v.strip():
+            # For backward compatibility, allow existing short reasons
+            # Only enforce minimum length for new entries (this is handled at input validation)
+            if len(v.strip()) > 500:
+                raise ValueError('Task deadline reason cannot exceed 500 characters')
+            return v.strip()
+        return None
 
     model_config = {"from_attributes": True}

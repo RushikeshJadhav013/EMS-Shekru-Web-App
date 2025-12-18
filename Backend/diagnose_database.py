@@ -186,7 +186,7 @@ def test_api_endpoint():
         import requests
         
         print("Testing GET /employees endpoint...")
-        response = requests.get("http://localhost:8000/employees", timeout=5)
+        response = requests.get("https://staffly.space/employees", timeout=5)
         
         print(f"Status Code: {response.status_code}")
         

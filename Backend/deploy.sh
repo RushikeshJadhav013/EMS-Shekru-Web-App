@@ -98,16 +98,16 @@ fi
 echo ""
 echo "🌐 Starting server..."
 echo "Environment: $ENVIRONMENT"
-echo "Server will start on: http://localhost:8000"
+echo "Server will start on: https://staffly.space"
 echo ""
 echo "🔍 Test endpoints:"
 if [[ "$ENVIRONMENT" != "production" ]]; then
-    echo "  - Environment info: http://localhost:8000/auth/debug/environment"
-    echo "  - OTP info: http://localhost:8000/auth/debug/otp/test@example.com"
-    echo "  - Test email: http://localhost:8000/auth/debug/test-email"
+    echo "  - Environment info: https://staffly.space/auth/debug/environment"
+    echo "  - OTP info: https://staffly.space/auth/debug/otp/test@example.com"
+    echo "  - Test email: https://staffly.space/auth/debug/test-email"
 fi
-echo "  - Send OTP: POST http://localhost:8000/auth/send-otp?email=test@example.com"
-echo "  - Verify OTP: POST http://localhost:8000/auth/verify-otp"
+echo "  - Send OTP: POST https://staffly.space/auth/send-otp?email=test@example.com"
+echo "  - Verify OTP: POST https://staffly.space/auth/verify-otp"
 echo ""
 
 # Start the server

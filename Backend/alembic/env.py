@@ -22,6 +22,7 @@ from app.db.models.shift import Shift
 from app.db.models.office_timing import OfficeTiming
 from app.db.models.notification import LeaveNotification, TaskNotification
 from app.db.models.hiring import Vacancy, Candidate
+from app.db.models.chat import ChatSession, ChatMember
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

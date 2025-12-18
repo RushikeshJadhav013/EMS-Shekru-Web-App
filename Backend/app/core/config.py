@@ -1,23 +1,25 @@
 from pydantic_settings import BaseSettings
 import os
 from datetime import datetime
-import pytz
-
-# Application timezone - Indian Standard Time
-APP_TIMEZONE = pytz.timezone('Asia/Kolkata')
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
     # DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
-    DATABASE_URL: str = "mysql+pymysql://root:root@localhost/emple"
-    JWT_SECRET: str = "supersecretjwtkey"
+    DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
+    JWT_SECRET: str = "supersecretjwtkey" 
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
+    FIREBASE_CREDENTIALS_PATH: str = os.getenv("/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json")
+
+    @property
+    def OTP_EXPIRY_MINUTES(self) -> float:
+        """Calculate OTP expiry in minutes from seconds"""
+        return self.OTP_EXPIRY_SECONDS / 60
     
 
     
     # Environment-based OTP settings
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")  # development, testing, production
+    ENVIRONMENT: str = os.getenv("development", "testing")  # development, testing, production
     TESTING_OTP: str = os.getenv("TESTING_OTP", "123456")  # Fixed OTP for testing
     ENABLE_EMAIL_OTP: bool = os.getenv("ENABLE_EMAIL_OTP", "false").lower() == "true"
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
@@ -52,21 +54,21 @@ class Settings(BaseSettings):
     def OTP_EXPIRY_MINUTES(self) -> int:
         """Convert OTP expiry from seconds to minutes"""
         return self.OTP_EXPIRY_SECONDS // 60
+    
+    class Config:
+        # Default to testing env file; override via ENV_FILE for other modes
+        env_file = os.getenv("ENV_FILE", ".env.testing")
 
 def get_ist_now() -> datetime:
-    """Get current datetime in IST timezone"""
-    return datetime.now(APP_TIMEZONE)
+    """Get current datetime in IST (server is set to IST)."""
+    return datetime.now()
 
 def utc_to_ist(utc_dt: datetime) -> datetime:
-    """Convert UTC datetime to IST"""
-    if utc_dt.tzinfo is None:
-        utc_dt = pytz.utc.localize(utc_dt)
-    return utc_dt.astimezone(APP_TIMEZONE)
+    """Deprecated: project is IST-only. Returns input unchanged."""
+    return utc_dt
 
 def ist_to_utc(ist_dt: datetime) -> datetime:
-    """Convert IST datetime to UTC for database storage"""
-    if ist_dt.tzinfo is None:
-        ist_dt = APP_TIMEZONE.localize(ist_dt)
-    return ist_dt.astimezone(pytz.utc)
+    """Deprecated: project is IST-only. Returns input unchanged."""
+    return ist_dt
 
 settings = Settings()

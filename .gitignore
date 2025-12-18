@@ -524,3 +524,6 @@ Temporary Items
 .directory
 .Trash-*
 .nfs*
+
+# Firebase service account (backend)
+Backend/firebase_service_acc.json

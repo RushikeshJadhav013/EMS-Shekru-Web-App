@@ -94,6 +94,9 @@ class LocationService:
 
     def get_location_details(self, lat: float, lon: float) -> Dict[str, Any]:
         """Get detailed location information"""
+        # Import here to avoid potential circular import issues
+        from app.utils.timezone import now_ist
+        
         cache_key = self._cache_key(lat, lon)
         cached = self._cache.get(cache_key)
         now = time.time()
@@ -108,7 +111,7 @@ class LocationService:
             'address': address_info.get('address') if address_info else f"{lat}, {lon}",
             'place_name': self._extract_place_name(address_info),
             'accuracy': None,  # Can be set from GPS data if available
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': now_ist().isoformat(),
             'is_valid': True
         }
 

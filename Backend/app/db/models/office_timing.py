@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Time, DateTime, Boolean, func
+from sqlalchemy import Column, Integer, String, Time, DateTime, Boolean
+from app.utils.timezone import now_ist
 
 from app.db.database import Base
 
@@ -15,8 +16,8 @@ class OfficeTiming(Base):
     check_in_grace_minutes = Column(Integer, default=0)
     check_out_grace_minutes = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=now_ist)
+    updated_at = Column(DateTime, default=now_ist, onupdate=now_ist)
 
     def is_global(self) -> bool:
         return self.department is None or self.department == ""

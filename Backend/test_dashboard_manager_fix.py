@@ -8,7 +8,7 @@ import requests
 import json
 from datetime import datetime
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://staffly.space"
 
 def test_manager_dashboard():
     """Test the manager dashboard endpoint that was failing"""
@@ -79,7 +79,7 @@ def test_manager_dashboard():
         
     except requests.exceptions.RequestException as e:
         print(f"❌ ERROR: Could not connect to server: {e}")
-        print("Please ensure the backend server is running on http://localhost:8000")
+        print("Please ensure the backend server is running on https://staffly.space")
         return False
 
 def test_other_dashboard_endpoints():
@@ -159,7 +159,7 @@ def main():
         response = requests.get(f"{BASE_URL}/", timeout=5)
         print(f"✅ Backend is running (Status: {response.status_code})")
     except:
-        print("❌ Cannot connect to backend. Please ensure it's running on http://localhost:8000")
+        print("❌ Cannot connect to backend. Please ensure it's running on https://staffly.space")
         return
     
     # Run tests

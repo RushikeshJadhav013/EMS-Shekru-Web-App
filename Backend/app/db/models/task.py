@@ -5,11 +5,11 @@ from sqlalchemy.orm import relationship
 
 from app.enums import TaskStatus
 from app.db.database import Base
+from app.utils.timezone import now_ist
 
-def get_utc_now():
-    """Get current time in UTC for database storage"""
-    from app.utils.timezone import ist_to_utc, now_ist
-    return ist_to_utc(now_ist())
+def get_now_ist():
+    """Get current time in IST (naive) for database storage"""
+    return now_ist()
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -19,7 +19,9 @@ class Task(Base):
     assigned_by = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     assigned_to = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     status = Column(String(50), default=TaskStatus.PENDING)
+    priority = Column(String(20), default="Medium")
     due_date = Column(DateTime)
+    created_at = Column(DateTime, default=get_now_ist)
     last_passed_by = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     last_passed_to = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     last_pass_note = Column(Text, nullable=True)
@@ -40,7 +42,7 @@ class TaskHistory(Base):
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     action = Column(String(50))
     details = Column(Text)
-    created_at = Column(DateTime, default=get_utc_now)
+    created_at = Column(DateTime, default=get_now_ist)
 
     task = relationship("Task", back_populates="history")
     user = relationship("User", back_populates="task_history_entries")

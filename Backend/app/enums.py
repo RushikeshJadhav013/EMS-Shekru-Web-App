@@ -1,11 +1,18 @@
 from enum import Enum
 
+
 class RoleEnum(str, Enum):
     ADMIN = "Admin"
     HR = "HR"
     MANAGER = "Manager"
     TEAM_LEAD = "TeamLead"
     EMPLOYEE = "Employee"
+
+
+class ChatMemberRoleEnum(str, Enum):
+    MEMBER = "member"
+    ADMIN = "admin"
+
 
 class TaskStatus(str, Enum):
     PENDING = "Pending"

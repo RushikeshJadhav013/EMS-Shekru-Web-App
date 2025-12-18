@@ -34,7 +34,6 @@ def create_department(db: Session, dept_in: DepartmentCreate) -> Department:
         description=dept_in.description,
         status=dept_in.status or "active",
         employee_count=employee_count,
-        budget=dept_in.budget,
         location=dept_in.location,
     )
     db.add(db_dept)

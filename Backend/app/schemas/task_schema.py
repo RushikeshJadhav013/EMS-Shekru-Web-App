@@ -24,11 +24,10 @@ class TaskBase(BaseModel):
     def validate_due_date(cls, v: Optional[date]) -> Optional[date]:
         """Validate due date is reasonable"""
         if v is not None:
-            if v < date(2000, 1, 1):
-                raise ValueError('Due date cannot be before year 2000')
-            # Allow tasks to be created with past due dates (for historical data)
-            # but warn if too far in the future
-            if v > date.today() + timedelta(days=3650):  # 10 years
+            today = date.today()
+            if v < today:
+                raise ValueError('Due date cannot be in the past. Please select today or a future date.')
+            if v > today + timedelta(days=3650):  # 10 years
                 raise ValueError('Due date cannot be more than 10 years in the future')
         return v
 
@@ -44,8 +43,13 @@ class TaskCreate(TaskBase):
             raise ValueError('Cannot assign task to yourself')
         return v
 
-class TaskOut(TaskBase):
+class TaskOut(BaseModel):
     task_id: int = Field(..., gt=0, description="Unique task ID")
+    title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
+    description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Task description (max 2000 characters)")
+    status: Optional[Literal['Pending', 'In Progress', 'Completed', 'On Hold', 'Cancelled']] = Field("Pending", description="Task status")
+    due_date: Optional[date] = Field(None, description="Task due date")
+    priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field("Medium", description="Task priority")
     assigned_to: int = Field(..., gt=0, description="Assigned to user ID")
     assigned_by: int = Field(..., gt=0, description="Assigned by user ID")
     created_at: Optional[datetime] = Field(None, description="Creation timestamp")
@@ -53,8 +57,22 @@ class TaskOut(TaskBase):
     last_passed_to: Optional[int] = Field(None, gt=0, description="Last user task was passed to")
     last_pass_note: Optional[constr(max_length=500)] = Field(None, description="Note from last pass")
     last_passed_at: Optional[datetime] = Field(None, description="Timestamp of last pass")
+    assigned_to_name: Optional[str] = Field(None, description="Name of the assignee")
+    assigned_by_name: Optional[str] = Field(None, description="Name of the task creator")
 
     model_config = {"from_attributes": True}
+
+    @field_validator('title')
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        """Validate title is meaningful"""
+        if not v or not v.strip():
+            raise ValueError('Task title cannot be empty')
+        if len(v.strip()) < 3:
+            raise ValueError('Task title must be at least 3 characters')
+        return v.strip()
+
+    # Note: No due_date validation for output - existing tasks may have past dates
 
 
 class TaskUpdate(BaseModel):
@@ -62,6 +80,7 @@ class TaskUpdate(BaseModel):
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Updated description")
     assigned_to: Optional[int] = Field(None, gt=0, description="New assignee user ID")
     due_date: Optional[date] = Field(None, description="Updated due date")
+    priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field(None, description="Updated task priority")
 
     @field_validator('title')
     @classmethod
@@ -73,6 +92,18 @@ class TaskUpdate(BaseModel):
             if len(v.strip()) < 3:
                 raise ValueError('Task title must be at least 3 characters')
         return v.strip() if v else v
+
+    @field_validator('due_date')
+    @classmethod
+    def validate_due_date(cls, v: Optional[date]) -> Optional[date]:
+        """Validate due date is reasonable"""
+        if v is not None:
+            today = date.today()
+            if v < today:
+                raise ValueError('Due date cannot be in the past. Please select today or a future date.')
+            if v > today + timedelta(days=3650):  # 10 years
+                raise ValueError('Due date cannot be more than 10 years in the future')
+        return v
 
 
 class TaskPassRequest(BaseModel):

@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Time, Boolean, DateTime, ForeignKey, Date, Text, func
+from sqlalchemy import Column, Integer, String, Time, Boolean, DateTime, ForeignKey, Date, Text
 from sqlalchemy.orm import relationship
 from app.db.database import Base
+from app.utils.timezone import now_ist
 
 
 class Shift(Base):
@@ -13,8 +14,8 @@ class Shift(Base):
     department = Column(String(255), nullable=True)  # NULL for global shifts, or specific department
     is_active = Column(Boolean, default=True, nullable=False)
     description = Column(String(500), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
+    updated_at = Column(DateTime, onupdate=now_ist, nullable=True)
 
     # Relationships
     assignments = relationship("ShiftAssignment", back_populates="shift", cascade="all, delete-orphan")
@@ -30,8 +31,8 @@ class ShiftAssignment(Base):
     assigned_by = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)  # Manager who assigned
     notes = Column(String(500), nullable=True)  # Optional notes about the assignment
     is_reassigned = Column(Boolean, default=False, nullable=False)  # True if reassigned from another shift
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
+    updated_at = Column(DateTime, onupdate=now_ist, nullable=True)
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id], back_populates="shift_assignments")
@@ -50,7 +51,7 @@ class ShiftNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     # Relationships
     user = relationship("User", back_populates="shift_notifications")

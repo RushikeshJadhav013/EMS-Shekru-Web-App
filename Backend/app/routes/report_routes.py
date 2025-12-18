@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from datetime import datetime, timedelta
 from typing import Optional, List
-from app.utils.timezone import now_ist, get_date_bounds_ist, utc_to_ist
+from app.utils.timezone import now_ist, get_date_bounds_ist
 import traceback
 import io
 import csv
@@ -71,7 +71,11 @@ def get_employee_performance(
     
     try:
         # Base query for active employees
-        query = db.query(User).filter(User.is_active == True)
+        # ✅ Exclude Admin users - Admin is the boss and should not appear in performance reports
+        query = db.query(User).filter(
+            User.is_active == True,
+            User.role != RoleEnum.ADMIN
+        )
         
         # Apply filters
         if department and department != 'all':
@@ -306,7 +310,11 @@ def get_executive_summary(
         )
     
     # Get all active employees
-    employees = db.query(User).filter(User.is_active == True).all()
+    # ✅ Exclude Admin users - Admin is the boss and should not appear in performance reports
+    employees = db.query(User).filter(
+        User.is_active == True,
+        User.role != RoleEnum.ADMIN
+    ).all()
     
     # Calculate working days
     total_working_days = 0

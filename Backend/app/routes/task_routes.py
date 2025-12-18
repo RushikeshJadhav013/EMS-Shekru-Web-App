@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from app.crud.task_crud import (
     update_task_status,
 )
 from app.dependencies import get_current_user
-from app.utils.timezone import now_ist, utc_to_ist
+from app.utils.timezone import now_ist
 
 from app.schemas.task_schema import TaskCreate, TaskHistoryOut, TaskNotificationOut, TaskOut, TaskPassRequest, TaskUpdate
 from app.enums import RoleEnum, TaskStatus
@@ -57,11 +57,33 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         user.user_id,
         task.assigned_to,
         task.due_date,
+        task.priority or "Medium",
     )
 
 @router.get("/", response_model=list[TaskOut])
 def my_tasks(db: Session = Depends(get_db), user = Depends(get_current_user)):
-    return list_tasks(db, user.user_id)
+    tasks = list_tasks(db, user.user_id)
+    # Enrich tasks with human-readable names for assigned_by and assigned_to
+    return [
+        TaskOut(
+            task_id=t.task_id,
+            title=t.title,
+            description=t.description,
+            status=t.status,
+            due_date=t.due_date.date() if t.due_date else None,
+            priority=t.priority,
+            assigned_to=t.assigned_to,
+            assigned_by=t.assigned_by,
+            created_at=t.created_at,
+            last_passed_by=t.last_passed_by,
+            last_passed_to=t.last_passed_to,
+            last_pass_note=t.last_pass_note,
+            last_passed_at=t.last_passed_at,
+            assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+            assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+        )
+        for t in tasks
+    ]
 
 ROLE_HIERARCHY = [
     RoleEnum.ADMIN,
@@ -271,3 +293,55 @@ def mark_task_notification(
     if not notification:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
     return _serialize_task_notification(notification)
+
+
+@router.get("/deadline-warnings/{user_id}")
+def get_deadline_warnings(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get tasks with upcoming or overdue deadlines for a user"""
+    if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+        raise HTTPException(status_code=403, detail="Not authorized to view this user's tasks")
+    
+    today = date.today()
+    three_days_from_now = today + timedelta(days=3)
+    
+    # Get tasks assigned to user with deadlines within 3 days or overdue
+    tasks = db.query(Task).filter(
+        Task.assigned_to == user_id,
+        Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+        Task.due_date.isnot(None),
+        Task.due_date <= three_days_from_now
+    ).all()
+    
+    warnings = []
+    for task in tasks:
+        if task.due_date:
+            # Convert datetime to date for comparison
+            task_due_date = task.due_date.date() if hasattr(task.due_date, 'date') else task.due_date
+            days_until_deadline = (task_due_date - today).days
+            
+            if days_until_deadline < 0:
+                warning_type = "overdue"
+                message = f"Task '{task.title}' is {abs(days_until_deadline)} day(s) overdue"
+            elif days_until_deadline == 0:
+                warning_type = "due_today"
+                message = f"Task '{task.title}' is due today"
+            else:
+                warning_type = "upcoming"
+                message = f"Task '{task.title}' is due in {days_until_deadline} day(s)"
+            
+            warnings.append({
+                "task_id": task.task_id,
+                "title": task.title,
+                "due_date": task.due_date.isoformat(),
+                "status": task.status,
+                "priority": task.priority,
+                "warning_type": warning_type,
+                "message": message,
+                "days_until_deadline": days_until_deadline
+            })
+    
+    return {"warnings": warnings}

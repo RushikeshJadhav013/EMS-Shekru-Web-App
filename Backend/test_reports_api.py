@@ -3,7 +3,7 @@ Test script to verify reports API endpoints work correctly
 """
 import requests
 
-BASE_URL = "https://staffly.space"
+BASE_URL = "http://localhost:8080"
 
 # Test without authentication first
 def test_reports():

@@ -15,7 +15,7 @@ def send_otp_email(email: str, otp: int, environment_info: dict = None):
         print(f"\n🔧 [{settings.ENVIRONMENT.upper()}] LOGIN OTP")
         print(f"📧 Email: {email}")
         print(f"🔢 OTP: {otp}")
-        print(f"⏰ Valid for: {settings.OTP_EXPIRY_MINUTES} minutes")
+        print(f"⏰ Valid for: {settings.OTP_EXPIRY_SECONDS} seconds")
         print(f"🌍 Environment: {settings.ENVIRONMENT}")
         if environment_info:
             print(f"ℹ️  Environment Info: {environment_info}")
@@ -63,7 +63,7 @@ def send_otp_email(email: str, otp: int, environment_info: dict = None):
                     <div class="otp">{otp}</div>
                     <p><strong>Important:</strong></p>
                     <ul>
-                        <li>This OTP is valid for <strong>{settings.OTP_EXPIRY_MINUTES} minutes</strong></li>
+                        <li>This OTP is valid for <strong>{settings.OTP_EXPIRY_SECONDS} seconds</strong></li>
                         <li>Never share this OTP with anyone</li>
                         <li class="warning">If you didn't request this OTP, please contact support immediately</li>
                     </ul>
