@@ -291,3 +291,4 @@ config/secrets.json
 # Ignore all __pycache__ directories and .pyc files
 __pycache__/
 *.pyc
+firebase_service_acc.json
