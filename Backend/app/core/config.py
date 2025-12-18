@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 import os
 from datetime import datetime
+from typing import Optional
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
@@ -9,7 +10,11 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "supersecretjwtkey" 
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
-    FIREBASE_CREDENTIALS_PATH: str = os.getenv("/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json")
+    # Firebase credentials path: allow override via env var, with a default file path
+    FIREBASE_CREDENTIALS_PATH: str = os.getenv(
+        "FIREBASE_CREDENTIALS_PATH",
+        "/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json",
+    )
 
     @property
     def OTP_EXPIRY_MINUTES(self) -> float:

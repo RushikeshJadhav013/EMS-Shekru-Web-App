@@ -37,7 +37,7 @@ from app.routes import (
     department_routes,
     report_routes,
     super_admin_routes,
-    subscription_routes
+    subscription_routes,
     chat_routes,
     wfh_routes,
 )
