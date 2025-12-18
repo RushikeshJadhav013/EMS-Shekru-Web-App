@@ -292,3 +292,5 @@ config/secrets.json
 __pycache__/
 *.pyc
 firebase_service_acc.json
+firebase_service_acc*.json
+*.firebase.key.json

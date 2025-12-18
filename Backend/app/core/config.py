@@ -4,12 +4,12 @@ from datetime import datetime
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
-    #DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
+    # DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
     DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
     JWT_SECRET: str = "supersecretjwtkey" 
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
-    FIREBASE_CREDENTIALS_PATH: str = os.gotenv("/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json")
+    FIREBASE_CREDENTIALS_PATH: str = os.getenv("/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json")
 
     @property
     def OTP_EXPIRY_MINUTES(self) -> float:
