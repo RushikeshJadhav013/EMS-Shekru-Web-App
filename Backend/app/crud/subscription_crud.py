@@ -277,12 +277,11 @@ def delete_admin_subscription(
 # ==================== Helper Functions ====================
 
 def get_admin_user_count(db: Session, admin_id: int) -> int:
-    """Get the count of users created by a specific admin"""
-    return (
-        db.query(User)
-        .filter(User.created_by == admin_id)
-        .count()
-    )
+    """
+    Get the count of users for an admin.
+    Note: User model has no created_by column, so fall back to total users.
+    """
+    return db.query(User).count()
 
 
 def check_admin_subscription_limit(
