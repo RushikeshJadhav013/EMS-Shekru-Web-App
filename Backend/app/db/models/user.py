@@ -21,7 +21,8 @@ class User(Base):
     # Optional Info
     department = Column(String(255), nullable=True)
     designation = Column(String(255), nullable=True)
-    gender = Column(String(50), nullable=True)
+    # Make gender mandatory with a sane default ("other") to avoid NULLs
+    gender = Column(String(50), nullable=False, default="other")
     phone = Column(String(20), nullable=True)
     address = Column(Text, nullable=True)
     manager_id = Column(Integer, nullable=True)  # ✅ Added: Reporting manager user ID

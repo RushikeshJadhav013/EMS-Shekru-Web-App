@@ -72,7 +72,8 @@ def register_employee(
     phone: Optional[str] = Form(None),
     address: Optional[str] = Form(None),
     role: Optional[RoleEnum] = Form(RoleEnum.EMPLOYEE),
-    gender: Optional[str] = Form(None),
+    # Make gender mandatory on user registration
+    gender: str = Form(...),
     resignation_date: Optional[datetime] = Form(None),
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
@@ -88,16 +89,14 @@ def register_employee(
     pan_card = pan_card.strip().upper() if pan_card else None
     aadhar_card = aadhar_card.strip() if aadhar_card else None
     
-    # Validate and convert gender to GenderEnum
-    gender_enum = None
-    if gender:
-        try:
-            gender_enum = GenderEnum(gender.strip())
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
-            )
+    # Validate and convert gender to GenderEnum (mandatory)
+    try:
+        gender_enum = GenderEnum(gender.strip())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
+        )
 
     # Check for duplicate email
     existing_user = get_user_by_email(db, email)
@@ -157,7 +156,7 @@ def register_employee(
         profile_photo_path = file_path
 
     # Normalize/validate fields to match schema expectations
-    gender_value = gender_enum.value.lower() if hasattr(gender_enum, "value") else (gender_enum or "").strip().lower()
+    gender_value = gender_enum.value.lower()
     shift_value = (shift_type or "").strip().lower()
     employee_type_value = (employee_type or "").strip().lower()
 
@@ -369,8 +368,6 @@ def update_employee(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
             )
-    else:
-        employee.gender = None
     employee.resignation_date = resignation_date
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card
