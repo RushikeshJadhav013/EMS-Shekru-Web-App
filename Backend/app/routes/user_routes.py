@@ -86,7 +86,7 @@ def register_employee(
     email = email.strip().lower()
     employee_id = employee_id.strip()
     pan_card = pan_card.strip().upper() if pan_card else None
-    aadhar_card = re.sub(r'\D', '', aadhar_card) if aadhar_card else None
+    aadhar_card = aadhar_card.strip() if aadhar_card else None
     
     # Validate and convert gender to GenderEnum
     gender_enum = None
@@ -161,10 +161,10 @@ def register_employee(
     shift_value = (shift_type or "").strip().lower()
     employee_type_value = (employee_type or "").strip().lower()
 
-    if aadhar_card and len(aadhar_card) != 12:
+    if aadhar_card and not re.match(r'^\d{4}-\d{4}-\d{4}$', aadhar_card):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Aadhar Card must have exactly 12 digits.",
+            detail="Invalid Aadhar card format. Expected format: 1234-5678-9012",
         )
 
     user_in = UserCreate(
@@ -522,7 +522,21 @@ def validate_phone_availability(
     if not phone or not phone.strip():
         return {"available": True, "message": ""}
     
-    existing_user = get_user_by_phone(db, phone.strip())
+    phone = phone.strip()
+    # Validate format: must start with 6, 7, 8, or 9 and have at least 10 digits
+    digits = re.sub(r'[^0-9]', '', phone)
+    if len(digits) < 10:
+        return {
+            "available": False,
+            "message": "Phone number must have at least 10 digits"
+        }
+    if not re.match(r'^[6-9]', digits):
+        return {
+            "available": False,
+            "message": "Phone number must start with 6, 7, 8, or 9"
+        }
+    
+    existing_user = get_user_by_phone(db, phone)
     if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
         return {
             "available": False, 
@@ -562,7 +576,15 @@ def validate_aadhar_availability(
     if not aadhar_card or not aadhar_card.strip():
         return {"available": True, "message": ""}
     
-    existing_user = get_user_by_aadhar_card(db, aadhar_card.strip())
+    aadhar_card = aadhar_card.strip()
+    # Validate format
+    if not re.match(r'^\d{4}-\d{4}-\d{4}$', aadhar_card):
+        return {
+            "available": False,
+            "message": "Invalid Aadhar card format. Expected format: 1234-5678-9012"
+        }
+    
+    existing_user = get_user_by_aadhar_card(db, aadhar_card)
     if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
         return {
             "available": False, 

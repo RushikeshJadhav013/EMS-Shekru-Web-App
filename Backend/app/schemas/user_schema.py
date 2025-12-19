@@ -41,8 +41,8 @@ class UserBase(BaseModel):
         digits = re.sub(r'[^0-9]', '', v)
         if len(digits) < 10:
             raise ValueError('Phone number must have at least 10 digits')
-        if len(digits) > 15:
-            raise ValueError('Phone number cannot exceed 15 digits')
+        if not re.match(r'^[6-9]', digits):
+            raise ValueError('Phone number must start with 6, 7, 8, or 9')
         return v.strip()
 
     @field_validator('pan_card')
@@ -56,15 +56,26 @@ class UserBase(BaseModel):
             raise ValueError('Invalid PAN card format. Expected format: ABCDE1234F')
         return v
 
+    # @field_validator('aadhar_card')
+    # @classmethod
+    # def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
+    #     """Validate Aadhar card format: exactly 12 digits"""
+    #     if v is None:
+    #         return v
+    #     v = re.sub(r'\D', '', v.strip())
+    #     if not re.fullmatch(r'\d{12}', v):
+    #         raise ValueError('Aadhar must be exactly 12 digits')
+    #     return v
+
     @field_validator('aadhar_card')
     @classmethod
     def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
-        """Validate Aadhar card format: exactly 12 digits"""
+        """Validate Aadhar card format (1234-5678-9012)"""
         if v is None:
             return v
-        v = re.sub(r'\D', '', v.strip())
-        if not re.fullmatch(r'\d{12}', v):
-            raise ValueError('Aadhar must be exactly 12 digits')
+        v = v.strip()
+        if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
+            raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
         return v
 
     @field_validator('email')
@@ -105,68 +116,78 @@ class UserCreate(UserBase):
             raise ValueError('Employee ID cannot contain spaces')
         return v
 
+# class UserOut(UserBase):
+#     user_id: int
+#     employee_id: str
+#     is_active: bool
+#     profile_photo: Optional[str] = None
+#     created_on: datetime
+#     updated_on: Optional[datetime] = None
+#     created_by: Optional[int] = None
+#     updated_by: Optional[int] = None
+
+#     model_config = {"from_attributes": True, "use_enum_values": True}
+    
+#     @field_validator('gender', mode='before')
+#     @classmethod
+#     def normalize_gender(cls, v):
+#         """Normalize gender to lowercase when reading from database"""
+#         if v is None:
+#             return None
+#         if isinstance(v, str):
+#             normalized = v.strip().lower()
+#             # Map common variations
+#             if normalized in ['male', 'm']:
+#                 return 'male'
+#             elif normalized in ['female', 'f']:
+#                 return 'female'
+#             elif normalized in ['other', 'o']:
+#                 return 'other'
+#             return normalized
+#         return v
+    
+#     @field_validator('aadhar_card', mode='before')
+#     @classmethod
+#     def normalize_aadhar_card(cls, v):
+#         """Normalize Aadhar to raw 12 digits."""
+#         if v is None:
+#             return None
+#         if isinstance(v, str):
+#             digits_only = re.sub(r'\D', '', v.strip())
+#             return digits_only or None
+#         return v
+    
+#     @field_validator('shift_type', mode='before')
+#     @classmethod
+#     def normalize_shift_type(cls, v):
+#         """Normalize shift_type to lowercase when reading from database"""
+#         if v is None:
+#             return None
+#         if isinstance(v, str):
+#             normalized = v.strip().lower()
+#             # Map common variations
+#             if normalized in ['morning', 'morn']:
+#                 return 'morning'
+#             elif normalized in ['afternoon', 'after']:
+#                 return 'afternoon'
+#             elif normalized in ['night', 'evening']:
+#                 return 'night'
+#             elif normalized in ['rotational', 'rotate', 'rotation']:
+#                 return 'rotational'
+#             elif normalized in ['general', 'gen']:
+#                 return 'general'
+#             return normalized
+#         return v
+
 class UserOut(UserBase):
     user_id: int
     employee_id: str
     is_active: bool
     profile_photo: Optional[str] = None
-    created_on: datetime
-    updated_on: Optional[datetime] = None
-    created_by: Optional[int] = None
-    updated_by: Optional[int] = None
+    created_at: datetime
 
-    model_config = {"from_attributes": True, "use_enum_values": True}
-    
-    @field_validator('gender', mode='before')
-    @classmethod
-    def normalize_gender(cls, v):
-        """Normalize gender to lowercase when reading from database"""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            normalized = v.strip().lower()
-            # Map common variations
-            if normalized in ['male', 'm']:
-                return 'male'
-            elif normalized in ['female', 'f']:
-                return 'female'
-            elif normalized in ['other', 'o']:
-                return 'other'
-            return normalized
-        return v
-    
-    @field_validator('aadhar_card', mode='before')
-    @classmethod
-    def normalize_aadhar_card(cls, v):
-        """Normalize Aadhar to raw 12 digits."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            digits_only = re.sub(r'\D', '', v.strip())
-            return digits_only or None
-        return v
-    
-    @field_validator('shift_type', mode='before')
-    @classmethod
-    def normalize_shift_type(cls, v):
-        """Normalize shift_type to lowercase when reading from database"""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            normalized = v.strip().lower()
-            # Map common variations
-            if normalized in ['morning', 'morn']:
-                return 'morning'
-            elif normalized in ['afternoon', 'after']:
-                return 'afternoon'
-            elif normalized in ['night', 'evening']:
-                return 'night'
-            elif normalized in ['rotational', 'rotate', 'rotation']:
-                return 'rotational'
-            elif normalized in ['general', 'gen']:
-                return 'general'
-            return normalized
-        return v
+    model_config = {"from_attributes": True}
+
 
 class UpdateRoleSchema(BaseModel):
     role: RoleEnum = Field(..., description="New role for the user")
@@ -232,13 +253,13 @@ class AdminCreate(BaseModel):
 
     @validator("aadhar_card")
     def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
-        """Aadhar must be exactly 12 digits; allow missing."""
+        """Validate Aadhar card format (1234-5678-9012)"""
         if v is None:
             return None
-        digits_only = v.strip()
-        if not re.fullmatch(r"\d{12}", digits_only):
-            raise ValueError("Aadhar must be exactly 12 digits")
-        return digits_only
+        v = v.strip()
+        if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
+            raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
+        return v
 
 
 class AdminUpdate(BaseModel):
@@ -302,10 +323,10 @@ class AdminUpdate(BaseModel):
     
     @validator("aadhar_card")
     def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
-        """Aadhar must be exactly 12 digits; allow missing."""
+        """Validate Aadhar card format (1234-5678-9012)"""
         if v is None:
             return None
-        digits_only = v.strip()
-        if not re.fullmatch(r"\d{12}", digits_only):
-            raise ValueError("Aadhar must be exactly 12 digits")
-        return digits_only
+        v = v.strip()
+        if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
+            raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
+        return v
