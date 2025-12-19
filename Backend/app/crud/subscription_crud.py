@@ -191,7 +191,13 @@ def assign_trial_subscription_to_admin(
     if not plan:
         return None
 
-    trial_request = AdminSubscriptionCreate(admin_id=admin_id, plan_id=plan.plan_id)
+    # Set trial end_date to 1 month (30 days) from now
+    trial_end_date = datetime.now() + timedelta(days=30)
+    trial_request = AdminSubscriptionCreate(
+        admin_id=admin_id,
+        plan_id=plan.plan_id,
+        end_date=trial_end_date
+    )
     return create_admin_subscription(db, trial_request, created_by=created_by)
 
 
