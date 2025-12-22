@@ -11,20 +11,24 @@ from app.utils.timezone import now_ist, get_date_bounds_ist
 import traceback
 import io
 import csv
+import json
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 from app.db.database import get_db
 from app.db.models.user import User
 from app.db.models.attendance import Attendance
-from app.db.models.task import Task
+from app.db.models.task import Task, TaskHistory
 from app.db.models.leave import Leave
 from app.dependencies import get_current_user, require_roles
-from app.enums import RoleEnum, TaskStatus
+from app.enums import RoleEnum, TaskStatus, TaskAction
+from app.config.company_config import (
+    COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
+)
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -852,6 +856,713 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     # Prepare response
     buffer.seek(0)
     filename = f"performance_report_{start_date}_to_{end_date}.pdf"
+    
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.get("/task-management")
+async def export_task_management_report(
+    department: Optional[str] = Query(None, description="Filter by department"),
+    period_type: Optional[str] = Query(None, description="Period type: 'monthly', 'quarterly', or 'custom' (default: custom if start_date/end_date provided)"),
+    month: Optional[int] = Query(None, ge=0, le=11, description="Month (0-11) for monthly period"),
+    quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
+    year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom period"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom period"),
+    status: Optional[str] = Query(None, description="Filter by task status"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Export Task Management Report in PDF format.
+    Professional report with company branding, task details, and comprehensive information.
+    
+    Supports time-based filters:
+    - Monthly: Use period_type='monthly' with month (0-11) and year
+    - Quarterly: Use period_type='quarterly' with quarter (1-4) and year
+    - Custom: Use start_date and end_date (YYYY-MM-DD)
+    """
+    try:
+        # Determine period type and calculate date range
+        start = None
+        end = None
+        period_label = "All Time"
+        
+        # If period_type is explicitly set, use it; otherwise infer from parameters
+        if period_type:
+            period_type = period_type.lower()
+        elif month is not None or quarter is not None:
+            # Infer period type from parameters
+            if month is not None:
+                period_type = 'monthly'
+            elif quarter is not None:
+                period_type = 'quarterly'
+            else:
+                period_type = 'custom'
+        elif start_date or end_date:
+            period_type = 'custom'
+        else:
+            period_type = None  # No date filter
+        
+        # Calculate date range based on period type
+        if period_type == 'monthly':
+            if month is None or year is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="For monthly period, both 'month' (0-11) and 'year' are required"
+                )
+            # Convert 0-indexed month to 1-indexed
+            actual_month = month + 1
+            start = datetime(year, actual_month, 1)
+            # Calculate end date (first day of next month)
+            if actual_month == 12:
+                end = datetime(year + 1, 1, 1)
+            else:
+                end = datetime(year, actual_month + 1, 1)
+            # Format period label
+            month_names = ['January', 'February', 'March', 'April', 'May', 'June',
+                          'July', 'August', 'September', 'October', 'November', 'December']
+            period_label = f"{month_names[month]} {year}"
+        
+        elif period_type == 'quarterly':
+            if quarter is None or year is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="For quarterly period, both 'quarter' (1-4) and 'year' are required"
+                )
+            # Calculate quarter date range
+            if quarter == 1:
+                start = datetime(year, 1, 1)
+                end = datetime(year, 4, 1)
+                period_label = f"Q1 {year} (Jan - Mar)"
+            elif quarter == 2:
+                start = datetime(year, 4, 1)
+                end = datetime(year, 7, 1)
+                period_label = f"Q2 {year} (Apr - Jun)"
+            elif quarter == 3:
+                start = datetime(year, 7, 1)
+                end = datetime(year, 10, 1)
+                period_label = f"Q3 {year} (Jul - Sep)"
+            elif quarter == 4:
+                start = datetime(year, 10, 1)
+                end = datetime(year + 1, 1, 1)
+                period_label = f"Q4 {year} (Oct - Dec)"
+        
+        elif period_type == 'custom':
+            if start_date:
+                start = datetime.strptime(start_date, '%Y-%m-%d')
+            if end_date:
+                end = datetime.strptime(end_date, '%Y-%m-%d')
+            if start and end:
+                period_label = f"{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
+            elif start:
+                period_label = f"From {start.strftime('%Y-%m-%d')}"
+            elif end:
+                period_label = f"Until {end.strftime('%Y-%m-%d')}"
+        
+        # Parse dates if provided (for backward compatibility)
+        if not start and start_date:
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+        if not end and end_date:
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        # Build query
+        query = db.query(Task)
+        
+        # Apply filters
+        if department and department != 'all':
+            # Get user IDs in the department
+            dept_user_ids = [u.user_id for u in db.query(User).filter(
+                User.department == department,
+                User.is_active == True
+            ).all()]
+            if dept_user_ids:
+                query = query.filter(
+                    (Task.assigned_to.in_(dept_user_ids)) |
+                    (Task.assigned_by.in_(dept_user_ids))
+                )
+            else:
+                # No users in department, return empty result
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail=f"No users found in department: {department}"
+                )
+        
+        if start:
+            query = query.filter(Task.created_at >= start)
+        if end:
+            # For monthly/quarterly, use < end (exclusive) to match the pattern
+            # For custom dates, use <= end (inclusive)
+            if period_type and period_type in ['monthly', 'quarterly']:
+                query = query.filter(Task.created_at < end)
+            else:
+                query = query.filter(Task.created_at <= end)
+        if status:
+            query = query.filter(Task.status == status)
+        
+        tasks = query.order_by(Task.created_at.desc()).all()
+        
+        if not tasks:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No tasks found matching the criteria"
+            )
+        
+        # Get department name for report (use first task's department or filter)
+        report_department = department or "All Departments"
+        if not department or department == 'all':
+            # Try to get a common department from tasks
+            dept_users = db.query(User).filter(
+                User.user_id.in_([t.assigned_to for t in tasks[:5] if t.assigned_to])
+            ).first()
+            if dept_users and dept_users.department:
+                report_department = dept_users.department
+        
+        # Generate PDF
+        return generate_task_management_pdf(
+            tasks=tasks,
+            department=report_department,
+            generated_by=current_user.name,
+            period_label=period_label,
+            db=db
+        )
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid date format. Use YYYY-MM-DD. Error: {str(e)}"
+        )
+    except Exception as e:
+        print(f"Task management report error: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating task management report: {str(e)}"
+        )
+
+
+def generate_task_management_pdf(tasks: List[Task], department: str, generated_by: str, period_label: str, db: Session) -> StreamingResponse:
+    """Generate professional Task Management Report PDF"""
+    
+    buffer = io.BytesIO()
+    
+    # Footer drawing function with two-line structure and proper alignment
+    def draw_footer(canvas, doc):
+        """Draw footer with company info and page number - two-line structure"""
+        canvas.saveState()
+        
+        # Footer padding constants - consistent spacing
+        footer_font_size = 8
+        horizontal_padding = 30  # Consistent horizontal padding from edges
+        footer_line_thickness = 0.5
+        line_height = 11  # Vertical spacing between footer lines
+        spacing_between_line_and_text = 8  # Space between footer line and text
+        footer_bottom_padding = 15  # Padding from bottom of page
+        
+        # Build first line: Address | Website | Email | Contact
+        first_line_parts = []
+        if COMPANY_ADDRESS:
+            first_line_parts.append(COMPANY_ADDRESS)
+        if COMPANY_WEBSITE:
+            first_line_parts.append(f"Website: {COMPANY_WEBSITE}")
+        if COMPANY_EMAIL:
+            first_line_parts.append(f"Email: {COMPANY_EMAIL}")
+        if COMPANY_PHONE:
+            first_line_parts.append(f"Contact: {COMPANY_PHONE}")
+        
+        first_line_text = " | ".join(first_line_parts)
+        
+        # Build second line: Copyright (left) + Page number (right)
+        copyright_text = f"© {datetime.now().year} {COMPANY_NAME}. All rights reserved."
+        page_text = f"Page {canvas.getPageNumber()}"
+        
+        # Set footer text style
+        canvas.setFont("Helvetica", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        
+        # Calculate page number width for proper spacing
+        canvas.setFont("Helvetica-Bold", footer_font_size)
+        page_num_width = canvas.stringWidth(page_text, "Helvetica-Bold", footer_font_size)
+        canvas.setFont("Helvetica", footer_font_size)
+        
+        # Calculate available width for first line (full width minus padding)
+        available_width_line1 = A4[0] - (horizontal_padding * 2)
+        
+        # Calculate available width for second line (minus page number space)
+        spacing_between_copyright_and_page = 15  # Space between copyright and page number
+        available_width_line2 = A4[0] - (horizontal_padding * 2) - page_num_width - spacing_between_copyright_and_page
+        
+        # Wrap first line if needed (intelligent wrapping at separator points)
+        first_line_final = first_line_text
+        if canvas.stringWidth(first_line_text, "Helvetica", footer_font_size) > available_width_line1:
+            # Split first line intelligently
+            parts = first_line_text.split(' | ')
+            wrapped_lines = []
+            current_line = ""
+            for part in parts:
+                separator = " | " if current_line else ""
+                test_line = current_line + separator + part
+                if canvas.stringWidth(test_line, "Helvetica", footer_font_size) <= available_width_line1:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        wrapped_lines.append(current_line)
+                    current_line = part
+            if current_line:
+                wrapped_lines.append(current_line)
+            # Use first wrapped line (or original if fits)
+            first_line_final = wrapped_lines[0] if wrapped_lines else first_line_text
+        
+        # Wrap copyright text if needed for second line
+        copyright_final = copyright_text
+        if canvas.stringWidth(copyright_text, "Helvetica", footer_font_size) > available_width_line2:
+            # Truncate copyright if too long (shouldn't happen normally)
+            max_chars = int(available_width_line2 / (footer_font_size * 0.6))  # Approximate char width
+            if len(copyright_text) > max_chars:
+                copyright_final = copyright_text[:max_chars-3] + "..."
+        
+        # Calculate footer positions (from bottom up)
+        # We always have exactly 2 lines now
+        footer_text_bottom = footer_bottom_padding  # Bottom line (copyright + page)
+        footer_text_top = footer_text_bottom + line_height  # Top line (address info)
+        footer_line_y = footer_text_top + spacing_between_line_and_text  # Separator line above
+        
+        # Draw footer separator line with proper horizontal padding
+        canvas.setStrokeColor(colors.HexColor('#1e40af'))
+        canvas.setLineWidth(footer_line_thickness)
+        canvas.line(horizontal_padding, footer_line_y, A4[0] - horizontal_padding, footer_line_y)
+        
+        # Draw first line (Address | Website | Email | Contact)
+        canvas.setFont("Helvetica", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.drawString(horizontal_padding, footer_text_top, first_line_final)
+        
+        # Draw second line: Copyright (left) + Page number (right)
+        # Draw copyright text
+        canvas.drawString(horizontal_padding, footer_text_bottom, copyright_final)
+        
+        # Draw page number (right-aligned)
+        canvas.setFont("Helvetica-Bold", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#1e40af'))
+        page_x = A4[0] - horizontal_padding
+        canvas.drawRightString(page_x, footer_text_bottom, page_text)
+        
+        canvas.restoreState()
+    
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=30,
+        leftMargin=30,
+        topMargin=50,
+        bottomMargin=80  # Increased bottom margin for better footer spacing
+    )
+    
+    # Container for elements
+    elements = []
+    
+    # Define styles
+    styles = getSampleStyleSheet()
+    
+    # Title style
+    title_style = ParagraphStyle(
+        'TaskReportTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    # Header style (centered "Report")
+    header_style = ParagraphStyle(
+        'ReportHeader',
+        parent=styles['Heading2'],
+        fontSize=18,
+        textColor=colors.HexColor('#3b82f6'),
+        spaceAfter=15,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    # Info label style
+    info_label_style = ParagraphStyle(
+        'InfoLabel',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor('#64748b'),
+        fontName='Helvetica-Bold',
+        leftIndent=0
+    )
+    
+    # Info value style
+    info_value_style = ParagraphStyle(
+        'InfoValue',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.black,
+        fontName='Helvetica',
+        leftIndent=0
+    )
+    
+    # Title
+    title = Paragraph("Task Management Report", title_style)
+    elements.append(title)
+    elements.append(Spacer(1, 20))
+    
+    # Left side information table
+    info_data = [
+        ['Company Name:', COMPANY_NAME],
+        ['Department Name:', department or 'All Departments'],
+        ['Period:', period_label],
+        ['Generated On:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+        ['Generated By:', generated_by]
+    ]
+    
+    info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#eff6ff')),
+        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    elements.append(info_table)
+    elements.append(Spacer(1, 20))
+    
+    # Create cell styles for table (defined once, reused)
+    header_cell_style = ParagraphStyle(
+        'HeaderCell',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.whitesmoke,
+        fontName='Helvetica-Bold',
+        leading=10,
+        alignment=TA_CENTER
+    )
+    
+    cell_style = ParagraphStyle(
+        'TableCell',
+        parent=styles['Normal'],
+        fontSize=7,
+        textColor=colors.black,
+        fontName='Helvetica',
+        leading=8,
+        leftIndent=2,
+        rightIndent=2,
+        alignment=TA_LEFT
+    )
+    
+    cell_style_center = ParagraphStyle(
+        'TableCellCenter',
+        parent=cell_style,
+        alignment=TA_CENTER
+    )
+    
+    # First pass: Collect all task data and determine which columns have data
+    # Column definitions with their indices
+    COL_TASK_ID = 0
+    COL_TASK_NAME = 1
+    COL_DESCRIPTION = 2
+    COL_STATUS = 3
+    COL_PRIORITY = 4
+    COL_ASSIGNED_BY = 5
+    COL_ASSIGNED_TO = 6
+    COL_CREATED_DATE = 7
+    COL_MODIFIED_DATE = 8
+    COL_LAST_PASSED_TO = 9
+    COL_COMPLETED_BY = 10
+    
+    # Track which columns have data (initialize with always-visible columns)
+    columns_with_data = {
+        COL_TASK_ID: True,      # Always show
+        COL_TASK_NAME: True,    # Always show
+        COL_DESCRIPTION: False,
+        COL_STATUS: True,       # Always show
+        COL_PRIORITY: True,     # Always show
+        COL_ASSIGNED_BY: False,
+        COL_ASSIGNED_TO: False,
+        COL_CREATED_DATE: True, # Always show
+        COL_MODIFIED_DATE: False,
+        COL_LAST_PASSED_TO: False,
+        COL_COMPLETED_BY: False,
+    }
+    
+    # Escape HTML special characters for Paragraph (but preserve <br/> tags)
+    def escape_html(text, preserve_breaks=False):
+        if not text:
+            return "N/A"
+        text_str = str(text)
+        if preserve_breaks:
+            # Temporarily replace <br/> with a placeholder
+            text_str = text_str.replace('<br/>', '___BR___')
+            text_str = text_str.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            # Restore <br/> tags
+            text_str = text_str.replace('___BR___', '<br/>')
+        else:
+            text_str = text_str.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        return text_str
+    
+    # Collect all task data first to check for column data
+    all_task_rows = []
+    
+    for task in tasks:
+        # Get assigned_by user name
+        assigned_by_name = "N/A"
+        if task.assigned_by:
+            assigned_by_user = db.query(User).filter(User.user_id == task.assigned_by).first()
+            if assigned_by_user:
+                assigned_by_name = assigned_by_user.name
+        
+        # Get assigned_to user name
+        assigned_to_name = "N/A"
+        if task.assigned_to:
+            assigned_to_user = db.query(User).filter(User.user_id == task.assigned_to).first()
+            if assigned_to_user:
+                assigned_to_name = assigned_to_user.name
+        
+        # Get last_passed_to user name
+        last_passed_to_name = "N/A"
+        if task.last_passed_to:
+            last_passed_to_user = db.query(User).filter(User.user_id == task.last_passed_to).first()
+            if last_passed_to_user:
+                last_passed_to_name = last_passed_to_user.name
+        
+        # Get completed_by from TaskHistory
+        completed_by_name = "N/A"
+        if task.status == str(TaskStatus.COMPLETED):
+            # Find the history entry where status was changed to COMPLETED
+            completion_history = db.query(TaskHistory).filter(
+                TaskHistory.task_id == task.task_id,
+                TaskHistory.action == TaskAction.STATUS_CHANGED
+            ).order_by(TaskHistory.created_at.desc()).all()
+            
+            # Look for the entry that changed status to COMPLETED
+            for hist in completion_history:
+                if hasattr(hist, 'details') and hist.details:
+                    try:
+                        # Try to parse details (could be JSON string or dict)
+                        if isinstance(hist.details, str):
+                            details = json.loads(hist.details)
+                        else:
+                            details = hist.details
+                        
+                        # Check if this status change was to COMPLETED
+                        if isinstance(details, dict) and details.get('to') == TaskStatus.COMPLETED.value:
+                            completed_user = db.query(User).filter(User.user_id == hist.user_id).first()
+                            if completed_user:
+                                completed_by_name = completed_user.name
+                                break
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        # If parsing fails, continue to next entry
+                        pass
+            
+            # Fallback: if we didn't find it in details, use the last user who changed status
+            if completed_by_name == "N/A" and completion_history:
+                last_status_change = completion_history[0]
+                completed_user = db.query(User).filter(User.user_id == last_status_change.user_id).first()
+                if completed_user:
+                    completed_by_name = completed_user.name
+        
+        # Format dates with line break for better wrapping (using <br/> for Paragraph)
+        created_date = task.created_at.strftime('%Y-%m-%d<br/>%H:%M') if task.created_at else "N/A"
+        
+        # Get modified date (use last_passed_at if available, otherwise created_at)
+        modified_date = "N/A"
+        if task.last_passed_at:
+            modified_date = task.last_passed_at.strftime('%Y-%m-%d<br/>%H:%M')
+        elif task.created_at:
+            modified_date = created_date
+        
+        # Use full text (will be wrapped by Paragraph)
+        description = task.description or "N/A"
+        task_name = task.title or "N/A"
+        
+        # Store row data (not as Paragraphs yet, so we can check for data)
+        row_data = {
+            COL_TASK_ID: str(task.task_id),
+            COL_TASK_NAME: task_name,
+            COL_DESCRIPTION: description,
+            COL_STATUS: task.status or "N/A",
+            COL_PRIORITY: task.priority or "Medium",
+            COL_ASSIGNED_BY: assigned_by_name,
+            COL_ASSIGNED_TO: assigned_to_name,
+            COL_CREATED_DATE: created_date,
+            COL_MODIFIED_DATE: modified_date,
+            COL_LAST_PASSED_TO: last_passed_to_name,
+            COL_COMPLETED_BY: completed_by_name
+        }
+        
+        # Check which columns have data (not "N/A")
+        if description != "N/A":
+            columns_with_data[COL_DESCRIPTION] = True
+        if assigned_by_name != "N/A":
+            columns_with_data[COL_ASSIGNED_BY] = True
+        if assigned_to_name != "N/A":
+            columns_with_data[COL_ASSIGNED_TO] = True
+        if modified_date != "N/A" and modified_date != created_date:
+            columns_with_data[COL_MODIFIED_DATE] = True
+        if last_passed_to_name != "N/A":
+            columns_with_data[COL_LAST_PASSED_TO] = True
+        if completed_by_name != "N/A":
+            columns_with_data[COL_COMPLETED_BY] = True
+        
+        all_task_rows.append(row_data)
+    
+    # Build column mapping: which columns to include and their order
+    column_order = []
+    column_headers = []
+    
+    if columns_with_data[COL_TASK_ID]:
+        column_order.append(COL_TASK_ID)
+        column_headers.append(Paragraph('Task ID', header_cell_style))
+    if columns_with_data[COL_TASK_NAME]:
+        column_order.append(COL_TASK_NAME)
+        column_headers.append(Paragraph('Task Name', header_cell_style))
+    if columns_with_data[COL_DESCRIPTION]:
+        column_order.append(COL_DESCRIPTION)
+        column_headers.append(Paragraph('Description', header_cell_style))
+    if columns_with_data[COL_STATUS]:
+        column_order.append(COL_STATUS)
+        column_headers.append(Paragraph('Status', header_cell_style))
+    if columns_with_data[COL_PRIORITY]:
+        column_order.append(COL_PRIORITY)
+        column_headers.append(Paragraph('Priority', header_cell_style))
+    if columns_with_data[COL_ASSIGNED_BY]:
+        column_order.append(COL_ASSIGNED_BY)
+        column_headers.append(Paragraph('Assigned By', header_cell_style))
+    if columns_with_data[COL_ASSIGNED_TO]:
+        column_order.append(COL_ASSIGNED_TO)
+        column_headers.append(Paragraph('Assigned To', header_cell_style))
+    if columns_with_data[COL_CREATED_DATE]:
+        column_order.append(COL_CREATED_DATE)
+        column_headers.append(Paragraph('Created Date', header_cell_style))
+    if columns_with_data[COL_MODIFIED_DATE]:
+        column_order.append(COL_MODIFIED_DATE)
+        column_headers.append(Paragraph('Modified Date', header_cell_style))
+    if columns_with_data[COL_LAST_PASSED_TO]:
+        column_order.append(COL_LAST_PASSED_TO)
+        column_headers.append(Paragraph('Last Passed To', header_cell_style))
+    if columns_with_data[COL_COMPLETED_BY]:
+        column_order.append(COL_COMPLETED_BY)
+        column_headers.append(Paragraph('Completed By', header_cell_style))
+    
+    # Build task_data with header and only visible columns
+    task_data = [column_headers]
+    
+    # Build rows with only visible columns
+    for row_data in all_task_rows:
+        row = []
+        for col_idx in column_order:
+            value = row_data[col_idx]
+            
+            # Determine cell style based on column type
+            if col_idx in [COL_TASK_ID, COL_STATUS, COL_PRIORITY, COL_CREATED_DATE, COL_MODIFIED_DATE]:
+                cell_style_to_use = cell_style_center
+            else:
+                cell_style_to_use = cell_style
+            
+            # Create Paragraph with proper formatting
+            if col_idx in [COL_CREATED_DATE, COL_MODIFIED_DATE]:
+                row.append(Paragraph(escape_html(value, preserve_breaks=True), cell_style_to_use))
+            else:
+                row.append(Paragraph(escape_html(value), cell_style_to_use))
+        
+        task_data.append(row)
+    
+    # Create task table with improved formatting
+    # Calculate column widths dynamically based on visible columns
+    total_width = A4[0] - 60  # Total available width
+    num_visible_cols = len(column_order)
+    
+    # Base width percentages for each column type (when all columns visible)
+    base_widths = {
+        COL_TASK_ID: 0.07,
+        COL_TASK_NAME: 0.13,
+        COL_DESCRIPTION: 0.18,
+        COL_STATUS: 0.08,
+        COL_PRIORITY: 0.08,
+        COL_ASSIGNED_BY: 0.10,
+        COL_ASSIGNED_TO: 0.10,
+        COL_CREATED_DATE: 0.08,
+        COL_MODIFIED_DATE: 0.08,
+        COL_LAST_PASSED_TO: 0.10,
+        COL_COMPLETED_BY: 0.10,
+    }
+    
+    # Calculate total base width for visible columns
+    total_base_width = sum(base_widths[col_idx] for col_idx in column_order)
+    
+    # Calculate column widths proportionally
+    col_widths = []
+    for col_idx in column_order:
+        # Proportionally adjust width based on visible columns
+        base_width = base_widths[col_idx]
+        # Scale to ensure columns fill available width
+        proportional_width = (base_width / total_base_width) if total_base_width > 0 else (1.0 / num_visible_cols)
+        col_widths.append(total_width * proportional_width)
+    
+    # Build table style with dynamic alignment based on visible columns
+    table_style = [
+        # Header row - improved styling
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('TOPPADDING', (0, 0), (-1, 0), 12),
+        ('LEFTPADDING', (0, 0), (-1, 0), 4),
+        ('RIGHTPADDING', (0, 0), (-1, 0), 4),
+        
+        # Data rows - improved padding and alignment
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),  # Default left alignment
+        ('VALIGN', (0, 1), (-1, -1), 'TOP'),    # Top align for wrapped text
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+        ('TOPPADDING', (0, 1), (-1, -1), 8),
+        ('LEFTPADDING', (0, 1), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 1), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        
+        # Alternating row colors for better readability
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        
+        # Row height - allow rows to expand for wrapped text
+        ('LINEBELOW', (0, 0), (-1, 0), 1, colors.HexColor('#1e40af')),
+    ]
+    
+    # Add center alignment for specific column types dynamically
+    center_aligned_cols = [COL_TASK_ID, COL_STATUS, COL_PRIORITY, COL_CREATED_DATE, COL_MODIFIED_DATE]
+    for col_idx in center_aligned_cols:
+        if col_idx in column_order:
+            col_position = column_order.index(col_idx)
+            table_style.append(('ALIGN', (col_position, 1), (col_position, -1), 'CENTER'))
+    
+    task_table = Table(task_data, colWidths=col_widths, repeatRows=1)
+    task_table.setStyle(TableStyle(table_style))
+    
+    elements.append(task_table)
+    
+    # Build PDF with custom footer
+    doc.build(elements, onFirstPage=draw_footer, onLaterPages=draw_footer)
+    
+    # Prepare response
+    buffer.seek(0)
+    filename = f"task_management_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     
     return StreamingResponse(
         buffer,
