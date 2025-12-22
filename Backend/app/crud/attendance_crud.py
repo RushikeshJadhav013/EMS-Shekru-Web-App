@@ -9,10 +9,16 @@ from app.db.models.office_timing import OfficeTiming
 from app.utils.timezone import now_ist, get_today_bounds_ist
 import csv
 import io
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+import os
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, KeepTogether
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from app.config.company_config import (
+    COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
+)
 
 def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
     try:
@@ -424,9 +430,92 @@ def export_attendance_pdf(
     department: Optional[str] = None,
 ):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    # Use the same page margins and footer layout as task-management for a consistent corporate look
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=50, bottomMargin=80)
     styles = getSampleStyleSheet()
     elements = []
+
+    # Footer drawing function (two-line structure, same look-and-feel as task-management)
+    def draw_footer(canvas, doc_obj):
+        canvas.saveState()
+        footer_font_size = 8
+        horizontal_padding = 30
+        footer_line_thickness = 0.5
+        line_height = 11
+        spacing_between_line_and_text = 8
+        footer_bottom_padding = 15
+
+        # Build first line parts
+        first_line_parts = []
+        if COMPANY_ADDRESS:
+            first_line_parts.append(COMPANY_ADDRESS)
+        if COMPANY_WEBSITE:
+            first_line_parts.append(f"Website: {COMPANY_WEBSITE}")
+        if COMPANY_EMAIL:
+            first_line_parts.append(f"Email: {COMPANY_EMAIL}")
+        if COMPANY_PHONE:
+            first_line_parts.append(f"Contact: {COMPANY_PHONE}")
+        first_line_text = " | ".join(first_line_parts)
+
+        copyright_text = f"© {datetime.now().year} {COMPANY_NAME}. All rights reserved."
+        page_text = f"Page {canvas.getPageNumber()}"
+
+        canvas.setFont("Helvetica", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+
+        # Calculate widths
+        canvas.setFont("Helvetica-Bold", footer_font_size)
+        page_num_width = canvas.stringWidth(page_text, "Helvetica-Bold", footer_font_size)
+        canvas.setFont("Helvetica", footer_font_size)
+        available_width_line1 = A4[0] - (horizontal_padding * 2)
+        spacing_between_copyright_and_page = 15
+        available_width_line2 = A4[0] - (horizontal_padding * 2) - page_num_width - spacing_between_copyright_and_page
+
+        # Wrap first line intelligently
+        first_line_final = first_line_text
+        if canvas.stringWidth(first_line_text, "Helvetica", footer_font_size) > available_width_line1:
+            parts = first_line_text.split(' | ')
+            wrapped_lines = []
+            current_line = ""
+            for part in parts:
+                separator = " | " if current_line else ""
+                test_line = current_line + separator + part
+                if canvas.stringWidth(test_line, "Helvetica", footer_font_size) <= available_width_line1:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        wrapped_lines.append(current_line)
+                    current_line = part
+            if current_line:
+                wrapped_lines.append(current_line)
+            first_line_final = wrapped_lines[0] if wrapped_lines else first_line_text
+
+        # Truncate copyright if needed
+        copyright_final = copyright_text
+        if canvas.stringWidth(copyright_text, "Helvetica", footer_font_size) > available_width_line2:
+            max_chars = int(available_width_line2 / (footer_font_size * 0.6))
+            if len(copyright_text) > max_chars:
+                copyright_final = copyright_text[:max_chars-3] + "..."
+
+        footer_text_bottom = footer_bottom_padding
+        footer_text_top = footer_text_bottom + line_height
+        footer_line_y = footer_text_top + spacing_between_line_and_text
+
+        canvas.setStrokeColor(colors.HexColor('#1e40af'))
+        canvas.setLineWidth(footer_line_thickness)
+        canvas.line(horizontal_padding, footer_line_y, A4[0] - horizontal_padding, footer_line_y)
+
+        canvas.setFont("Helvetica", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.drawString(horizontal_padding, footer_text_top, first_line_final)
+
+        canvas.drawString(horizontal_padding, footer_text_bottom, copyright_final)
+
+        canvas.setFont("Helvetica-Bold", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#1e40af'))
+        page_x = A4[0] - horizontal_padding
+        canvas.drawRightString(page_x, footer_text_bottom, page_text)
+        canvas.restoreState()
 
     data = [
         [
@@ -475,32 +564,210 @@ def export_attendance_pdf(
             a.work_report or "",
         ])
 
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+    # Create table with improved styling to match Task Management report theme
+    # Calculate dynamic column widths (simple proportional widths)
+    num_cols = len(data[0])
+    total_width = A4[0] - (doc.leftMargin + doc.rightMargin)
+    # Give reasonable widths: ID small, name larger, others proportional
+    col_widths = []
+    for idx in range(num_cols):
+        if idx == 0:  # Attendance ID
+            col_widths.append(total_width * 0.07)
+        elif idx == 1:  # Employee ID
+            col_widths.append(total_width * 0.10)
+        elif idx == 2:  # Name
+            col_widths.append(total_width * 0.18)
+        elif idx == 3:  # Department
+            col_widths.append(total_width * 0.12)
+        elif idx in (4, 5):  # Check In / Check Out
+            col_widths.append(total_width * 0.12)
+        else:
+            col_widths.append(total_width * (0.29 / max(1, num_cols - 6)))
+
+    table = Table(data, repeatRows=1, colWidths=col_widths)
+    table_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('TOPPADDING', (0, 0), (-1, 0), 10),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 1), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+        ('TOPPADDING', (0, 1), (-1, -1), 8),
+        ('LEFTPADDING', (0, 1), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 1), (-1, -1), 4),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]
+    # Center certain columns
+    center_cols = [0, 1, 4, 5]
+    for c in center_cols:
+        if c < num_cols:
+            table_style.append(('ALIGN', (c, 1), (c, -1), 'CENTER'))
+
+    table.setStyle(TableStyle(table_style))
+
+    # Build header with brand (logo + Staffly text) and centered title
+    # Note: logo image removed to avoid external asset dependency; header uses text-only brand.
+
+    title_style = ParagraphStyle(
+        'AttendanceTitle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=12,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+
+    header_title_para = Paragraph("Employee Attendance Report", title_style)
+
+    # Left column width fixed (logo removed) — reserve space for brand text
+    left_col_width = 90
+    right_col_width = 60
+    middle_col_width = A4[0] - (left_col_width + right_col_width) - (doc.leftMargin + doc.rightMargin)
+
+    # Title (centered) and info table to match Task Management Report layout
+    title_style = ParagraphStyle(
+        'TaskReportTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=20,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    title_para = Paragraph("Employee Attendance Report", title_style)
+    elements.append(title_para)
+    elements.append(Spacer(1, 20))
+
+    # Left side information table (company + report meta) matching task-management layout
+    info_data = [
+        ['Company Name:', COMPANY_NAME],
+        ['Department Name:', department or 'All Departments'],
+        ['Period:', (start_date.strftime('%Y-%m-%d') + ' to ' + end_date.strftime('%Y-%m-%d')) if start_date and end_date else (start_date.strftime('%Y-%m-%d') if start_date else (end_date.strftime('%Y-%m-%d') if end_date else 'All Time'))],
+        ['Generated On:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+        ['Generated By:', generated_by if 'generated_by' in locals() else 'System']
+    ]
+
+    info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#eff6ff')),
+        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
     ]))
 
-    # Build title with date range info
-    title = "Employee Attendance Report"
-    if start_date or end_date:
-        date_str = ""
-        if start_date:
-            date_str += f"From {start_date.strftime('%Y-%m-%d')}"
-        if end_date:
-            if date_str:
-                date_str += f" to {end_date.strftime('%Y-%m-%d')}"
+    elements.append(info_table)
+    elements.append(Spacer(1, 20))
+
+    # --- Build table with conditional columns, fixed widths, and wrapped Paragraph cells ---
+    header_row = data[0]
+    num_cols = len(header_row)
+    total_width = A4[0] - (doc.leftMargin + doc.rightMargin)
+
+    # Determine which columns have any non-empty data (scan all data rows)
+    columns_with_data = [False] * num_cols
+    # Always show these essential columns
+    essential_indices = {0, 1, 2}  # Attendance ID, Employee ID, Name
+    for i in essential_indices:
+        if i < num_cols:
+            columns_with_data[i] = True
+
+    for row in data[1:]:
+        for idx, cell in enumerate(row):
+            if idx < 0 or idx >= num_cols:
+                continue
+            text = "" if cell is None else str(cell).strip()
+            if text and text.lower() not in ("n/a", "na", "-"):
+                columns_with_data[idx] = True
+
+    # Build list of visible column indices in order
+    visible_cols = [i for i, present in enumerate(columns_with_data) if present]
+    visible_count = len(visible_cols) if visible_cols else num_cols
+
+    # Base fraction allocations for all possible columns (same order as header_row)
+    base_fractions = [0.07, 0.10, 0.18, 0.10, 0.12, 0.12, 0.08, 0.13, 0.10]
+    if len(base_fractions) != num_cols:
+        base_fractions = [1.0 / num_cols] * num_cols
+
+    # Normalize fractions for visible columns so they fill total_width
+    visible_fractions = [base_fractions[i] for i in visible_cols]
+    frac_sum = sum(visible_fractions) if visible_fractions else 1.0
+    normalized = [f / frac_sum for f in visible_fractions]
+    col_widths = [total_width * f for f in normalized]
+
+    # Styles for header and cells
+    header_cell_style = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, textColor=colors.whitesmoke, alignment=TA_CENTER, leading=11)
+    cell_style = ParagraphStyle('TableCell', parent=styles['Normal'], fontName='Helvetica', fontSize=9, textColor=colors.black, alignment=TA_LEFT, leading=11)
+    cell_style_center = ParagraphStyle('TableCellCenter', parent=cell_style, alignment=TA_CENTER)
+
+    # Build table rows using only visible columns
+    table_rows = []
+    header_paragraphs = [Paragraph(str(header_row[i]), header_cell_style) for i in visible_cols]
+    table_rows.append(header_paragraphs)
+
+    for row in data[1:]:
+        row_cells = []
+        for pos, col_idx in enumerate(visible_cols):
+            cell = row[col_idx] if col_idx < len(row) else ""
+            text = "" if cell is None else str(cell)
+            # Center for numeric/date columns (map original indices)
+            if col_idx in (0, 1, 4, 5, 6):
+                row_cells.append(Paragraph(text, cell_style_center))
             else:
-                date_str += f"Until {end_date.strftime('%Y-%m-%d')}"
-        title += f" - {date_str}"
-    
-    elements.append(Paragraph(title, styles['Title']))
+                row_cells.append(Paragraph(text, cell_style))
+        table_rows.append(row_cells)
+
+    table = Table(table_rows, repeatRows=1, colWidths=col_widths)
+    table_style_list = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('TOPPADDING', (0, 0), (-1, 0), 10),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 1), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+        ('TOPPADDING', (0, 1), (-1, -1), 8),
+        ('LEFTPADDING', (0, 1), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 1), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]
+
+    # Center numeric/date columns by mapping to their positions in visible_cols
+    for orig_idx in (0, 1, 4, 5, 6):
+        if orig_idx in visible_cols:
+            pos = visible_cols.index(orig_idx)
+            table_style_list.append(('ALIGN', (pos, 1), (pos, -1), 'CENTER'))
+
+    table.setStyle(TableStyle(table_style_list))
+
     elements.append(table)
-    doc.build(elements)
+
+    # Build PDF with custom footer for consistent theme
+    doc.build(elements, onFirstPage=draw_footer, onLaterPages=draw_footer)
     buffer.seek(0)
     return buffer

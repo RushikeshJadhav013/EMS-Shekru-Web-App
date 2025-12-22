@@ -1544,25 +1544,86 @@ def download_attendance_pdf(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    period_type: Optional[str] = Query(None, description="Period type: 'monthly', 'quarterly', or 'custom' (default: custom if start_date/end_date provided)"),
+    month: Optional[int] = Query(None, ge=0, le=11, description="Month (0-11) for monthly period"),
+    quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
+    year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db)
 ):
     """Download attendance data as a PDF file with optional filters."""
     from app.crud.attendance_crud import export_attendance_pdf
     
-    # Parse dates if provided
+    # Determine date range: support monthly/quarterly/custom without changing existing logic.
     start_dt = None
     end_dt = None
-    if start_date:
-        try:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
-    if end_date:
-        try:
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+    # Normalize period_type if provided
+    if period_type:
+        period_type = period_type.lower()
+    elif month is not None or quarter is not None:
+        # Infer period type from provided params
+        if month is not None:
+            period_type = 'monthly'
+        elif quarter is not None:
+            period_type = 'quarterly'
+        else:
+            period_type = None
+    elif start_date or end_date:
+        period_type = 'custom'
+
+    try:
+        if period_type == 'monthly':
+            if month is None or year is None:
+                raise HTTPException(status_code=400, detail="For monthly period, both 'month' (0-11) and 'year' are required")
+            actual_month = month + 1
+            start_dt = datetime(year, actual_month, 1)
+            if actual_month == 12:
+                end_dt = datetime(year + 1, 1, 1)
+            else:
+                end_dt = datetime(year, actual_month + 1, 1)
+        elif period_type == 'quarterly':
+            if quarter is None or year is None:
+                raise HTTPException(status_code=400, detail="For quarterly period, both 'quarter' (1-4) and 'year' are required")
+            if quarter == 1:
+                start_dt = datetime(year, 1, 1)
+                end_dt = datetime(year, 4, 1)
+            elif quarter == 2:
+                start_dt = datetime(year, 4, 1)
+                end_dt = datetime(year, 7, 1)
+            elif quarter == 3:
+                start_dt = datetime(year, 7, 1)
+                end_dt = datetime(year, 10, 1)
+            elif quarter == 4:
+                start_dt = datetime(year, 10, 1)
+                end_dt = datetime(year + 1, 1, 1)
+        elif period_type == 'custom':
+            if start_date:
+                try:
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+            if end_date:
+                try:
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+        else:
+            # No period_type provided; fall back to existing behaviour (parse start_date/end_date if present)
+            if start_date:
+                try:
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+            if end_date:
+                try:
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date parameters: {str(e)}")
     
     buffer = export_attendance_pdf(
         db,
