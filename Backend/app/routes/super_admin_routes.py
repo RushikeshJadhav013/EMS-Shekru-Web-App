@@ -78,6 +78,18 @@ def create_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Create a new super admin - requires authentication"""
+    # Prevent duplicate contact numbers
+    existing_contact = (
+        db.query(SuperAdmin)
+        .filter(SuperAdmin.contact_no == super_admin.contact_no)
+        .first()
+    )
+    if existing_contact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A super admin already uses this contact number",
+        )
+
     return create_super_admin(db, super_admin, current_super_admin.super_admin_id)
 
 @router.put("/update/{super_admin_id}", response_model=SuperAdminOut)
@@ -88,6 +100,21 @@ def update_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Update a super admin - requires authentication"""
+    if super_admin.contact_no:
+        existing_contact = (
+            db.query(SuperAdmin)
+            .filter(
+                SuperAdmin.contact_no == super_admin.contact_no,
+                SuperAdmin.super_admin_id != super_admin_id,
+            )
+            .first()
+        )
+        if existing_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another super admin already uses this contact number",
+            )
+
     updated_admin = update_super_admin(db, super_admin_id, super_admin, current_super_admin.super_admin_id)
     if not updated_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")

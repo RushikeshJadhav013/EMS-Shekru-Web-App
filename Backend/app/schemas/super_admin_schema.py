@@ -7,7 +7,8 @@ class SuperAdminBase(BaseModel):
     name: str
     email: EmailStr
     contact_no: str
-    gender: GenderEnum | None = None
+    # Make gender mandatory for super admins
+    gender: GenderEnum
 
     @validator("name")
     def validate_name(cls, v: str) -> str:
@@ -37,7 +38,7 @@ class SuperAdminUpdate(SuperAdminBase):
     name: str | None = None
     email: EmailStr | None = None
     contact_no: str | None = None
-    gender: str | None = None
+    gender: GenderEnum | None = None
 
 
 class SuperAdminOut(SuperAdminBase):
