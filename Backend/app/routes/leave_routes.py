@@ -92,7 +92,37 @@ def request_leave(
                 status_code=400,
                 detail="Leave requests (except sick leave) must be submitted at least 24 hours in advance."
             )
-    
+
+    # Validation 3: Prevent overlapping leave requests (pending or approved)
+    overlapping_leaves = db.query(Leave).filter(
+        Leave.user_id == user.user_id,
+        Leave.status.in_(["Pending", "Approved"]),
+        # (new_start <= old_end) and (new_end >= old_start)
+        Leave.start_date <= end_dt,
+        Leave.end_date >= start_dt
+    ).first()
+    if overlapping_leaves:
+        raise HTTPException(
+            status_code=400,
+            detail="You have already applied for leave for some/all of these dates (overlapping leave request detected)."
+        )
+
+    # Validation 4: Check remaining leave balance for this leave type
+    # Only applies if this leave type is in balance policy
+    balances = get_leave_balance(db, user.user_id)
+    leave_type = leave.leave_type.lower()
+    eligible_types = {b['leave_type'] for b in balances}
+    if leave_type in eligible_types:
+        # Find matching balance entry
+        balance_entry = next((b for b in balances if b['leave_type'] == leave_type), None)
+        if balance_entry:
+            remaining = balance_entry.get('remaining', 0)
+            if leave_days > remaining:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Not enough remaining {leave_type} leave. Remaining: {remaining}. Requested: {leave_days}."
+                )
+
     new_leave = apply_leave(
         db,
         user.user_id,
