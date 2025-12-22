@@ -3,17 +3,27 @@ import os
 from datetime import datetime
 from typing import Optional
 
+
+# Base directory of the Backend project (where `firebase_service_acc.json` lives)
+BACKEND_BASE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+DEFAULT_FIREBASE_CREDENTIALS_PATH = os.path.join(
+    BACKEND_BASE_DIR, "firebase_service_acc.json"
+)
+
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
     # DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
     DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
-    JWT_SECRET: str = "supersecretjwtkey" 
+    JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 120
-    # Firebase credentials path: allow override via env var, with a default file path
+    # Firebase credentials path: prefers ENV var, otherwise uses a project-relative file
     FIREBASE_CREDENTIALS_PATH: str = os.getenv(
         "FIREBASE_CREDENTIALS_PATH",
-        "/home/ubuntu/Documents/Staffly/EMS-Shekru-Web-App/Backend/firebase_service_acc.json",
+        DEFAULT_FIREBASE_CREDENTIALS_PATH,
     )
 
     @property
