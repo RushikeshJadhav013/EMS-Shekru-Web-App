@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from pydantic import EmailStr
+import logging
 from app.db.database import get_db
 from app.crud.super_admin_crud import (
     # get_total_companies,
@@ -46,8 +47,6 @@ from app.crud.user_crud import (
     get_admin_counts,
     get_users_by_role_created_by_admin,
 )
-from app.crud.subscription_crud import assign_trial_subscription_to_admin
-from app.db.models.subscription import SubscriptionPlan
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
 
@@ -185,19 +184,6 @@ def create_admin_user_route(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    # Ensure an active plan exists to grant a 1-month trial
-    trial_plan = (
-        db.query(SubscriptionPlan)
-        .filter(SubscriptionPlan.is_active == True)
-        .order_by(SubscriptionPlan.created_on.asc())
-        .first()
-    )
-    if not trial_plan:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No active subscription plan available to assign a trial subscription",
-        )
-
     # Email is already normalized (lowercase) by AdminCreate schema validator
     email = admin.email
     employee_id = admin.employee_id.strip()
@@ -223,20 +209,6 @@ def create_admin_user_route(
     payload["aadhar_card"] = aadhar_card
 
     db_admin = create_admin_user(db, AdminCreate(**payload), created_by=current_super_admin.super_admin_id)
-
-    # Grant 1-month trial subscription to the new admin
-    try:
-        assign_trial_subscription_to_admin(
-            db,
-            admin_id=db_admin.user_id,
-            created_by=current_super_admin.super_admin_id,
-        )
-    except ValueError as e:
-        # Surface clear error if trial assignment fails
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
 
     return db_admin
 

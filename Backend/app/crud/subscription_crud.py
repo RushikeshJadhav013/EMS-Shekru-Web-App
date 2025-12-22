@@ -191,7 +191,13 @@ def assign_trial_subscription_to_admin(
     if not plan:
         return None
 
-    trial_request = AdminSubscriptionCreate(admin_id=admin_id, plan_id=plan.plan_id)
+    # Set trial end_date to 1 month (30 days) from now
+    trial_end_date = datetime.now() + timedelta(days=30)
+    trial_request = AdminSubscriptionCreate(
+        admin_id=admin_id,
+        plan_id=plan.plan_id,
+        end_date=trial_end_date
+    )
     return create_admin_subscription(db, trial_request, created_by=created_by)
 
 
@@ -277,12 +283,11 @@ def delete_admin_subscription(
 # ==================== Helper Functions ====================
 
 def get_admin_user_count(db: Session, admin_id: int) -> int:
-    """Get the count of users created by a specific admin"""
-    return (
-        db.query(User)
-        .filter(User.created_by == admin_id)
-        .count()
-    )
+    """
+    Get the count of users for an admin.
+    Note: User model has no created_by column, so fall back to total users.
+    """
+    return db.query(User).count()
 
 
 def check_admin_subscription_limit(

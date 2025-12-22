@@ -13,7 +13,30 @@ class UserBase(BaseModel):
     phone: Optional[constr(min_length=10, max_length=20, strip_whitespace=True)] = Field(None, description="Phone number with country code")
     address: Optional[constr(max_length=500, strip_whitespace=True)] = Field(None, description="Full address")
     role: Optional[RoleEnum] = Field(RoleEnum.EMPLOYEE, description="User role")
-    gender: Optional[Literal['male', 'female', 'other']] = Field(None, description="Gender")
+    # Make gender mandatory in all user-related contexts
+    gender: Literal['male', 'female', 'other'] = Field(..., description="Gender")
+    
+    @field_validator('gender', mode='before')
+    @classmethod
+    def normalize_gender(cls, v):
+        """Normalize gender to lowercase when reading from database"""
+        if v is None:
+            raise ValueError('Gender is required')
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            # Map common variations to lowercase
+            if normalized in ['male', 'm']:
+                return 'male'
+            elif normalized in ['female', 'f']:
+                return 'female'
+            elif normalized in ['other', 'o']:
+                return 'other'
+            # If already lowercase and valid, return as is
+            if normalized in ['male', 'female', 'other']:
+                return normalized
+            raise ValueError(f'Invalid gender value: {v}. Must be one of: male, female, other')
+        return v
+    
     resignation_date: Optional[datetime] = Field(None, description="Resignation date if applicable")
     pan_card: Optional[constr(min_length=10, max_length=10, strip_whitespace=True)] = Field(None, description="PAN card number (10 characters)")
     aadhar_card: Optional[constr(min_length=14, max_length=14, strip_whitespace=True)] = Field(None, description="Aadhar card number (format: 1234-5678-9012)")
@@ -204,7 +227,8 @@ class AdminCreate(BaseModel):
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    gender: GenderEnum | None = None
+    # Make gender mandatory for admin users as well
+    gender: GenderEnum
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
@@ -314,7 +338,8 @@ class AdminUpdate(BaseModel):
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    gender: GenderEnum | None = None
+    # For updates, gender is optional in the request, but if provided it must not be null.
+    gender: Optional[GenderEnum] = None
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None

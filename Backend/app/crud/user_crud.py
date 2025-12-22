@@ -132,8 +132,7 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
         aadhar_card=user.aadhar_card,
         shift_type=user.shift_type,
         employee_type=user.employee_type,  # ✅ Added employee_type
-        profile_photo=user.profile_photo,
-        created_by=created_by
+        profile_photo=user.profile_photo
     )
     db.add(db_user)
     db.commit()
@@ -163,7 +162,6 @@ def update_user_role(db: Session, user_id: int, role: RoleEnum, updated_by: int 
     user = db.query(User).filter(User.user_id == user_id).first()
     if user:
         user.role = role
-        user.updated_by = updated_by
         db.commit()
         db.refresh(user)
     return user
@@ -173,7 +171,6 @@ def update_user_status(db: Session, user_id: int, is_active: bool, updated_by: i
     user = db.query(User).filter(User.user_id == user_id).first()
     if user:
         user.is_active = is_active
-        user.updated_by = updated_by
         db.commit()
         db.refresh(user)
     return user
@@ -190,7 +187,8 @@ def create_admin_user(db: Session, admin: AdminCreate, created_by: int = None):
     admin_data = admin.model_dump()
     admin_data["role"] = RoleEnum.ADMIN
     admin_data["password_hash"] = None
-    admin_data["created_by"] = created_by
+    # Remove created_by if it exists in admin_data (it shouldn't be in AdminCreate schema)
+    admin_data.pop("created_by", None)
     db_admin = User(**admin_data)
     db.add(db_admin)
     db.commit()
@@ -223,7 +221,6 @@ def update_admin_user(db: Session, admin_id: int, admin_update: AdminUpdate, upd
 
     # Enforce role integrity
     admin.role = RoleEnum.ADMIN
-    admin.updated_by = updated_by
     db.commit()
     db.refresh(admin)
     return admin
@@ -234,7 +231,6 @@ def set_admin_status(db: Session, admin_id: int, is_active: bool, updated_by: in
     if not admin:
         return None
     admin.is_active = is_active
-    admin.updated_by = updated_by
     db.commit()
     db.refresh(admin)
     return admin
@@ -266,24 +262,14 @@ def get_admin_counts(db: Session):
 
 
 def get_users_by_role_created_by_admin(db: Session):
-    """Get counts of users by role where users were created by admins"""
-    # Get all admin user IDs
-    admin_ids = [admin_id[0] for admin_id in db.query(User.user_id).filter(User.role == RoleEnum.ADMIN).all()]
-    
-    if not admin_ids:
-        # No admins exist, return empty counts
-        return {role.value: {"total": 0, "active": 0, "inactive": 0, "resigned": 0} for role in RoleEnum}
-    
+    """Get counts of users by role (Note: created_by column doesn't exist, so returns all users by role)"""
     # Initialize result dictionary
     result = {}
     
     # Process each role
     for role in RoleEnum:
-        # Users of this role created by admins
-        role_users = db.query(User).filter(
-            User.role == role,
-            User.created_by.in_(admin_ids)
-        ).all()
+        # Get all users of this role (since created_by column doesn't exist in User model)
+        role_users = db.query(User).filter(User.role == role).all()
         
         total = len(role_users)
         active = sum(1 for u in role_users if u.is_active and u.resignation_date is None)
