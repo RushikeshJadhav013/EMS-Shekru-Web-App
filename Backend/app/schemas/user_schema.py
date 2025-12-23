@@ -228,11 +228,28 @@ class AdminCreate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     # Make gender mandatory for admin users as well
-    gender: GenderEnum
+    gender: str
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
+
+    @validator("gender", pre=True, always=True)
+    def validate_gender(cls, v):
+        if v is None:
+            raise ValueError('Gender is required')
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            if normalized in ['male', 'm']:
+                return 'male'
+            elif normalized in ['female', 'f']:
+                return 'female'
+            elif normalized in ['other', 'o']:
+                return 'other'
+            if normalized in ['male', 'female', 'other']:
+                return normalized
+            raise ValueError(f'Invalid gender value: {v}. Must be one of: male, female, other')
+        return v
 
     @validator("shift_type")
     def validate_shift_type(cls, v: Optional[str]) -> Optional[str]:
@@ -380,12 +397,29 @@ class AdminUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     # For updates, gender is optional in the request, but if provided it must not be null.
-    gender: Optional[GenderEnum] = None
+    gender: Optional[str] = None
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
     is_active: Optional[bool] = None
+
+    @validator("gender", pre=True, always=True)
+    def validate_gender(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, str):
+            normalized = v.strip().lower()
+            if normalized in ['male', 'm']:
+                return 'male'
+            elif normalized in ['female', 'f']:
+                return 'female'
+            elif normalized in ['other', 'o']:
+                return 'other'
+            if normalized in ['male', 'female', 'other']:
+                return normalized
+            raise ValueError(f'Invalid gender value: {v}. Must be one of: male, female, other')
+        return v
     
     @validator("aadhar_card")
     def validate_aadhar_card(cls, v: Optional[str]) -> Optional[str]:
