@@ -44,6 +44,9 @@ from app.crud.user_crud import (
     delete_admin_user,
     get_user_by_email,
     get_user_by_employee_id,
+    get_user_by_phone,
+    get_user_by_pan_card,
+    get_user_by_aadhar_card,
     get_admin_counts,
     get_users_by_role_created_by_admin,
 )
@@ -78,6 +81,17 @@ def create_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Create a new super admin - requires authentication"""
+    # Prevent duplicate email addresses
+    existing_email = (
+        db.query(SuperAdmin)
+        .filter(SuperAdmin.email == super_admin.email)
+        .first()
+    )
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A super admin already uses this email address",
+        )
     # Prevent duplicate contact numbers
     existing_contact = (
         db.query(SuperAdmin)
@@ -229,6 +243,33 @@ def create_admin_user_route(
             detail=f"A user already exists with employee ID '{employee_id}'",
         )
 
+    # Check for duplicate phone number
+    if admin.phone and admin.phone.strip():
+        existing_phone = get_user_by_phone(db, admin.phone.strip())
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number already exists. Please enter a unique phone number.",
+            )
+
+    # Check for duplicate PAN card
+    if pan_card:
+        duplicate_pan = get_user_by_pan_card(db, pan_card)
+        if duplicate_pan:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="PAN Card already exists. Please enter a unique PAN Card number.",
+            )
+
+    # Check for duplicate Aadhar card
+    if aadhar_card:
+        duplicate_aadhar = get_user_by_aadhar_card(db, aadhar_card)
+        if duplicate_aadhar:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Aadhar Card already exists. Please enter a unique Aadhar Card number.",
+            )
+
     payload = admin.model_dump()
     payload["email"] = email
     payload["employee_id"] = employee_id
@@ -286,11 +327,34 @@ def update_admin_user_route(
             )
         admin_update.employee_id = normalized_emp
 
-    if admin_update.pan_card:
-        admin_update.pan_card = admin_update.pan_card.strip().upper()
+    # Check for duplicate phone number (excluding current admin)
+    if admin_update.phone and admin_update.phone.strip():
+        existing_phone = get_user_by_phone(db, admin_update.phone.strip())
+        if existing_phone and existing_phone.user_id != admin_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number already exists. Please enter a unique phone number.",
+            )
 
-    if admin_update.aadhar_card:
+    # Check for duplicate PAN card (excluding current admin)
+    if admin_update.pan_card and admin_update.pan_card.strip():
+        admin_update.pan_card = admin_update.pan_card.strip().upper()
+        duplicate_pan = get_user_by_pan_card(db, admin_update.pan_card)
+        if duplicate_pan and duplicate_pan.user_id != admin_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="PAN Card already exists. Please enter a unique PAN Card number.",
+            )
+
+    # Check for duplicate Aadhar card (excluding current admin)
+    if admin_update.aadhar_card and admin_update.aadhar_card.strip():
         admin_update.aadhar_card = admin_update.aadhar_card.strip()
+        duplicate_aadhar = get_user_by_aadhar_card(db, admin_update.aadhar_card)
+        if duplicate_aadhar and duplicate_aadhar.user_id != admin_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Aadhar Card already exists. Please enter a unique Aadhar Card number.",
+            )
 
     updated = update_admin_user(db, admin_id, admin_update, updated_by=current_super_admin.super_admin_id)
     if not updated:
