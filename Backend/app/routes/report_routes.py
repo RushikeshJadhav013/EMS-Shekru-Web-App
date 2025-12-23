@@ -33,6 +33,58 @@ from app.config.company_config import (
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
 
+@router.get("/leave")
+def export_leave_report(
+    format: str = Query(..., description="Export format: csv or pdf"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    department: Optional[str] = Query(None, description="Filter by department"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Export Leave Report in CSV or PDF format.
+    """
+    try:
+        start_dt = None
+        end_dt = None
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+        from app.crud.leave_crud import export_leave_csv, export_leave_pdf
+
+        if format.lower() == 'csv':
+            output = export_leave_csv(db, start_date=start_dt, end_date=end_dt, department=department)
+            filename = "leave_report.csv"
+            return StreamingResponse(
+                output,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        elif format.lower() == 'pdf':
+            buffer = export_leave_pdf(db, start_date=start_dt, end_date=end_dt, department=department)
+            filename = f"leave_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            return StreamingResponse(
+                buffer,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        else:
+            raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="Invalid format. Use 'csv' or 'pdf'")
+
+    except Exception as e:
+        print(f"Leave export error: {str(e)}")
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error generating leave report: {str(e)}")
+
+
 @router.get("/employee-performance")
 def get_employee_performance(
     month: int = Query(..., ge=0, le=11, description="Month (0-11)"),

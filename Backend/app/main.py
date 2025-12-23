@@ -28,6 +28,7 @@ from app.routes import (
     user_routes,
     attendance_routes,
     leave_routes,
+    leave_calendar_routes,
     task_routes,
     task_comment_routes,
     auth_routes,
@@ -180,6 +181,7 @@ app.add_middleware(
 app.include_router(user_routes.router)
 app.include_router(attendance_routes.router)
 app.include_router(leave_routes.router)
+app.include_router(leave_calendar_routes.router)
 app.include_router(task_routes.router)
 app.include_router(task_comment_routes.router)
 app.include_router(auth_routes.router)
