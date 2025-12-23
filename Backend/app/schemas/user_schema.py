@@ -233,6 +233,26 @@ class AdminCreate(BaseModel):
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
+
+    @validator("shift_type")
+    def validate_shift_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        allowed = {'general', 'morning', 'afternoon', 'day', 'night', 'rotational', 'rotating'}
+        if normalized not in allowed:
+            raise ValueError(f"Shift type must be one of: {', '.join(sorted(allowed))}")
+        return normalized
+    
+    @validator("employee_type")
+    def validate_employee_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip()
+        # Allow any non-empty string, or add allowed values if you want to enforce
+        if not normalized:
+            raise ValueError("Employee type cannot be empty if provided")
+        return normalized
     
     @validator("name")
     def validate_name(cls, v: str) -> str:
@@ -288,7 +308,28 @@ class AdminCreate(BaseModel):
 
 class AdminUpdate(BaseModel):
     name: Optional[str] = None
-    
+    shift_type: Optional[str] = None
+    employee_type: Optional[str] = None
+
+    @validator("shift_type")
+    def validate_shift_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        allowed = {'general', 'morning', 'afternoon', 'day', 'night', 'rotational', 'rotating'}
+        if normalized not in allowed:
+            raise ValueError(f"Shift type must be one of: {', '.join(sorted(allowed))}")
+        return normalized
+
+    @validator("employee_type")
+    def validate_employee_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("Employee type cannot be empty if provided")
+        return normalized
+
     @validator("name")
     def validate_name(cls, v: Optional[str]) -> Optional[str]:
         """Allow alphabetic characters with internal spaces; no leading/trailing spaces."""
