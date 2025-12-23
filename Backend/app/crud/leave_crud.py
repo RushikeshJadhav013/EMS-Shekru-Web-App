@@ -1,4 +1,289 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from datetime import datetime, timedelta
+from typing import Optional, List
+import io
+import csv
+
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+from app.db.models.leave import Leave
+from app.db.models.user import User
+from app.config.company_config import (
+    COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
+)
+
+
+def export_leave_csv(
+    db: Session,
+    start_date: datetime = None,
+    end_date: datetime = None,
+    department: Optional[str] = None,
+):
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header
+    writer.writerow(['Leave Report'])
+    writer.writerow([f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
+    writer.writerow([])
+
+    # Columns
+    headers = ['Leave ID', 'Employee ID', 'Name', 'Department', 'Leave Type', 'Start Date', 'End Date', 'Total Days', 'Status', 'Reason']
+    writer.writerow(headers)
+
+    query = db.query(Leave, User.employee_id, User.name, User.department).join(User, Leave.user_id == User.user_id)
+    if department:
+        query = query.filter(func.lower(User.department) == department.strip().lower())
+    if start_date:
+        query = query.filter(Leave.start_date >= start_date)
+    if end_date:
+        query = query.filter(Leave.end_date <= end_date)
+
+    for leave, emp_id, name, dept in query.order_by(Leave.start_date.desc()).all():
+        total_days = (leave.end_date - leave.start_date).days + 1 if leave.start_date and leave.end_date else ""
+        writer.writerow([
+            leave.leave_id,
+            emp_id or leave.user_id,
+            name or "",
+            dept or "",
+            leave.leave_type or "",
+            leave.start_date.strftime("%Y-%m-%d") if leave.start_date else "",
+            leave.end_date.strftime("%Y-%m-%d") if leave.end_date else "",
+            total_days,
+            leave.status or "",
+            (leave.reason or "").replace("\n", " ").strip()
+        ])
+
+    output.seek(0)
+    return output
+
+
+def export_leave_pdf(
+    db: Session,
+    start_date: datetime = None,
+    end_date: datetime = None,
+    department: Optional[str] = None,
+):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=50, bottomMargin=80)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # Title
+    title_style = ParagraphStyle(
+        'Title',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1e40af'),
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+    )
+    elements.append(Paragraph("Leave Report", title_style))
+    elements.append(Spacer(1, 12))
+
+    # Info table
+    info_data = [
+        ['Company Name:', COMPANY_NAME],
+        ['Department:', department or 'All Departments'],
+        ['Period:', f"{start_date.strftime('%Y-%m-%d') if start_date else 'Any'} to {end_date.strftime('%Y-%m-%d') if end_date else 'Any'}"],
+        ['Generated:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+    ]
+    info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#eff6ff')),
+        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 16))
+
+    # Data query
+    query = db.query(Leave, User.employee_id, User.name, User.department).join(User, Leave.user_id == User.user_id)
+    if department:
+        query = query.filter(func.lower(User.department) == department.strip().lower())
+    if start_date:
+        query = query.filter(Leave.start_date >= start_date)
+    if end_date:
+        query = query.filter(Leave.end_date <= end_date)
+
+    rows = []
+    for leave, emp_id, name, dept in query.order_by(Leave.start_date.desc()).all():
+        total_days = (leave.end_date - leave.start_date).days + 1 if leave.start_date and leave.end_date else ""
+        rows.append([
+            str(leave.leave_id),
+            emp_id or str(leave.user_id),
+            name or "",
+            dept or "",
+            leave.leave_type or "",
+            leave.start_date.strftime("%Y-%m-%d") if leave.start_date else "",
+            leave.end_date.strftime("%Y-%m-%d") if leave.end_date else "",
+            str(total_days),
+            leave.status or "",
+            (leave.reason or "").strip()
+        ])
+
+    # Columns and conditional visibility
+    headers = ['Leave ID', 'Employee ID', 'Name', 'Department', 'Leave Type', 'Start Date', 'End Date', 'Total Days', 'Status', 'Reason']
+    data = [headers] + rows
+
+    # Determine visible columns
+    num_cols = len(headers)
+    columns_with_data = [False] * num_cols
+    essential = {0, 1, 2}
+    for i in essential:
+        columns_with_data[i] = True
+    for r in rows:
+        for idx, cell in enumerate(r):
+            text = "" if cell is None else str(cell).strip()
+            if text and text.lower() not in ("n/a", "na", "-"):
+                columns_with_data[idx] = True
+
+    visible_cols = [i for i, v in enumerate(columns_with_data) if v]
+    visible_count = len(visible_cols) if visible_cols else num_cols
+    total_width = A4[0] - (doc.leftMargin + doc.rightMargin)
+    base_fractions = [0.07, 0.10, 0.18, 0.10, 0.10, 0.10, 0.10, 0.08, 0.07, 0.10]
+    if len(base_fractions) != num_cols:
+        base_fractions = [1.0 / num_cols] * num_cols
+    visible_fractions = [base_fractions[i] for i in visible_cols]
+    frac_sum = sum(visible_fractions) if visible_fractions else 1.0
+    normalized = [f / frac_sum for f in visible_fractions]
+    col_widths = [total_width * f for f in normalized]
+
+    # Build table rows using visible columns
+    styles_tbl = getSampleStyleSheet()
+    header_style = ParagraphStyle('Header', parent=styles_tbl['Normal'], fontName='Helvetica-Bold', fontSize=9, textColor=colors.whitesmoke, alignment=TA_CENTER)
+    cell_style = ParagraphStyle('Cell', parent=styles_tbl['Normal'], fontName='Helvetica', fontSize=9, textColor=colors.black, alignment=TA_LEFT)
+    cell_center = ParagraphStyle('CellCenter', parent=cell_style, alignment=TA_CENTER)
+
+    table_rows = []
+    table_rows.append([Paragraph(headers[i], header_style) for i in visible_cols])
+    for r in rows:
+        row_cells = []
+        for idx in visible_cols:
+            text = "" if r[idx] is None else str(r[idx])
+            if idx in (0, 1, 5, 6, 7):
+                row_cells.append(Paragraph(text, cell_center))
+            else:
+                row_cells.append(Paragraph(text, cell_style))
+        table_rows.append(row_cells)
+
+    table = Table(table_rows, repeatRows=1, colWidths=col_widths)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('TOPPADDING', (0, 0), (-1, 0), 10),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 1), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+        ('TOPPADDING', (0, 1), (-1, -1), 8),
+        ('LEFTPADDING', (0, 1), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 1), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]))
+
+    elements.append(table)
+
+    # Footer function copied for consistency
+    def draw_footer(canvas, doc_obj):
+        canvas.saveState()
+        footer_font_size = 8
+        horizontal_padding = 30
+        footer_line_thickness = 0.5
+        line_height = 11
+        spacing_between_line_and_text = 8
+        footer_bottom_padding = 15
+
+        first_line_parts = []
+        if COMPANY_ADDRESS:
+            first_line_parts.append(COMPANY_ADDRESS)
+        if COMPANY_WEBSITE:
+            first_line_parts.append(f"Website: {COMPANY_WEBSITE}")
+        if COMPANY_EMAIL:
+            first_line_parts.append(f"Email: {COMPANY_EMAIL}")
+        if COMPANY_PHONE:
+            first_line_parts.append(f"Contact: {COMPANY_PHONE}")
+        first_line_text = " | ".join(first_line_parts)
+
+        copyright_text = f"© {datetime.now().year} {COMPANY_NAME}. All rights reserved."
+        page_text = f"Page {canvas.getPageNumber()}"
+
+        canvas.setFont("Helvetica", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.setFont("Helvetica-Bold", footer_font_size)
+        page_num_width = canvas.stringWidth(page_text, "Helvetica-Bold", footer_font_size)
+        canvas.setFont("Helvetica", footer_font_size)
+        available_width_line1 = A4[0] - (horizontal_padding * 2)
+        spacing_between_copyright_and_page = 15
+        available_width_line2 = A4[0] - (horizontal_padding * 2) - page_num_width - spacing_between_copyright_and_page
+
+        first_line_final = first_line_text
+        if canvas.stringWidth(first_line_text, "Helvetica", footer_font_size) > available_width_line1:
+            parts = first_line_text.split(' | ')
+            wrapped_lines = []
+            current_line = ""
+            for part in parts:
+                separator = " | " if current_line else ""
+                test_line = current_line + separator + part
+                if canvas.stringWidth(test_line, "Helvetica", footer_font_size) <= available_width_line1:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        wrapped_lines.append(current_line)
+                    current_line = part
+            if current_line:
+                wrapped_lines.append(current_line)
+            first_line_final = wrapped_lines[0] if wrapped_lines else first_line_text
+
+        copyright_final = copyright_text
+        if canvas.stringWidth(copyright_text, "Helvetica", footer_font_size) > available_width_line2:
+            max_chars = int(available_width_line2 / (footer_font_size * 0.6))
+            if len(copyright_text) > max_chars:
+                copyright_final = copyright_text[:max_chars-3] + "..."
+
+        footer_text_bottom = footer_bottom_padding
+        footer_text_top = footer_text_bottom + line_height
+        footer_line_y = footer_text_top + spacing_between_line_and_text
+
+        canvas.setStrokeColor(colors.HexColor('#1e40af'))
+        canvas.setLineWidth(footer_line_thickness)
+        canvas.line(horizontal_padding, footer_line_y, A4[0] - horizontal_padding, footer_line_y)
+
+        canvas.setFont("Helvetica", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.drawString(horizontal_padding, footer_text_top, first_line_final)
+
+        canvas.drawString(horizontal_padding, footer_text_bottom, copyright_final)
+
+        canvas.setFont("Helvetica-Bold", footer_font_size)
+        canvas.setFillColor(colors.HexColor('#1e40af'))
+        page_x = A4[0] - horizontal_padding
+        canvas.drawRightString(page_x, footer_text_bottom, page_text)
+        canvas.restoreState()
+
+    doc.build(elements, onFirstPage=draw_footer, onLaterPages=draw_footer)
+    buffer.seek(0)
+    return buffer
+
+from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from datetime import datetime, timedelta
 from typing import List, Optional
