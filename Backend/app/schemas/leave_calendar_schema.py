@@ -19,7 +19,7 @@ class CompanyHolidayOut(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class DeptWeekOffRuleCreate(BaseModel):
@@ -35,7 +35,7 @@ class DeptWeekOffRuleOut(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class LeaveAllocationUpdate(BaseModel):
@@ -55,6 +55,6 @@ class CalendarEvent(BaseModel):
     user_id: Optional[int] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
