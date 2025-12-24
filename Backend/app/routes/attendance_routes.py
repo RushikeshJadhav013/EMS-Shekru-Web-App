@@ -23,6 +23,9 @@ import json
 from ..utils.geolocation import location_service
 from app.schemas.office_timing_schema import OfficeTimingOut, OfficeTimingCreate
 from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_ist
+from app.crud.attendance_grid_export import export_monthly_grid_pdf, export_monthly_grid_csv
+
+
 
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
@@ -2217,3 +2220,50 @@ def calculate_working_hours(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to calculate working hours"
         )
+
+@router.get("/report/monthly-grid")
+def attendance_monthly_grid_report(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(...),
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    from app.crud.attendance_crud import build_monthly_attendance_grid
+    return build_monthly_attendance_grid(db, month, year, department)
+
+@router.get("/report/monthly-grid/download/pdf")
+def download_monthly_grid_pdf(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(...),
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    from app.crud.attendance_grid_export import export_monthly_grid_pdf
+
+    buffer = export_monthly_grid_pdf(db, month, year, department)
+
+    filename = f"attendance_grid_{month:02d}_{year}.pdf"
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.get("/report/monthly-grid/download/csv")
+def download_monthly_grid_csv(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(...),
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    from app.crud.attendance_grid_export import export_monthly_grid_csv
+
+    output = export_monthly_grid_csv(db, month, year, department)
+
+    filename = f"attendance_grid_{month:02d}_{year}.csv"
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
