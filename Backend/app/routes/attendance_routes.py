@@ -1552,6 +1552,7 @@ def download_attendance_pdf(
     quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
     year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     department: Optional[str] = Query(None, description="Filter by department"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Download attendance data as a PDF file with optional filters."""
@@ -1635,6 +1636,7 @@ def download_attendance_pdf(
         end_date=end_dt,
         employee_id=employee_id,
         department=department.strip() if department else None,
+        generated_by=current_user.name,
     )
     
     # Generate filename with date range

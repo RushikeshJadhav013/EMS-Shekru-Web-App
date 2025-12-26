@@ -5,6 +5,28 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from .attendance_crud import build_monthly_attendance_grid
+from reportlab.platypus import Table
+
+
+def draw_page_border(canvas, doc):
+    canvas.saveState()
+    canvas.setStrokeColor(colors.lightgrey)
+    canvas.setLineWidth(0.5)  # small/thin border
+
+    # Page size (landscape A4)
+    width, height = landscape(A4)
+
+    margin = 10  # distance from edge
+    canvas.rect(
+        margin,
+        margin,
+        width - (2 * margin),
+        height - (2 * margin),
+        stroke=1,
+        fill=0
+    )
+    canvas.restoreState()
+
 
 def export_monthly_grid_csv(db, month, year, department=None):
     """
@@ -40,61 +62,115 @@ def export_monthly_grid_pdf(db, month, year, department=None):
     """
     data = build_monthly_attendance_grid(db, month, year, department)
     buffer = io.BytesIO()
+
+    # Page setup with proper margins
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        leftMargin=20,
-        rightMargin=20,
-        topMargin=20,
-        bottomMargin=20
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=24,
+        bottomMargin=24
     )
+
     styles = getSampleStyleSheet()
     elements = []
+
+    # -------------------------
+    # Title
+    # -------------------------
     elements.append(
         Paragraph(f"<b>{data['title']}</b>", styles["Title"])
     )
-    elements.append(
-        Paragraph(
-            f"Duration: {data['duration']}    Printed: {data['printed_on']}",
-            styles["Normal"]
-        )
+
+    # -------------------------
+    # Duration & Printed (PROPER spacing using table)
+    # -------------------------
+    info_table = Table(
+        [[
+            f"Duration: {data['duration']}",
+            f"Printed: {data['printed_on']}"
+        ]],
+        colWidths=[150, 150]   # spacing control
     )
+
+    info_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (0, 0), "LEFT"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+
+    elements.append(info_table)
+
+    # -------------------------
+    # Build table data
+    # -------------------------
     table_data = []
+
     header_days = ["No.", "Employee ID", "Name"]
     header_weekdays = ["", "", ""]
+
     for day in data["days"]:
         header_days.append(str(day["day"]))
         header_weekdays.append(day["weekday"])
+
     table_data.append(header_days)
     table_data.append(header_weekdays)
+
     for index, row in enumerate(data["rows"], start=1):
         record = [str(index), row["employee_id"], row["name"]]
         for day in data["days"]:
             record.append(row["attendance"].get(str(day["day"]), ""))
         table_data.append(record)
+
     total_columns = len(header_days)
     page_width = A4[1]  # landscape width
+
     col_widths = (
         [35, 70, 120] +
         [(page_width - 225) / (total_columns - 3)] * (total_columns - 3)
     )
+
     table = Table(
         table_data,
         colWidths=col_widths,
         repeatRows=2
     )
+
+    # -------------------------
+    # Table styling (grid + padding)
+    # -------------------------
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
         ("BACKGROUND", (0, 1), (-1, 1), colors.whitesmoke),
         ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+
+        # ✅ Correct padding for dense grid
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+
+        ("ALIGN", (3, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f0fdf4")]),
+
+        ("ROWBACKGROUNDS", (0, 2), (-1, -1),
+         [colors.white, colors.HexColor("#f0fdf4")]),
     ]))
+
     elements.append(table)
-    doc.build(elements)
+
+    # -------------------------
+    # Build PDF (with border if needed)
+    # -------------------------
+    doc.build(
+        elements,
+        onFirstPage=draw_page_border,
+        onLaterPages=draw_page_border
+    )
+
     buffer.seek(0)
     return buffer
-

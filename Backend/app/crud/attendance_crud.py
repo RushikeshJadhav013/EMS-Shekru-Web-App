@@ -618,7 +618,7 @@ def export_attendance_pdf(
     ]
     num_cols = len(headers)
     data_rows = []
-    for a, emp_id, name, dept in query.order_by(Attendance.check_in.desc()).all():
+    for a, name, dept, emp_id in query.order_by(Attendance.check_in.desc()).all():
         data_rows.append([
             str(a.attendance_id),
             emp_id or str(a.user_id),
@@ -646,26 +646,37 @@ def export_attendance_pdf(
     col_widths = [total_width / visible_count] * visible_count
     from reportlab.lib.styles import ParagraphStyle
     styles_tbl = getSampleStyleSheet()
-    header_style = ParagraphStyle('Header', parent=styles_tbl['Normal'], fontName='Helvetica-Bold', fontSize=10, textColor=colors.black, alignment=TA_CENTER)
-    cell_style = ParagraphStyle('Cell', parent=styles_tbl['Normal'], fontName='Helvetica', fontSize=9, textColor=colors.black, alignment=TA_LEFT)
-    cell_center = ParagraphStyle('CellCenter', parent=cell_style, alignment=TA_CENTER)
-    def truncate_text(text: str, max_width_pts: float, font_size: int = 9) -> str:
-        avg_char_width = font_size * 0.55
-        max_chars = max(1, int(max_width_pts / avg_char_width))
-        t = str(text)
-        if len(t) > max_chars:
-            return t[:max_chars-3] + "..."
-        return t
+    header_style = ParagraphStyle(
+        'Header',
+        parent=styles_tbl['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        textColor=colors.black,
+        alignment=TA_CENTER,
+        wordWrap='CJK'
+    )
+    cell_style = ParagraphStyle(
+        'Cell',
+        parent=styles_tbl['Normal'],
+        fontName='Helvetica',
+        fontSize=9,
+        textColor=colors.black,
+        alignment=TA_LEFT,
+        wordWrap='CJK',
+        leading=11
+    )
     table_rows = []
-    header_cells = [truncate_text(headers[i], col_widths[pos], font_size=10) for pos, i in enumerate(visible_cols)]
+    # Header row with wrapped text
+    header_cells = [Paragraph(headers[i], header_style) for i in visible_cols]
     table_rows.append(header_cells)
+    # Data rows with wrapped text
     for r in data_rows:
         row_cells = []
-        for pos, idx in enumerate(visible_cols):
+        for idx in visible_cols:
             raw = "" if r[idx] is None else str(r[idx])
-            text = truncate_text(raw, col_widths[pos], font_size=9)
-            text = text.replace("\n", " ").replace("\r", " ")
-            row_cells.append(text)
+            # Clean up newlines and extra spaces
+            text = raw.replace("\n", " ").replace("\r", " ").strip()
+            row_cells.append(Paragraph(text, cell_style))
         table_rows.append(row_cells)
     table = Table(table_rows, repeatRows=1, colWidths=col_widths)
     table.setStyle(TableStyle([
