@@ -392,7 +392,8 @@ def send_otp_super_admin(email: EmailStr, db: Session = Depends(get_db)):
     super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
     if not super_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
-    
+    if not super_admin.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive. Please contact your administrator for assistance.")
     # Generate OTP based on environment
     otp = generate_otp(email)
     
@@ -419,7 +420,8 @@ def verify_otp_super_admin(email: EmailStr, otp: int, db: Session = Depends(get_
     super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
     if not super_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
-
+    if not super_admin.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive. Please contact your administrator for assistance.")
     if not verify_otp(email, otp):
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
     

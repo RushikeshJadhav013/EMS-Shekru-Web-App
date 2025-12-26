@@ -274,7 +274,7 @@ def update_employee(
     designation: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
     address: Optional[str] = Form(None),
-    role: str = Form("Employee"),
+    role: Optional[RoleEnum] = Form(RoleEnum.EMPLOYEE),
     gender: Optional[str] = Form(None),
     resignation_date: Optional[str] = Form(None),
     pan_card: Optional[str] = Form(None),
@@ -355,8 +355,15 @@ def update_employee(
     employee.phone = phone
     employee.address = address
     
-    # ✅ Only Admin/HR can change roles
-    if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR]:
+    # ✅ Only Admin/HR can change roles with restrictions
+    if current_user.role == RoleEnum.ADMIN and role is not None:
+        employee.role = role
+    elif current_user.role == RoleEnum.HR and role is not None:
+        if role == RoleEnum.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="HR is not permitted to assign the Admin role. Only Admins may do so."
+            )
         employee.role = role
     
     # Validate and convert gender to GenderEnum
