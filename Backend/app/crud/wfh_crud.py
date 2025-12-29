@@ -110,7 +110,9 @@ def get_all_wfh_requests(
     )
     if requester_user and requester_user.role == RoleEnum.MANAGER:
         if requester_user.department:
-            pending_query = pending_query.join(User).filter(
+            pending_query = pending_query.join(
+                User, WFHRequest.user_id == User.user_id
+            ).filter(
                 User.department == requester_user.department
             )
     pending_count = pending_query.scalar() or 0
@@ -267,7 +269,9 @@ def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
     
     if requester_user.role == RoleEnum.MANAGER:
         if requester_user.department:
-            query = query.join(User).filter(User.department == requester_user.department)
+            query = query.join(
+                User, WFHRequest.user_id == User.user_id
+            ).filter(User.department == requester_user.department)
     
     return query.scalar() or 0
 

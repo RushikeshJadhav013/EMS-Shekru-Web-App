@@ -423,18 +423,53 @@ def update_employee_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return _sanitize_users_response(employee)
 
-@router.get("/export/pdf", summary="Download all user details as PDF")
+@router.get("/export/pdf", summary="Download user details as PDF with optional filters")
 def download_users_pdf(
+    department: Optional[str] = Query(None, description="Filter by department"),
+    role: Optional[str] = Query(None, description="Filter by role (e.g., ADMIN, HR, MANAGER, EMPLOYEE)"),
+    designation: Optional[str] = Query(None, description="Filter by designation"),
+    status: Optional[bool] = Query(None, description="Filter by active status (true/false)"),
     db: Session = Depends(get_db),
     # _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR])) # Example for role-based access
 ):
+    """
+    Export employee directory as PDF with optional filters.
+    
+    Filters:
+    - department: Filter by department name
+    - role: Filter by role (ADMIN, HR, MANAGER, TEAM_LEAD, EMPLOYEE)
+    - designation: Filter by designation
+    - status: Filter by active status (true for active, false for inactive)
+    
+    When no filters are provided, returns the full employee directory.
+    """
     try:
-        pdf_buffer = export_users_pdf(db)
+        pdf_buffer = export_users_pdf(
+            db=db,
+            department=department,
+            role=role,
+            designation=designation,
+            status=status
+        )
+        
+        # Build filename based on filters
+        filename_parts = ["employees_report"]
+        if department:
+            filename_parts.append(f"dept_{department}")
+        if role:
+            filename_parts.append(f"role_{role}")
+        if designation:
+            filename_parts.append(f"desig_{designation}")
+        if status is not None:
+            filename_parts.append(f"status_{'active' if status else 'inactive'}")
+        
+        filename = "_".join(filename_parts) + ".pdf"
+        
         return Response(
             content=pdf_buffer.getvalue(),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": "attachment; filename=\"employees_report.pdf\"",
+                "Content-Disposition": f"attachment; filename=\"{filename}\"",
                 "Access-Control-Allow-Origin": "*",
             }
         )
