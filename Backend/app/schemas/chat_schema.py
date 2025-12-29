@@ -2,13 +2,11 @@ from pydantic import BaseModel, Field, constr, field_validator
 from typing import List, Optional
 from datetime import datetime
 
-
 class ChatUserSchema(BaseModel):
     user_id: int
     name: str
     email: str
     role: str
-
 
 class MessageSchema(BaseModel):
     id: str
@@ -17,23 +15,24 @@ class MessageSchema(BaseModel):
     timestamp: float
     read_by: Optional[List[int]] = []
 
-
 class CreateMessagePayload(BaseModel):
     content: constr(strip_whitespace=True, min_length=1)
 
+class EditMessagePayload(BaseModel):
+    content: constr(strip_whitespace=True, min_length=1)
 
 class CreateGroupPayload(BaseModel):
     name: constr(strip_whitespace=True, min_length=1)
     member_ids: List[int]
 
-
 class AddRemoveMemberPayload(BaseModel):
     user_id: int
 
+class BulkMembersPayload(BaseModel):
+    user_ids: List[int]
 
 class TypingStatusPayload(BaseModel):
     is_typing: bool
-
 
 class ChatMemberSchema(BaseModel):
     user_id: int
@@ -50,7 +49,6 @@ class ChatMemberSchema(BaseModel):
     class Config:
         from_attributes = True
 
-
 class ChatSessionSchema(BaseModel):
     chat_id: str
     chat_type: str
@@ -64,3 +62,5 @@ class ChatSessionSchema(BaseModel):
     class Config:
         from_attributes = True
 
+class ChangeGroupNamePayload(BaseModel):
+    name: constr(strip_whitespace=True, min_length=1)

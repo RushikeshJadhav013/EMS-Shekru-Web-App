@@ -14,6 +14,7 @@ from app.schemas.chat_schema import (
     CreateMessagePayload,
     TypingStatusPayload,
     ChatSessionSchema,
+    ChangeGroupNamePayload,
 )
 from app.services.chat_service import (
     conversation_id,
@@ -366,6 +367,231 @@ def typing_indicator(
     )
     return {"ok": True}
 
+
+@router.put("/group/{group_id}/name", status_code=200)
+def change_group_name(
+    group_id: str,
+    payload: ChangeGroupNamePayload,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Change the name of a group chat. Only group admin can perform this action.
+    """
+    # Find the chat session
+    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
+    if not session_obj:
+        raise HTTPException(404, "Group chat not found")
+
+    # Check admin role
+    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+    if not member or member.role != ChatMemberRoleEnum.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can change name")
+
+    # Update in MySQL
+    session_obj.name = payload.name
+    db.commit()
+
+    # Strictly require Firestore update to succeed
+    group_ref = get_group_ref(group_id)
+    group = group_ref.get()
+    if not group.exists:
+        raise HTTPException(404, "Group chat (Firestore) not found")
+    try:
+        group_ref.update({"name": payload.name})
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to update group name in Firestore: {e}")
+
+    return {"group_id": group_id, "name": payload.name}
+
+@router.delete("/group/{group_id}", status_code=200)
+def soft_delete_group(
+    group_id: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Soft-delete a group chat (set is_deleted=True in MySQL, mark deleted in Firestore). Only group admin can do this.
+    """
+    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
+    if not session_obj:
+        raise HTTPException(404, "Group chat not found")
+
+    # Check admin role
+    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+    if not member or member.role != ChatMemberRoleEnum.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can delete the group")
+
+    # MySQL soft-delete
+    session_obj.is_deleted = True
+    db.commit()
+
+    # Firestore soft-delete (mark a deleted flag in doc)
+    group_ref = get_group_ref(group_id)
+    group = group_ref.get()
+    if not group.exists:
+        raise HTTPException(404, "Group chat (Firestore) not found")
+    try:
+        group_ref.update({"is_deleted": True})
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to update soft delete in Firestore: {e}")
+
+    return {"group_id": group_id, "deleted": True}
+
+@router.post("/group/{group_id}/members/bulk_add", status_code=200)
+def bulk_add_group_members(
+    group_id: str,
+    payload: BulkMembersPayload,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Add multiple members to a chat group. Only group admin can perform this action.
+    """
+    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
+    if not session_obj:
+        raise HTTPException(404, "Group chat not found")
+    # Check admin
+    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+    if not member or member.role != ChatMemberRoleEnum.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can add members")
+    members_to_add = set(payload.user_ids)
+    # Sync to Firestore first
+    group_ref = get_group_ref(group_id)
+    group = group_ref.get()
+    if not group.exists:
+        raise HTTPException(404, "Group not found (Firestore)")
+    data = group.to_dict()
+    members_firestore = set(data.get("members", []))
+    new_members_firestore = list(members_firestore.union(members_to_add))
+    try:
+        group_ref.update({"members": new_members_firestore})
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to add members in Firestore: {e}")
+    # Sync to MySQL
+    try:
+        added_count = 0
+        for uid in members_to_add:
+            existing = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == uid).first()
+            if not existing:
+                db.add(ChatMember(chat_id=group_id, user_id=uid, role=ChatMemberRoleEnum.MEMBER))
+                added_count += 1
+        session_obj.member_count = (session_obj.member_count or 0) + added_count
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to add members in MySQL: {e}")
+    return {"group_id": group_id, "added_count": added_count, "members": new_members_firestore}
+
+@router.post("/group/{group_id}/members/bulk_remove", status_code=200)
+def bulk_remove_group_members(
+    group_id: str,
+    payload: BulkMembersPayload,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Remove multiple members from a chat group. Only group admin can perform this action.
+    """
+    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
+    if not session_obj:
+        raise HTTPException(404, "Group chat not found")
+    # Check admin
+    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+    if not member or member.role != ChatMemberRoleEnum.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can remove members")
+    members_to_remove = set(payload.user_ids)
+    # Sync to Firestore first
+    group_ref = get_group_ref(group_id)
+    group = group_ref.get()
+    if not group.exists:
+        raise HTTPException(404, "Group not found (Firestore)")
+    data = group.to_dict()
+    members_firestore = set(data.get("members", []))
+    new_members_firestore = list(members_firestore - members_to_remove)
+    try:
+        group_ref.update({"members": new_members_firestore})
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to remove members in Firestore: {e}")
+    # Sync to MySQL
+    try:
+        removed_count = 0
+        for uid in members_to_remove:
+            cm = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == uid).first()
+            if cm:
+                db.delete(cm)
+                removed_count += 1
+        session_obj.member_count = max(0, (session_obj.member_count or 0) - removed_count)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to remove members in MySQL: {e}")
+    return {"group_id": group_id, "removed_count": removed_count, "members": new_members_firestore}
+
+from datetime import datetime, timedelta
+
+@router.put("/{chat_type}/{chat_id}/messages/{msg_id}/edit", status_code=200)
+def edit_message(
+    chat_type: str,
+    chat_id: str,
+    msg_id: str,
+    payload: EditMessagePayload,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Edit a chat message. Only sender can edit, and only within 2 minutes of sending.
+    """
+    is_group = chat_type == "group"
+    col = get_message_collection(is_group, chat_id)
+    msg_ref = col.document(msg_id)
+    msg = msg_ref.get()
+    if not msg.exists:
+        raise HTTPException(404, "Message not found")
+    data = msg.to_dict()
+    now_ts = datetime.utcnow().timestamp()
+    if data.get("sender_id") != current.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only edit your own messages")
+    if now_ts - float(data.get("timestamp", 0)) > 120:  # 120 seconds = 2 minutes
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot edit messages after 2 minutes of sending")
+    try:
+        msg_ref.update({"content": payload.content})
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to edit message: {e}")
+    return {"msg_id": msg_id, "edited": True}
+
+from datetime import datetime, timedelta
+
+@router.delete("/{chat_type}/{chat_id}/messages/{msg_id}/delete", status_code=200)
+def delete_message(
+    chat_type: str,
+    chat_id: str,
+    msg_id: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Delete a chat message. Only sender can delete, and only within 5 minutes of sending.
+    """
+    is_group = chat_type == "group"
+    col = get_message_collection(is_group, chat_id)
+    msg_ref = col.document(msg_id)
+    msg = msg_ref.get()
+    if not msg.exists:
+        raise HTTPException(404, "Message not found")
+    data = msg.to_dict()
+    now_ts = datetime.utcnow().timestamp()
+    if data.get("sender_id") != current.user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only delete your own messages")
+    if now_ts - float(data.get("timestamp", 0)) > 300:  # 5 minutes = 300 seconds
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot delete messages after 5 minutes of sending")
+    try:
+        msg_ref.delete()
+    except Exception as e:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to delete message: {e}")
+    return {"msg_id": msg_id, "deleted": True}
 
 @router.get("/sessions", response_model=List[ChatSessionSchema])
 def list_user_chat_sessions(
