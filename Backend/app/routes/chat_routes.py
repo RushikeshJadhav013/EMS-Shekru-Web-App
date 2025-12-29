@@ -284,7 +284,7 @@ def send_message(
         "id": str(uuid.uuid4()),
         "sender_id": current.user_id,
         "content": payload.content,
-        "timestamp": datetime.datetime.utcnow().timestamp(),
+        "timestamp": datetime.utcnow().timestamp(),
         "read_by": [current.user_id]
     }
     col = get_message_collection(is_group, chat_id)
@@ -364,7 +364,7 @@ def typing_indicator(
         {
             "user_id": current.user_id,
             "is_typing": payload.is_typing,
-            "timestamp": datetime.datetime.utcnow().timestamp(),
+            "timestamp": datetime.utcnow().timestamp(),
         }
     )
     return {"ok": True}
