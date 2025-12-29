@@ -15,6 +15,8 @@ from app.schemas.chat_schema import (
     TypingStatusPayload,
     ChatSessionSchema,
     ChangeGroupNamePayload,
+    BulkMembersPayload,
+    EditMessagePayload,
 )
 from app.services.chat_service import (
     conversation_id,
