@@ -13,12 +13,13 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.pdfgen import canvas
 from datetime import datetime
+from typing import Optional
 import io
 import csv
 import os
 try:
     from app.config.company_config import (
-        COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL,
+        COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE,
         WATERMARK_TEXT, WATERMARK_OPACITY, PRIMARY_COLOR, SECONDARY_COLOR,
         TEXT_COLOR, LIGHT_BG_COLOR, GRAY_COLOR, LOGO_PATH, USE_LOGO,
         LOGO_WIDTH, LOGO_HEIGHT, REPORT_TITLE, SHOW_EMOJIS
@@ -29,6 +30,7 @@ except ImportError:
     COMPANY_ADDRESS = "Address Line 1, City, State - PIN Code"
     COMPANY_PHONE = "+91-XXXXXXXXXX"
     COMPANY_EMAIL = "info@company.com"
+    COMPANY_WEBSITE = "www.company.com"
     WATERMARK_TEXT = "YOUR COMPANY"
     WATERMARK_OPACITY = 0.1
     PRIMARY_COLOR = "#1e40af"
@@ -285,233 +287,254 @@ def get_users_by_role_created_by_admin(db: Session):
     
     return result
 
-def export_users_pdf(db: Session):
-    """Generate a modern, professional PDF with company branding and hierarchical organization"""
+def export_users_pdf(
+    db: Session,
+    department: Optional[str] = None,
+    role: Optional[str] = None,
+    designation: Optional[str] = None,
+    status: Optional[bool] = None
+):
+    """Generate a professional PDF matching Task Management report format with optional filters"""
     buffer = io.BytesIO()
     
-    # Custom page template with watermark
-    class WatermarkedCanvas(canvas.Canvas):
-        def __init__(self, *args, **kwargs):
-            canvas.Canvas.__init__(self, *args, **kwargs)
-            
-        def showPage(self):
-            self.saveState()
-            # Add watermark (company logo/name with transparency)
-            self.setFillColorRGB(0.9, 0.9, 0.9, alpha=WATERMARK_OPACITY)
-            self.setFont("Helvetica-Bold", 60)
-            self.saveState()
-            self.translate(A4[0]/2, A4[1]/2)
-            self.rotate(45)
-            self.drawCentredString(0, 0, WATERMARK_TEXT)
-            self.restoreState()
-            
-            # Add footer with page number
-            self.setFillColorRGB(0.4, 0.4, 0.4)
-            self.setFont("Helvetica", 8)
-            page_num = f"Page {self.getPageNumber()}"
-            self.drawRightString(A4[0] - 0.5*inch, 0.5*inch, page_num)
-            self.drawString(0.5*inch, 0.5*inch, f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}")
-            
-            self.restoreState()
-            canvas.Canvas.showPage(self)
+    # Footer drawing function - matches Task Management report exactly
+    def draw_footer(canvas_obj, doc_obj):
+        """Draw footer with company info and page number - two-line structure"""
+        canvas_obj.saveState()
+        
+        # Footer padding constants - consistent spacing
+        footer_font_size = 8
+        horizontal_padding = 30  # Consistent horizontal padding from edges
+        footer_line_thickness = 0.5
+        line_height = 11  # Vertical spacing between footer lines
+        spacing_between_line_and_text = 8  # Space between footer line and text
+        footer_bottom_padding = 15  # Padding from bottom of page
+        
+        # Build first line: Address | Website | Email | Contact
+        first_line_parts = []
+        if COMPANY_ADDRESS:
+            first_line_parts.append(COMPANY_ADDRESS)
+        if COMPANY_WEBSITE:
+            first_line_parts.append(f"Website: {COMPANY_WEBSITE}")
+        if COMPANY_EMAIL:
+            first_line_parts.append(f"Email: {COMPANY_EMAIL}")
+        if COMPANY_PHONE:
+            first_line_parts.append(f"Contact: {COMPANY_PHONE}")
+        
+        first_line_text = " | ".join(first_line_parts)
+        
+        # Build second line: Copyright (left) + Page number (right)
+        copyright_text = f"© {datetime.now().year} {COMPANY_NAME}. All rights reserved."
+        page_text = f"Page {canvas_obj.getPageNumber()}"
+        
+        # Set footer text style
+        canvas_obj.setFont("Helvetica", footer_font_size)
+        canvas_obj.setFillColor(colors.HexColor('#64748b'))
+        
+        # Calculate page number width for proper spacing
+        canvas_obj.setFont("Helvetica-Bold", footer_font_size)
+        page_num_width = canvas_obj.stringWidth(page_text, "Helvetica-Bold", footer_font_size)
+        canvas_obj.setFont("Helvetica", footer_font_size)
+        
+        # Calculate available width for first line (full width minus padding)
+        available_width_line1 = A4[0] - (horizontal_padding * 2)
+        
+        # Calculate available width for second line (minus page number space)
+        spacing_between_copyright_and_page = 15  # Space between copyright and page number
+        available_width_line2 = A4[0] - (horizontal_padding * 2) - page_num_width - spacing_between_copyright_and_page
+        
+        # Wrap first line if needed (intelligent wrapping at separator points)
+        first_line_final = first_line_text
+        if canvas_obj.stringWidth(first_line_text, "Helvetica", footer_font_size) > available_width_line1:
+            # Split first line intelligently
+            parts = first_line_text.split(' | ')
+            wrapped_lines = []
+            current_line = ""
+            for part in parts:
+                separator = " | " if current_line else ""
+                test_line = current_line + separator + part
+                if canvas_obj.stringWidth(test_line, "Helvetica", footer_font_size) <= available_width_line1:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        wrapped_lines.append(current_line)
+                    current_line = part
+            if current_line:
+                wrapped_lines.append(current_line)
+            # Use first wrapped line (or original if fits)
+            first_line_final = wrapped_lines[0] if wrapped_lines else first_line_text
+        
+        # Wrap copyright text if needed for second line
+        copyright_final = copyright_text
+        if canvas_obj.stringWidth(copyright_text, "Helvetica", footer_font_size) > available_width_line2:
+            # Truncate copyright if too long (shouldn't happen normally)
+            max_chars = int(available_width_line2 / (footer_font_size * 0.6))  # Approximate char width
+            if len(copyright_text) > max_chars:
+                copyright_final = copyright_text[:max_chars-3] + "..."
+        
+        # Calculate footer positions (from bottom up)
+        # We always have exactly 2 lines now
+        footer_text_bottom = footer_bottom_padding  # Bottom line (copyright + page)
+        footer_text_top = footer_text_bottom + line_height  # Top line (address info)
+        footer_line_y = footer_text_top + spacing_between_line_and_text  # Separator line above
+        
+        # Draw footer separator line with proper horizontal padding
+        canvas_obj.setStrokeColor(colors.HexColor('#1e40af'))
+        canvas_obj.setLineWidth(footer_line_thickness)
+        canvas_obj.line(horizontal_padding, footer_line_y, A4[0] - horizontal_padding, footer_line_y)
+        
+        # Draw first line (Address | Website | Email | Contact)
+        canvas_obj.setFont("Helvetica", footer_font_size)
+        canvas_obj.setFillColor(colors.HexColor('#64748b'))
+        canvas_obj.drawString(horizontal_padding, footer_text_top, first_line_final)
+        
+        # Draw second line: Copyright (left) + Page number (right)
+        # Draw copyright text
+        canvas_obj.drawString(horizontal_padding, footer_text_bottom, copyright_final)
+        
+        # Draw page number (right-aligned)
+        canvas_obj.setFont("Helvetica-Bold", footer_font_size)
+        canvas_obj.setFillColor(colors.HexColor('#1e40af'))
+        page_x = A4[0] - horizontal_padding
+        canvas_obj.drawRightString(page_x, footer_text_bottom, page_text)
+        
+        canvas_obj.restoreState()
     
-    # Create document with custom canvas
+    # Create document - matching Task Management report margins
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=0.5*inch,
-        leftMargin=0.5*inch,
-        topMargin=0.75*inch,
-        bottomMargin=0.75*inch
+        rightMargin=30,
+        leftMargin=30,
+        topMargin=36,
+        bottomMargin=80  # Increased bottom margin for footer spacing
     )
     
     # Custom styles
     styles = getSampleStyleSheet()
-
-    # Company header style
-    company_style = ParagraphStyle(
-        'CompanyHeader',
+    
+    # Title style - matching Task Management report
+    title_style = ParagraphStyle(
+        'Title',
         parent=styles['Heading1'],
-        fontSize=24,
-        textColor=colors.HexColor(PRIMARY_COLOR),
-        spaceAfter=6,
+        fontSize=18,
+        textColor=colors.black,
         alignment=TA_CENTER,
-        fontName='Helvetica-Bold'
-    )
-    
-    # Subtitle style
-    subtitle_style = ParagraphStyle(
-        'Subtitle',
-        parent=styles['Normal'],
-        fontSize=10,
-        textColor=colors.HexColor(GRAY_COLOR),
-        spaceAfter=20,
-        alignment=TA_CENTER,
-        fontName='Helvetica'
-    )
-    
-    # Department header style
-    dept_style = ParagraphStyle(
-        'DepartmentHeader',
-        parent=styles['Heading2'],
-        fontSize=14,
-        textColor=colors.HexColor(TEXT_COLOR),
-        spaceBefore=20,
-        spaceAfter=10,
         fontName='Helvetica-Bold',
-        borderColor=colors.HexColor(SECONDARY_COLOR),
-        borderWidth=0,
-        borderPadding=5,
-        backColor=colors.HexColor(LIGHT_BG_COLOR)
+        spaceAfter=12
     )
-    
-    # Role hierarchy mapping
-    role_hierarchy = {
-        'ADMIN': 1,
-        'HR': 2,
-        'MANAGER': 3,
-        'TEAM_LEAD': 4,
-        'EMPLOYEE': 5
-    }
     
     elements = []
     
-    # Add company logo if available
-    if USE_LOGO and LOGO_PATH and os.path.exists(LOGO_PATH):
-        try:
-            logo = Image(LOGO_PATH, width=LOGO_WIDTH*inch, height=LOGO_HEIGHT*inch)
-            logo.hAlign = 'CENTER'
-            elements.append(logo)
-            elements.append(Spacer(1, 0.1*inch))
-        except:
-            pass  # Skip logo if there's an error
-    
-    # Company Header
-    elements.append(Paragraph(COMPANY_NAME, company_style))
-    elements.append(Paragraph(
-        f"{COMPANY_ADDRESS} | Phone: {COMPANY_PHONE} | Email: {COMPANY_EMAIL}",
-        subtitle_style
-    ))
-    elements.append(Spacer(1, 0.1*inch))
-    
-    # Report Title
-    title_style = ParagraphStyle(
-        'ReportTitle',
-        parent=styles['Heading1'],
-        fontSize=18,
-        textColor=colors.HexColor(TEXT_COLOR),
-        spaceAfter=10,
-        alignment=TA_CENTER,
-        fontName='Helvetica-Bold'
-    )
-    elements.append(Paragraph(REPORT_TITLE, title_style))
-    
-    # Report metadata
-    meta_style = ParagraphStyle(
-        'Meta',
-        parent=styles['Normal'],
-        fontSize=9,
-        textColor=colors.HexColor(GRAY_COLOR),
-        spaceAfter=20,
-        alignment=TA_CENTER
-    )
+    # Title - matching Task Management report
+    elements.append(Paragraph("Employee Directory Report", title_style))
+    elements.append(Spacer(1, 12))
     
     # Fetch all users
     users = db.query(User).all()
-    elements.append(Paragraph(
-        f"Total Employees: {len(users)} | Report Generated: {datetime.now().strftime('%B %d, %Y')}",
-        meta_style
-    ))
-    elements.append(Spacer(1, 0.2*inch))
     
-    # Group users by department and sort by role hierarchy
-    departments = {}
+    # Info block - matching Task Management report format
+    info_data = [
+        ['Company Name', COMPANY_NAME or ''],
+        ['Total Employees', str(len(users))],
+        ['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+        ['Report Type', 'Employee Directory'],
+    ]
+    
+    info_table = Table(info_data, colWidths=[1.5*inch, 5*inch])
+    info_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 14))
+    
+    # Table headers
+    headers = [
+        'Employee ID', 'Name', 'Role', 'Department', 'Designation', 
+        'Email', 'Phone', 'Shift'
+    ]
+    
+    # Build table data
+    table_data = []
     for user in users:
-        dept = user.department or "Unassigned"
-        if dept not in departments:
-            departments[dept] = []
-        departments[dept].append(user)
+        table_data.append([
+            user.employee_id or "",
+            user.name or "",
+            user.role.value if hasattr(user.role, 'value') else str(user.role),
+            user.department or "",
+            user.designation or "",
+            user.email or "",
+            user.phone or "",
+            user.shift_type or ""
+        ])
     
-    # Sort departments alphabetically
-    for dept in sorted(departments.keys()):
-        # Sort employees within department by role hierarchy, then by name
-        dept_users = sorted(
-            departments[dept],
-            key=lambda u: (role_hierarchy.get(u.role.value, 999), u.name)
-        )
-        
-        # Department header
-        elements.append(Paragraph(f"📁 {dept.upper()}", dept_style))
-        elements.append(Spacer(1, 0.1*inch))
-        
-        # Create table for this department
-        table_data = [[
-            "ID", "Name", "Role", "Designation", "Email", "Phone", "Shift"
-        ]]
-        
-        for user in dept_users:
-            # Add role emoji for visual hierarchy
-            if SHOW_EMOJIS:
-                role_emoji = {
-                    'ADMIN': '👑 ',
-                    'HR': '👥 ',
-                    'MANAGER': '📊 ',
-                    'TEAM_LEAD': '🎯 ',
-                    'EMPLOYEE': '👤 '
-                }.get(user.role.value, '👤 ')
-            else:
-                role_emoji = ''
-            
-            table_data.append([
-                user.employee_id or "",
-                user.name[:20] if user.name else "",  # Truncate long names
-                f"{role_emoji}{user.role.value}",
-                user.designation[:15] if user.designation else "",
-                user.email[:25] if user.email else "",
-                user.phone[:15] if user.phone else "",
-                user.shift_type or ""
-            ])
-        
-        # Modern table styling
-        col_widths = [0.8*inch, 1.5*inch, 1.2*inch, 1.2*inch, 1.8*inch, 1.0*inch, 0.7*inch]
-        table = Table(table_data, colWidths=col_widths, repeatRows=1)
-        
-        table.setStyle(TableStyle([
-            # Header styling
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(PRIMARY_COLOR)),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-            ('TOPPADDING', (0, 0), (-1, 0), 8),
-            
-            # Data rows styling
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-            ('ALIGN', (0, 1), (0, -1), 'CENTER'),  # ID column centered
-            ('ALIGN', (1, 1), (-1, -1), 'LEFT'),
-            ('TOPPADDING', (0, 1), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
-            ('LEFTPADDING', (0, 0), (-1, -1), 5),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 5),
-            
-            # Alternating row colors for better readability
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
-            
-            # Grid
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
-            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#cbd5e1')),
-            
-            # Vertical alignment
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]))
-        
-        elements.append(table)
-        elements.append(Spacer(1, 0.3*inch))
+    # Calculate column widths
+    num_cols = len(headers)
+    total_width = A4[0] - 60  # Total width minus margins
+    col_widths = [total_width / num_cols] * num_cols
     
-    # Build PDF with custom canvas
-    doc.build(elements, canvasmaker=WatermarkedCanvas)
+    # Cell styles for text wrapping
+    body_cell_style = ParagraphStyle(
+        'body_cell',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=9,
+        textColor=colors.black,
+        alignment=TA_LEFT,
+        leading=11,
+        wordWrap='CJK',
+    )
+    
+    header_cell_style = ParagraphStyle(
+        'header_cell',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        textColor=colors.black,
+        alignment=TA_CENTER,
+        leading=13,
+    )
+    
+    # Build table with wrapped text
+    table_rows = [[Paragraph(h, header_cell_style) for h in headers]]
+    for row in table_data:
+        table_rows.append([Paragraph(str(cell) if cell else '', body_cell_style) for cell in row])
+    
+    table = Table(table_rows, repeatRows=1, colWidths=col_widths)
+    
+    # Table styling - matching Task Management report exactly
+    table.setStyle(TableStyle([
+        # Header styling - matching Task Management report
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f1f5f9')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('TOPPADDING', (0, 0), (-1, 0), 8),
+        
+        # Table body styling
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+        ('TOPPADDING', (0, 1), (-1, -1), 6),
+        
+        # Grid - matching Task Management report
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e6edf3')),
+    ]))
+    
+    elements.append(table)
+    
+    # Build PDF with footer
+    doc.build(elements, onFirstPage=draw_footer, onLaterPages=draw_footer)
     buffer.seek(0)
     return buffer
 

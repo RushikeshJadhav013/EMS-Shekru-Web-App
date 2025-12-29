@@ -1,5 +1,6 @@
 import io
 import csv
+from datetime import date
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -56,11 +57,71 @@ def export_monthly_grid_csv(db, month, year, department=None):
     output.seek(0)
     return output
 
-def export_monthly_grid_pdf(db, month, year, department=None):
+def export_monthly_grid_pdf(db, month, year, department=None, employee_id=None, date_from=None, date_to=None, status=None):
     """
     Export Monthly Attendance Grid to PDF (Excel-like layout, landscape)
+    Applies filters to the data after generation, not during.
     """
+    from datetime import datetime as dt
+    
+    # Get base data without extra filters
     data = build_monthly_attendance_grid(db, month, year, department)
+    
+    # Apply additional filters to rows
+    filtered_rows = []
+    filter_start = None
+    filter_end = None
+    
+    if date_from:
+        try:
+            filter_start = dt.strptime(date_from, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            filter_end = dt.strptime(date_to, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    
+    for row in data["rows"]:
+        # Filter by employee_id
+        if employee_id and row["employee_id"] != employee_id:
+            continue
+        
+        # Filter attendance by date range and status
+        filtered_attendance = {}
+        for day_str, attendance_value in row["attendance"].items():
+            day_num = int(day_str)
+            day_date = date(year, month, day_num)
+            
+            # Check date range
+            if filter_start and day_date < filter_start:
+                continue
+            if filter_end and day_date > filter_end:
+                continue
+            
+            # Check status filter
+            if status:
+                status_upper = status.upper()
+                if status_upper == "PRESENT" and attendance_value != "P":
+                    continue
+                elif status_upper == "ABSENT" and attendance_value != "A":
+                    continue
+                elif status_upper == "LEAVE" and attendance_value != "L":
+                    continue
+                elif status_upper == "WFH" and attendance_value != "WFH":
+                    continue
+            
+            filtered_attendance[day_str] = attendance_value
+        
+        filtered_rows.append({
+            "employee_id": row["employee_id"],
+            "name": row["name"],
+            "attendance": filtered_attendance
+        })
+    
+    # Update data with filtered rows
+    data["rows"] = filtered_rows
     buffer = io.BytesIO()
 
     # Page setup with proper margins
