@@ -143,7 +143,7 @@ class LeaveBalanceResponse(BaseModel):
 class LeaveNotificationOut(BaseModel):
     notification_id: int = Field(..., gt=0, description="Notification ID")
     user_id: int = Field(..., gt=0, description="User ID")
-    leave_id: int = Field(..., gt=0, description="Leave ID")
+    leave_id: Optional[int] = Field(None, gt=0, description="Leave ID")
     notification_type: str = Field(..., description="Notification type")
     title: constr(min_length=1, max_length=255) = Field(..., description="Notification title")
     message: constr(min_length=1, max_length=1000) = Field(..., description="Notification message")
