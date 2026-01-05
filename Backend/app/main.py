@@ -23,6 +23,7 @@ from app.db.models import (  # noqa: F401
     task_comment,
     hiring,
     leave_config,
+    salary,  # Salary models for salary slip and increment letter
 )
 from app.routes import (
     user_routes,
@@ -41,6 +42,7 @@ from app.routes import (
     subscription_routes,
     chat_routes,
     wfh_routes,
+    salary_routes,  # Salary slip and increment letter routes
 )
 from app.db.models.super_admin import SuperAdmin
 import os
@@ -194,6 +196,7 @@ app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(wfh_routes.router)
+app.include_router(salary_routes.router)  # Salary slip and increment letter routes
 
 # Global exception handlers to ensure CORS headers are always included
 @app.exception_handler(StarletteHTTPException)

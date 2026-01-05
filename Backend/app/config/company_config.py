@@ -4,14 +4,14 @@ Update these values with your actual company information
 """
 
 # Company Information
-COMPANY_NAME = "YOUR COMPANY NAME"
-COMPANY_ADDRESS = "Address Line 1, City, State - PIN Code"
+COMPANY_NAME = "Shekru Labs India Pvt Ltd"
+COMPANY_ADDRESS = "Office 2nd Floor, Manogat Appt., Treasure Park Road, Sahakar Nagar, Pune, Maharashtra 411009"
 COMPANY_PHONE = "+91-XXXXXXXXXX"
-COMPANY_EMAIL = "info@company.com"
-COMPANY_WEBSITE = "www.yourcompany.com"
+COMPANY_EMAIL = "info@shekrulabs.com"
+COMPANY_WEBSITE = "www.shekrulabs.com"
 
 # Watermark Configuration
-WATERMARK_TEXT = "YOUR COMPANY"  # Text to show as watermark
+WATERMARK_TEXT = "SHEKRU LABS"  # Text to show as watermark
 WATERMARK_OPACITY = 0.1  # 0.0 (invisible) to 1.0 (fully visible)
 
 # Color Scheme (Modern Blue Theme)
@@ -20,6 +20,10 @@ SECONDARY_COLOR = "#3b82f6"  # Accent color (lighter blue)
 TEXT_COLOR = "#0f172a"  # Dark text
 LIGHT_BG_COLOR = "#eff6ff"  # Light background
 GRAY_COLOR = "#64748b"  # Gray text
+
+# Salary Slip Colors (matching sample)
+HEADER_GREEN = "#4CAF50"  # Green header bar
+HEADER_ORANGE = "#FF9800"  # Orange accent for logo
 
 # Logo Configuration (Optional)
 # Place your logo file in Backend/static/company_logo.png
