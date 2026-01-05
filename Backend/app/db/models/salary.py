@@ -60,7 +60,7 @@ class EmployeeSalary(Base):
     
     @property
     def total_deductions_annual(self):
-        return self.professional_tax_annual + self.other_deduction_annual + self.pf_annual
+        return self.professional_tax_annual + self.other_deduction_annual
     
     @property
     def ctc_annual(self):
