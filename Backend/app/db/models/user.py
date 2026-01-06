@@ -40,6 +40,7 @@ class User(Base):
     # Profile & status
     profile_photo = Column(String(1024), nullable=True)
     is_active = Column(Boolean, default=True)  # Active/Deactivate status
+    is_email_verified = Column(Boolean, default=False)  # Email verification status for salary documents
 
     # Timestamps
     created_at = Column(DateTime, default=now_ist)

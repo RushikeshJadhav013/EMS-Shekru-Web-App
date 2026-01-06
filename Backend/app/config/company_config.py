@@ -6,9 +6,9 @@ Update these values with your actual company information
 # Company Information
 COMPANY_NAME = "Shekru Labs India Pvt Ltd"
 COMPANY_ADDRESS = "Office 2nd Floor, Manogat Appt., Treasure Park Road, Sahakar Nagar, Pune, Maharashtra 411009"
-COMPANY_PHONE = "+91-XXXXXXXXXX"
-COMPANY_EMAIL = "info@shekrulabs.com"
-COMPANY_WEBSITE = "www.shekrulabs.com"
+COMPANY_PHONE = "+91 7776827177"
+COMPANY_EMAIL = "hr@shekruweb.com"
+COMPANY_WEBSITE = "www.shekruweb.com"
 
 # Watermark Configuration
 WATERMARK_TEXT = "SHEKRU LABS"  # Text to show as watermark
