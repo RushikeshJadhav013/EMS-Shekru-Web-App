@@ -1,13 +1,48 @@
 """
 Salary Schemas - Pydantic models for salary slip and increment letter
 """
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, validator
+from typing import Optional, Literal
 from datetime import datetime
+from enum import Enum
+
+
+class VariablePayType(str, Enum):
+    """Variable pay configuration options"""
+    NONE = "none"
+    PERCENTAGE = "percentage"
+    FIXED = "fixed"
+
+
+class EmployeeSalaryCTCCreate(BaseModel):
+    """Schema for creating employee salary record from CTC"""
+    user_id: int
+    annual_ctc: float = Field(..., gt=0, description="Annual CTC amount")
+    
+    # Variable pay configuration
+    variable_pay_type: VariablePayType = Field(default=VariablePayType.NONE)
+    variable_pay_value: float = Field(default=0.0, ge=0, description="Percentage (0-100) or fixed amount")
+    
+    # Optional fields
+    pan_number: Optional[str] = None
+    uan_number: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    working_days_per_month: int = Field(default=22, ge=1, le=31)
+    payment_mode: str = Field(default="Bank Transfer")
+    
+    @validator('variable_pay_value')
+    def validate_variable_pay_value(cls, v, values):
+        if 'variable_pay_type' in values:
+            vp_type = values['variable_pay_type']
+            if vp_type == VariablePayType.PERCENTAGE and not (0 <= v <= 100):
+                raise ValueError('Variable pay percentage must be between 0 and 100')
+        return v
 
 
 class EmployeeSalaryCreate(BaseModel):
-    """Schema for creating employee salary record"""
+    """Schema for creating employee salary record (legacy - manual entry)"""
     user_id: int
     
     # Annual components
@@ -35,24 +70,38 @@ class EmployeeSalaryCreate(BaseModel):
 
 
 class EmployeeSalaryUpdate(BaseModel):
-    """Schema for updating employee salary record"""
-    basic_annual: Optional[float] = Field(default=None, ge=0)
-    hra_annual: Optional[float] = Field(default=None, ge=0)
-    special_allowance_annual: Optional[float] = Field(default=None, ge=0)
-    conveyance_annual: Optional[float] = Field(default=None, ge=0)
-    medical_allowance_annual: Optional[float] = Field(default=None, ge=0)
-    other_allowance_annual: Optional[float] = Field(default=None, ge=0)
-    professional_tax_annual: Optional[float] = Field(default=None, ge=0)
-    other_deduction_annual: Optional[float] = Field(default=None, ge=0)
-    pf_annual: Optional[float] = Field(default=None, ge=0)
+    """Schema for updating employee salary record - only non-fixed components"""
+    # Only allow updating non-calculated fields
     pan_number: Optional[str] = None
     uan_number: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
     ifsc_code: Optional[str] = None
-    variable_pay: Optional[float] = Field(default=None, ge=0)
     working_days_per_month: Optional[int] = Field(default=None, ge=1, le=31)
     payment_mode: Optional[str] = None
+    
+    # Variable pay can be updated
+    variable_pay_type: Optional[VariablePayType] = None
+    variable_pay_value: Optional[float] = Field(default=None, ge=0)
+    
+    # Other deductions (non-automatic)
+    other_deduction_annual: Optional[float] = Field(default=None, ge=0)
+    pf_annual: Optional[float] = Field(default=None, ge=0)
+
+
+class EmployeeSalaryCTCUpdate(BaseModel):
+    """Schema for updating salary by changing CTC"""
+    annual_ctc: float = Field(..., gt=0, description="New Annual CTC amount")
+    variable_pay_type: Optional[VariablePayType] = None
+    variable_pay_value: Optional[float] = Field(default=None, ge=0)
+    
+    @validator('variable_pay_value')
+    def validate_variable_pay_value(cls, v, values):
+        if v is not None and 'variable_pay_type' in values:
+            vp_type = values['variable_pay_type']
+            if vp_type == VariablePayType.PERCENTAGE and not (0 <= v <= 100):
+                raise ValueError('Variable pay percentage must be between 0 and 100')
+        return v
 
 
 class EmployeeSalaryOut(BaseModel):
@@ -89,6 +138,36 @@ class EmployeeSalaryOut(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class SalaryCalculationPreview(BaseModel):
+    """Schema for previewing salary calculation before saving"""
+    annual_ctc: float
+    basic_annual: float
+    hra_annual: float
+    special_allowance_annual: float
+    conveyance_annual: float
+    medical_allowance_annual: float
+    other_allowance_annual: float
+    professional_tax_annual: float
+    variable_pay_annual: float
+    
+    # Monthly breakdown
+    monthly_ctc: float
+    monthly_basic: float
+    monthly_hra: float
+    monthly_special_allowance: float
+    monthly_conveyance: float
+    monthly_medical: float
+    monthly_other: float
+    monthly_professional_tax: float
+    monthly_variable_pay: float
+    monthly_in_hand: float
+    
+    # Summary
+    total_earnings_annual: float
+    total_deductions_annual: float
+    net_annual: float
 
 
 class SalaryIncrementCreate(BaseModel):

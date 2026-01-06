@@ -65,6 +65,12 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
             detail="Account is inactive. Please contact your administrator for assistance."
         )
     
+    # ✅ Mark email as verified on successful OTP verification (for salary document access)
+    if not user.is_email_verified:
+        user.is_email_verified = True
+        db.commit()
+        db.refresh(user)
+    
     # Convert role enum to string value
     role_value = user.role.value if hasattr(user.role, 'value') else str(user.role)
     

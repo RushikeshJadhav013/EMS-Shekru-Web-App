@@ -71,9 +71,11 @@ class Settings(BaseSettings):
         return self.OTP_EXPIRY_SECONDS // 60
     
     class Config:
-        # Default to testing env file; override via ENV_FILE for other modes
-        env_file = os.getenv("ENV_FILE", ".env.testing")
-
+        # Load env file based on ENVIRONMENT variable or ENV_FILE override
+        # Production: ENV_FILE=.env.production python main.py
+        env_file = os.getenv("ENV_FILE", ".env.development")
+        extra = "ignore"  # Ignore extra fields in env files for backward compatibility
+ 
 def get_ist_now() -> datetime:
     """Get current datetime in IST (server is set to IST)."""
     return datetime.now()

@@ -9,7 +9,7 @@ from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.units import inch, mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak, BaseDocTemplate, PageTemplate, Frame
 from reportlab.pdfgen import canvas
 from typing import Optional
 import os
@@ -646,6 +646,124 @@ def generate_increment_letter_pdf(
     buffer.seek(0)
     return buffer
 
+def _draw_shekru_header(canvas_obj, width, height):
+    """
+    Draw Shekru Labs professional header matching the exact sample format.
+    - Green decorative element in top-left corner (curved/angled shape)
+    - "Shekru labs" logo in top-right corner
+    """
+    # Green decorative shape in top-left corner (triangular/curved element)
+    canvas_obj.setFillColor(HEADER_GREEN)
+    # Draw a curved green shape at top-left
+    path = canvas_obj.beginPath()
+    path.moveTo(0, height)
+    path.lineTo(0, height - 80)
+    path.curveTo(5, height - 60, 15, height - 40, 25, height - 35)
+    path.lineTo(35, height)
+    path.close()
+    canvas_obj.drawPath(path, fill=True, stroke=False)
+    
+    # Company logo "Shekru labs" in top-right corner
+    logo_x = width - 115
+    logo_y = height - 35
+    
+    # Green bracket "("
+    canvas_obj.setFillColor(HEADER_GREEN)
+    canvas_obj.setFont("Helvetica-Bold", 22)
+    canvas_obj.drawString(logo_x, logo_y, "(")
+    
+    # Orange "Shekru labs" text
+    canvas_obj.setFillColor(HEADER_ORANGE)
+    canvas_obj.setFont("Helvetica-Bold", 16)
+    canvas_obj.drawString(logo_x + 12, logo_y, "Shekru labs")
+
+
+def _draw_shekru_footer(canvas_obj, width):
+    """
+    Draw Shekru Labs professional footer with contact information.
+    Matches the exact sample format with neutral background, green accent bar,
+    and proper icon placement for phone, email, address, website.
+    """
+    footer_height = 60
+    footer_y = 0
+    
+    # Light gray/neutral footer background
+    canvas_obj.setFillColor(colors.HexColor('#F5F5F5'))
+    canvas_obj.rect(0, footer_y, width, footer_height, fill=True, stroke=False)
+    
+    # Green accent bar at top of footer
+    canvas_obj.setFillColor(HEADER_GREEN)
+    canvas_obj.rect(0, footer_y + footer_height - 4, width, 4, fill=True, stroke=False)
+    
+    # Green decorative element at bottom-left corner
+    path = canvas_obj.beginPath()
+    path.moveTo(0, 0)
+    path.lineTo(0, 50)
+    path.curveTo(5, 35, 15, 20, 25, 15)
+    path.lineTo(30, 0)
+    path.close()
+    canvas_obj.drawPath(path, fill=True, stroke=False)
+    
+    # Footer text styling
+    left_col_x = 55
+    right_col_x = width / 2 + 20
+    row1_y = footer_y + 38
+    row2_y = footer_y + 18
+    
+    # Phone icon and number (left column, top row)
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.circle(left_col_x - 12, row1_y + 2, 7, fill=True)
+    canvas_obj.setFillColor(WHITE)
+    canvas_obj.setFont("Helvetica-Bold", 8)
+    canvas_obj.drawCentredString(left_col_x - 12, row1_y, "C")
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.setFont("Helvetica", 9)
+    canvas_obj.drawString(left_col_x, row1_y, COMPANY_PHONE)
+    
+    # Email icon and address (left column, bottom row)
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.circle(left_col_x - 12, row2_y + 2, 7, fill=True)
+    canvas_obj.setFillColor(WHITE)
+    canvas_obj.setFont("Helvetica-Bold", 7)
+    canvas_obj.drawCentredString(left_col_x - 12, row2_y, "@")
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.setFont("Helvetica", 9)
+    canvas_obj.drawString(left_col_x, row2_y, COMPANY_EMAIL)
+    
+    # Address icon and text (right column, top row - spans 2 lines)
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.circle(right_col_x - 12, row1_y + 2, 7, fill=True)
+    canvas_obj.setFillColor(WHITE)
+    canvas_obj.setFont("Helvetica-Bold", 8)
+    canvas_obj.drawCentredString(right_col_x - 12, row1_y, "O")
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.setFont("Helvetica", 8)
+    # Split address into two lines
+    canvas_obj.drawString(right_col_x, row1_y + 6, "Office 2nd Floor, Manogat Appt., Treasure Park")
+    canvas_obj.drawString(right_col_x, row1_y - 6, "Road, Sahakar Nagar, Pune, Maharashtra 411009")
+    
+    # Website icon and URL (right column, bottom row)
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.circle(right_col_x - 12, row2_y + 2, 7, fill=True)
+    canvas_obj.setFillColor(WHITE)
+    canvas_obj.setFont("Helvetica-Bold", 7)
+    canvas_obj.drawCentredString(right_col_x - 12, row2_y, "W")
+    canvas_obj.setFillColor(BLACK)
+    canvas_obj.setFont("Helvetica", 9)
+    canvas_obj.drawString(right_col_x, row2_y, COMPANY_WEBSITE)
+
+
+def _offer_letter_header_footer(canvas_obj, doc):
+    """
+    Canvas callback for header and footer on all pages.
+    Used with onFirstPage and onLaterPages in BaseDocTemplate.
+    """
+    canvas_obj.saveState()
+    width, height = A4
+    _draw_shekru_header(canvas_obj, width, height)
+    _draw_shekru_footer(canvas_obj, width)
+    canvas_obj.restoreState()
+
 
 def generate_offer_letter_pdf(
     employee_name: str,
@@ -665,130 +783,346 @@ def generate_offer_letter_pdf(
     letter_date: Optional[datetime] = None
 ) -> io.BytesIO:
     """
-    Generate Offer Letter with Salary Annexure PDF
-    Combines offer letter content with salary annexure
+    Generate Offer Letter with Salary Annexure PDF.
+    Uses professional Shekru Labs header/footer on all pages via canvas callbacks.
     """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    
     buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     
+    # Define margins accounting for header/footer space
     left_margin = 50
-    right_margin = width - 50
+    right_margin = 40
+    top_margin = 70  # Space for header
+    bottom_margin = 75  # Space for footer
     
-    # ===== GREEN HEADER BAR =====
-    c.setFillColor(HEADER_GREEN)
-    c.rect(0, height - 30, width, 30, fill=True, stroke=False)
+    # Create document with custom page template
+    doc = BaseDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin
+    )
     
-    # ===== COMPANY LOGO =====
-    logo_x = right_margin - 100
-    logo_y = height - 70
-    c.setFillColor(HEADER_GREEN)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawString(logo_x, logo_y, "(")
-    c.setFillColor(HEADER_ORANGE)
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(logo_x + 15, logo_y, "Shekru labs")
+    # Create frame for content area
+    frame = Frame(
+        left_margin,
+        bottom_margin,
+        width - left_margin - right_margin,
+        height - top_margin - bottom_margin,
+        id='normal'
+    )
     
-    # ===== DATE =====
+    # Create page template with header/footer callback
+    template = PageTemplate(
+        id='offer_letter',
+        frames=frame,
+        onPage=_offer_letter_header_footer
+    )
+    doc.addPageTemplates([template])
+    
+    # Build content elements
+    elements = []
+    styles = getSampleStyleSheet()
+    content_width = width - left_margin - right_margin
+    
+    # Date
     if letter_date is None:
         letter_date = datetime.now()
-    
     date_str = letter_date.strftime("%d %B %Y")
-    c.setFillColor(BLACK)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, height - 100, f"Date: {date_str}")
     
-    # ===== TO SECTION =====
-    y_pos = height - 140
-    c.setFont("Helvetica", 11)
-    c.drawString(left_margin, y_pos, "To,")
+    # Date style
+    date_style = ParagraphStyle(
+        'DateStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=20
+    )
+    elements.append(Paragraph(f"Date: {date_str}", date_style))
     
-    y_pos -= 20
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, f"Mr./Ms. {employee_name},")
+    # Employee name
+    name_style = ParagraphStyle(
+        'NameStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=5
+    )
+    elements.append(Paragraph(employee_name, name_style))
     
-    # ===== SUBJECT =====
-    y_pos -= 50
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width / 2, y_pos, "Sub: Offer of Employment")
+    # Subject - Letter of Appointment (underlined, centered, green)
+    subject_style = ParagraphStyle(
+        'SubjectStyle',
+        parent=styles['Normal'],
+        fontSize=14,
+        fontName='Helvetica-Bold',
+        textColor=HEADER_GREEN,
+        alignment=TA_CENTER,
+        spaceBefore=15,
+        spaceAfter=20
+    )
+    elements.append(Paragraph('<u>LETTER OF APPOINTMENT</u>', subject_style))
     
-    # ===== BODY =====
-    y_pos -= 40
-    c.setFont("Helvetica", 11)
+    # Greeting
+    greeting_style = ParagraphStyle(
+        'GreetingStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=15
+    )
+    first_name = employee_name.split()[0] if employee_name else "Candidate"
+    elements.append(Paragraph(f"Dear {first_name},", greeting_style))
+    
+    # Body text style (justified)
+    body_style = ParagraphStyle(
+        'BodyStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica',
+        alignment=TA_JUSTIFY,
+        spaceAfter=12,
+        leading=14
+    )
     
     join_date_str = joining_date.strftime("%d %B %Y")
     
-    text_width = right_margin - left_margin
-    from reportlab.pdfbase.pdfmetrics import stringWidth
+    # Introduction paragraph
+    intro_text = (
+        f"This letter marks an important event in the life of our company and indeed for you. "
+        f"We value this letter as a symbol of a new relationship, one that is based on simplicity, "
+        f"prudence and humility."
+    )
+    elements.append(Paragraph(intro_text, body_style))
     
-    body_text = (
-        f"We are pleased to offer you the position of {designation} at {COMPANY_NAME}. "
-        f"Your employment will commence on {join_date_str}. "
-        f"Please find attached the salary annexure with complete compensation details."
+    # Heritage paragraph
+    heritage_text = (
+        f"When you sign this letter, you will have agreed to uphold our heritage and be a part of the "
+        f"<b>{COMPANY_NAME}</b> family. You promise to value our values and be one of us."
+    )
+    elements.append(Paragraph(heritage_text, body_style))
+    
+    # Appointment paragraph
+    appoint_text = (
+        f"We have pleasure in appointing you as <b>{designation}</b> with effect from <b>{join_date_str}</b>, "
+        f"or from your date of reporting to work, whichever is earlier, provided that this appointment letter "
+        f"shall cease to have effect if you do not report to work by <b>{join_date_str}</b>."
+    )
+    elements.append(Paragraph(appoint_text, body_style))
+    
+    # Section header style
+    section_style = ParagraphStyle(
+        'SectionStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceBefore=15,
+        spaceAfter=10
     )
     
-    words = body_text.split()
-    lines = []
-    current_line = ""
+    # Probation section
+    elements.append(Paragraph("<b>Probation:</b>", section_style))
     
-    for word in words:
-        test_line = current_line + " " + word if current_line else word
-        if stringWidth(test_line, "Helvetica", 11) < text_width:
-            current_line = test_line
-        else:
-            lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
+    # Numbered list style
+    list_style = ParagraphStyle(
+        'ListStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        fontName='Helvetica',
+        leftIndent=20,
+        spaceAfter=6,
+        alignment=TA_JUSTIFY,
+        leading=13
+    )
     
-    for line in lines:
-        c.drawString(left_margin, y_pos, line)
-        y_pos -= 18
-    
-    # ===== TERMS =====
-    y_pos -= 20
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, "Terms and Conditions:")
-    
-    y_pos -= 20
-    c.setFont("Helvetica", 10)
-    terms = [
-        "1. This offer is subject to verification of your credentials.",
-        "2. You will be on probation for the first 6 months.",
-        "3. Notice period of 30 days is applicable.",
-        "4. All company policies and code of conduct apply.",
+    probation_items = [
+        "1. Your appointment includes a 3-month probation period. Based on your performance and conduct, "
+        "this period may be extended or concluded earlier at management's discretion.",
+        "2. Absence of leave during the probation period is not allowed."
     ]
+    for item in probation_items:
+        elements.append(Paragraph(item, list_style))
     
-    for term in terms:
-        c.drawString(left_margin + 20, y_pos, term)
-        y_pos -= 18
+    # Joining Documentation section
+    elements.append(Paragraph("<b>Joining Documentations:</b>", section_style))
     
-    # ===== SIGNATURE =====
-    y_pos -= 40
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, "Yours Sincerely,")
+    elements.append(Paragraph("1. Your appointment is subject to your providing the following listed documents:", list_style))
     
-    y_pos -= 40
-    c.drawString(left_margin, y_pos, "For " + COMPANY_NAME)
+    # Sub-list style
+    sublist_style = ParagraphStyle(
+        'SubListStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        fontName='Helvetica',
+        leftIndent=40,
+        spaceAfter=4,
+        leading=12
+    )
     
-    y_pos -= 50
-    c.drawString(left_margin, y_pos, "_______________________")
-    y_pos -= 15
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, y_pos, "HR Department")
+    doc_items = [
+        "a. A relieving letter from your previous employer.",
+        "b. Soft copy of the last 3-month pay slip from the previous employer.",
+        "c. Soft copy of the last 3-month bank statement salaried from the previous employer.",
+        "d. Soft copy of Aadhar card or Passport.",
+        "e. Permanent address proof (light bill or property tax receipt.)",
+        "f. Soft copy of PAN card",
+        "g. Valid email ID & Mobile number",
+        "h. Passport size photograph - 4 copies (white background)"
+    ]
+    for item in doc_items:
+        elements.append(Paragraph(item, sublist_style))
     
-    c.showPage()  # New page for salary annexure
+    # Page break for next section
+    elements.append(PageBreak())
     
-    # ===== PAGE 2: SALARY ANNEXURE =====
-    # Add salary annexure content on second page
-    y_pos = height - 50
+    # Duties, Responsibilities section
+    elements.append(Paragraph("<b>Duties, Responsibilities & Other Employment Clauses:</b>", section_style))
     
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, y_pos, "Salary Annexure")
+    duties_items = [
+        "3. Office time is 10:00 AM to 6:00 PM, Monday to Saturday.",
+        "4. Employees are expected to follow formal dress code in office premises/client location on week days except on Saturday.",
+        "5. You will perform duties as assigned by the company, including any future transfers or promotions.",
+        "6. You may work staggered shifts with timings subject to change.",
+        "7. Absence without permission or overstaying leave for eight days will be considered voluntary resignation, resulting in the loss of your appointment lien.",
+        "8. If you're unable to attend work due to illness, accident, or urgent need, notify Management immediately and provide any required information.",
+        f"9. Immediately inform {COMPANY_NAME} of any dishonesty, fraud, or damage to its property that you become aware of."
+    ]
+    for item in duties_items:
+        elements.append(Paragraph(item, list_style))
     
-    y_pos -= 40
+    # Rules, Regulations and Confidentiality
+    elements.append(Paragraph("<b>Rules, Regulations and Confidentiality:</b>", section_style))
     
-    # Calculate values
+    conf_intro = (
+        "10. You will have access to Confidential Information, including proprietary, personal, and sensitive details "
+        "about the Company's inventions, products, designs, methods, trade secrets, strategies, software, customer and "
+        "employee information, financial data, and more. Treat all such information as confidential, regardless of its form."
+    )
+    elements.append(Paragraph(conf_intro, list_style))
+    
+    elements.append(Paragraph("11. <b>You agree to:</b>", list_style))
+    
+    agree_items = [
+        "a. Maintain confidentiality and use information only for its intended purpose.",
+        f"b. Not disclose it without {COMPANY_NAME}'s written consent.",
+        "c. Treat it with at least reasonable care.",
+        "d. Prevent unauthorized use or dissemination.",
+        "e. Only copy it when necessary.",
+        "f. Do not share it with competitors.",
+        "g. Avoid using it for personal or third-party gain.",
+        "h. Do not claim ownership of any content or hardware.",
+        f"i. Not use it in a way that could harm {COMPANY_NAME}."
+    ]
+    for item in agree_items:
+        elements.append(Paragraph(item, sublist_style))
+    
+    more_conf_items = [
+        f"12. All Confidential Information is {COMPANY_NAME}'s exclusive property, and you are granted no rights to it. "
+        f"{COMPANY_NAME} retains full rights to use and exploit its Confidential Information.",
+        f"13. If required to disclose Confidential Information by court or government order, notify {COMPANY_NAME} promptly "
+        f"and cooperate fully ({COMPANY_NAME} bears reasonable expenses) in opposing or limiting the disclosure.",
+        f"14. Upon leaving {COMPANY_NAME} or upon request, return or destroy (at {COMPANY_NAME}'s option) all Confidential "
+        "Information and confirm this in writing if requested.",
+        "15. During and after employment, do not disclose or use Confidential Information except as required for your duties or by law.",
+        "16. Breaching this clause may result in disciplinary action, including termination without notice.",
+        "17. Maintain the confidentiality of price-sensitive information, sharing only on a need-to-know basis. Do not use this "
+        "information for trading or recommendations. Adhere to trading restrictions during your employment."
+    ]
+    for item in more_conf_items:
+        elements.append(Paragraph(item, list_style))
+    
+    # Page break
+    elements.append(PageBreak())
+    
+    # Intellectual Property
+    elements.append(Paragraph("<b>Intellectual Property:</b>", section_style))
+    
+    ip_items = [
+        "18. Intellectual Property Rights include all industrial and intellectual property rights such as patents, trademarks, "
+        "copyrights, trade secrets, software, and more.",
+        f"19. You confirm your work for {COMPANY_NAME} will be original and not infringe on third-party rights. If {COMPANY_NAME} "
+        f"faces claims due to your work, you agree to indemnify {COMPANY_NAME}.",
+        f"20. Any intellectual property created by you during your employment, related to {COMPANY_NAME}'s business, tasks assigned, "
+        f"or using {COMPANY_NAME} resources, will be {COMPANY_NAME}'s property. You must disclose these developments to {COMPANY_NAME} immediately.",
+        f"21. You assign all rights to such developments to {COMPANY_NAME} without additional compensation, acknowledging your salary "
+        "is adequate for this assignment.",
+        f"22. This assignment is perpetual and irrevocable, even if {COMPANY_NAME} does not exploit the developments commercially.",
+        f"23. This assignment includes moral rights, which you waive. If unenforceable, you grant {COMPANY_NAME} an exclusive, "
+        "perpetual, royalty-free license to use the developments.",
+        f"24. If asked to assist with intellectual property matters after your employment, {COMPANY_NAME} will compensate you for "
+        "your time at your previous hourly rate.",
+        f"25. If you cannot sign the necessary documents for intellectual property rights, you appoint {COMPANY_NAME} as your agent "
+        "to act on your behalf.",
+        f"26. You are also bound by {COMPANY_NAME}'s Intellectual Property policy."
+    ]
+    for item in ip_items:
+        elements.append(Paragraph(item, list_style))
+    
+    # Conflict of Interest
+    elements.append(Paragraph("<b>Conflict of Interest:</b>", section_style))
+    
+    conflict_items = [
+        f"27. During employment, you will not engage in any competing business activities or compete with {COMPANY_NAME}'s products or services.",
+        f"28. You will not undertake any other employment or business while employed with {COMPANY_NAME}.",
+        f"29. Immediately inform {COMPANY_NAME} of any potential or actual conflict of interest, and comply with {COMPANY_NAME}'s directions to resolve it.",
+        f"30. Do not accept any gratuity, payment, or benefit from anyone doing or intending to do business with {COMPANY_NAME}.",
+        f"31. Use {COMPANY_NAME} resources ethically, ensuring it does not interfere with your duties or contradict {COMPANY_NAME}'s interests."
+    ]
+    for item in conflict_items:
+        elements.append(Paragraph(item, list_style))
+    
+    # Page break
+    elements.append(PageBreak())
+    
+    # Leave and WFH policies
+    elements.append(Paragraph("<b>Leave and work from home policies:</b>", section_style))
+    
+    leave_items = [
+        "32. Employees must adhere to the company's designated calendar for leave requests as outlined in company policies.",
+        "33. Total paid leaves per financial year are 12. Which include 07 casual leaves and 05 sick leaves.",
+        "34. Only 05 leaves can be encashed or carried forward for next financial year.",
+        "35. Requests for leave must be submitted at least 24 hours in advance, following company policy and procedures.",
+        "36. Working on Sundays may entitle employees to extra benefits as per respective salary structure.",
+        "37. Employees are permitted to work from home for up to 04 days in each month as per company policy."
+    ]
+    for item in leave_items:
+        elements.append(Paragraph(item, list_style))
+    
+    # Miscellaneous
+    elements.append(Paragraph("<b>Miscellaneous:</b>", section_style))
+    
+    misc_items = [
+        f"38. Notices: All employment-related notices shall be in writing and in English, delivered by hand, registered post, "
+        f"email, courier, or speed post. You must update {COMPANY_NAME} of any address or contact detail changes.",
+        "39. Severability: If any provision of this Letter is deemed invalid, the remaining provisions shall remain valid and enforceable.",
+        f"40. Publicity: You cannot use {COMPANY_NAME}'s name or trademarks in a manner detrimental to {COMPANY_NAME}'s image "
+        f"without prior written consent. Any articles mentioning {COMPANY_NAME} require {COMPANY_NAME}'s approval.",
+        f"41. Non-Disparagement: You agree not to make false, defamatory, or disparaging statements about {COMPANY_NAME}, its employees, officers, or directors.",
+        "42. Waiver: No delay or failure in exercising any rights shall be a waiver. Any waiver must be in writing and signed by an authorized representative.",
+        "43. Integration: This Letter and its Exhibit constitute the entire agreement, superseding all previous agreements between the Parties."
+    ]
+    for item in misc_items:
+        elements.append(Paragraph(item, list_style))
+    
+    # Page break for Salary Annexure
+    elements.append(PageBreak())
+    
+    # ===== SALARY ANNEXURE PAGE =====
+    annexure_title_style = ParagraphStyle(
+        'AnnexureTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        fontName='Helvetica-Bold',
+        alignment=TA_CENTER,
+        spaceAfter=30
+    )
+    elements.append(Paragraph("Salary Annexure", annexure_title_style))
+    
+    # Calculate monthly values
     basic_monthly = round(basic_annual / 12, 2)
     hra_monthly = round(hra_annual / 12, 2)
     special_monthly = round(special_allowance_annual / 12, 2)
@@ -802,69 +1136,109 @@ def generate_offer_letter_pdf(
     total_deductions_annual = professional_tax_annual + other_deduction_annual
     monthly_in_hand = round((total_ctc_annual - total_deductions_annual) / 12, 2)
     
-    # Employee info
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin, y_pos, f"Candidate Name: {employee_name}")
-    y_pos -= 18
-    c.drawString(left_margin, y_pos, f"Designation: {designation}")
-    y_pos -= 18
-    c.drawString(left_margin, y_pos, f"Location: {location}")
-    
-    y_pos -= 30
-    
-    # Components table header
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin, y_pos, "Components")
-    c.drawString(left_margin + 200, y_pos, "Per Annum")
-    c.drawString(left_margin + 320, y_pos, "Per Month")
-    
-    y_pos -= 5
-    c.line(left_margin, y_pos, right_margin, y_pos)
-    
-    # Components data
-    y_pos -= 18
-    c.setFont("Helvetica", 10)
-    components = [
-        ("Basic", basic_annual, basic_monthly),
-        ("HRA", hra_annual, hra_monthly),
-        ("Special Allowance", special_allowance_annual, special_monthly),
-        ("Conveyance", conveyance_annual, conveyance_monthly),
-        ("Medical Allowance", medical_allowance_annual, medical_monthly),
-        ("Other", other_allowance_annual, other_monthly),
+    # Employee info table
+    info_data = [
+        ["Company Name:", COMPANY_NAME],
+        ["Candidate Name:", f"<b>{employee_name}</b>"],
+        ["Designation:", f"<b>{designation}</b>"],
+        ["Location:", f"<b>{location}</b>"],
     ]
     
-    for name, annual, monthly in components:
-        c.drawString(left_margin, y_pos, name)
-        c.drawString(left_margin + 200, y_pos, format_currency_int(annual))
-        c.drawString(left_margin + 320, y_pos, format_currency(monthly))
-        y_pos -= 18
+    # Convert to Paragraphs for bold support
+    info_table_data = []
+    for row in info_data:
+        info_table_data.append([
+            Paragraph(row[0], ParagraphStyle('InfoLabel', fontName='Helvetica-Bold', fontSize=10)),
+            Paragraph(row[1], ParagraphStyle('InfoValue', fontName='Helvetica', fontSize=10))
+        ])
     
-    # Deductions
-    y_pos -= 10
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin, y_pos, "Deductions")
-    y_pos -= 5
-    c.line(left_margin, y_pos, right_margin, y_pos)
-    y_pos -= 18
+    info_table = Table(info_table_data, colWidths=[2*inch, content_width - 2*inch])
+    info_table.setStyle(TableStyle([
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 15))
     
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, y_pos, "Professional Tax")
-    c.drawString(left_margin + 200, y_pos, format_currency_int(professional_tax_annual))
-    c.drawString(left_margin + 320, y_pos, "200/month")
-    y_pos -= 18
+    # Salary Components table
+    col_widths = [2.5*inch, 1.3*inch, 1.3*inch]
     
-    c.drawString(left_margin, y_pos, "Other Deductions")
-    c.drawString(left_margin + 200, y_pos, format_currency_int(other_deduction_annual))
-    c.drawString(left_margin + 320, y_pos, format_currency(round(other_deduction_annual / 12, 2)))
+    components_data = [
+        ["Components", "Per Annum", "Per Month"],
+        ["Basic", format_currency_int(basic_annual), format_currency(basic_monthly)],
+        ["HRA", format_currency_int(hra_annual), format_currency(hra_monthly)],
+        ["Special Allowance", format_currency_int(special_allowance_annual), format_currency(special_monthly)],
+        ["Conveyance", format_currency_int(conveyance_annual), format_currency(conveyance_monthly)],
+        ["Medical Allowance", format_currency_int(medical_allowance_annual), format_currency(medical_monthly)],
+        ["Other", format_currency_int(other_allowance_annual), format_currency(other_monthly)],
+    ]
     
-    # CTC Summary
-    y_pos -= 30
-    c.setFont("Helvetica-Bold", 10)
-    c.line(left_margin, y_pos + 5, right_margin, y_pos + 5)
-    c.drawString(left_margin, y_pos - 10, f"Total CTC (Annual): {format_currency_int(total_ctc_annual)}")
-    c.drawString(left_margin, y_pos - 28, f"Monthly CTC: {format_currency_int(monthly_ctc)}")
-    c.drawString(left_margin, y_pos - 46, f"Monthly In-Hand: {format_currency_int(monthly_in_hand)}")
+    components_table = Table(components_data, colWidths=col_widths)
+    components_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), GRAY_BG),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+    ]))
+    elements.append(components_table)
+    elements.append(Spacer(1, 10))
     
-    c.save()
+    # Deductions table
+    pt_monthly_note = "PM 200 In Feb 300" if professional_tax_annual > 0 else "-"
+    
+    deductions_data = [
+        ["Deductions Amount(B)", "Per Annum", "Per Month"],
+        ["Professional Tax Deduction", format_currency_int(professional_tax_annual), pt_monthly_note],
+        ["Other", format_currency_int(other_deduction_annual), format_currency(round(other_deduction_annual / 12, 2))],
+    ]
+    
+    deductions_table = Table(deductions_data, colWidths=col_widths)
+    deductions_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), GRAY_BG),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+    ]))
+    elements.append(deductions_table)
+    elements.append(Spacer(1, 10))
+    
+    # CTC Summary table
+    ctc_data = [
+        ["CTC", "Pay", "Pay"],
+        ["Total Cost To Company:", format_currency_int(total_ctc_annual), "-"],
+        ["Monthly CTC", "-", format_currency_int(monthly_ctc)],
+        ["Monthly CTC In Hand", "-", format_currency_int(monthly_in_hand)],
+    ]
+    
+    ctc_table = Table(ctc_data, colWidths=col_widths)
+    ctc_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), GRAY_BG),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+    ]))
+    elements.append(ctc_table)
+    
+    # Build PDF
+    doc.build(elements)
     buffer.seek(0)
     return buffer
