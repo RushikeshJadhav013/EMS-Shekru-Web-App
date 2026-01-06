@@ -26,11 +26,11 @@ HEADER_GREEN = "#4CAF50"  # Green header bar
 HEADER_ORANGE = "#FF9800"  # Orange accent for logo
 
 # Logo Configuration (Optional)
-# Place your logo file in Backend/static/company_logo.png
-LOGO_PATH = "static/company_logo.png"  # Path to company logo
-USE_LOGO = False  # Set to True if you have a logo file
-LOGO_WIDTH = 1.5  # Logo width in inches
-LOGO_HEIGHT = 0.75  # Logo height in inches
+# Path to company logo used in PDFs (tracked in git)
+LOGO_PATH = "assets/logo.png"  # Path to company logo
+USE_LOGO = True  # Enable logo rendering in PDFs
+LOGO_WIDTH = 2.5  # Logo width in inches
+LOGO_HEIGHT = 2.0  # Logo height in inches (taller for clarity)
 
 # Report Configuration
 REPORT_TITLE = "EMPLOYEE DIRECTORY REPORT"
