@@ -17,14 +17,16 @@ class VariablePayType(str, Enum):
 class EmployeeSalaryCTCCreate(BaseModel):
     """Schema for creating employee salary record from CTC"""
     user_id: int
-    annual_ctc: float = Field(..., gt=0, description="Annual CTC amount")
+    annual_ctc: float = Field(..., gt=0, description="Annual CTC amount (Package)")
     
     # Variable pay configuration
     variable_pay_type: VariablePayType = Field(default=VariablePayType.NONE)
     variable_pay_value: float = Field(default=0.0, ge=0, description="Percentage (0-100) or fixed amount")
     
+    # Employer PF configuration (editable)
+    employer_pf_percentage: float = Field(default=12.0, ge=0, le=100, description="Employer PF percentage (default 12%)")
+    
     # Optional fields
-    pan_number: Optional[str] = None
     uan_number: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
@@ -59,7 +61,6 @@ class EmployeeSalaryCreate(BaseModel):
     pf_annual: float = Field(default=0.0, ge=0)
     
     # Additional info
-    pan_number: Optional[str] = None
     uan_number: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
@@ -72,7 +73,6 @@ class EmployeeSalaryCreate(BaseModel):
 class EmployeeSalaryUpdate(BaseModel):
     """Schema for updating employee salary record - only non-fixed components"""
     # Only allow updating non-calculated fields
-    pan_number: Optional[str] = None
     uan_number: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
@@ -91,9 +91,10 @@ class EmployeeSalaryUpdate(BaseModel):
 
 class EmployeeSalaryCTCUpdate(BaseModel):
     """Schema for updating salary by changing CTC"""
-    annual_ctc: float = Field(..., gt=0, description="New Annual CTC amount")
+    annual_ctc: float = Field(..., gt=0, description="New Annual CTC amount (Package)")
     variable_pay_type: Optional[VariablePayType] = None
     variable_pay_value: Optional[float] = Field(default=None, ge=0)
+    employer_pf_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Employer PF percentage (editable)")
     
     @validator('variable_pay_value')
     def validate_variable_pay_value(cls, v, values):
@@ -143,6 +144,7 @@ class EmployeeSalaryOut(BaseModel):
 class SalaryCalculationPreview(BaseModel):
     """Schema for previewing salary calculation before saving"""
     annual_ctc: float
+    total_gross_annual: float
     basic_annual: float
     hra_annual: float
     special_allowance_annual: float
@@ -150,10 +152,13 @@ class SalaryCalculationPreview(BaseModel):
     medical_allowance_annual: float
     other_allowance_annual: float
     professional_tax_annual: float
+    other_tax_annual: float
+    employer_pf_annual: float
     variable_pay_annual: float
     
     # Monthly breakdown
     monthly_ctc: float
+    monthly_gross: float
     monthly_basic: float
     monthly_hra: float
     monthly_special_allowance: float
@@ -161,12 +166,15 @@ class SalaryCalculationPreview(BaseModel):
     monthly_medical: float
     monthly_other: float
     monthly_professional_tax: float
+    monthly_other_tax: float
+    monthly_employer_pf: float
     monthly_variable_pay: float
     monthly_in_hand: float
     
     # Summary
     total_earnings_annual: float
-    total_deductions_annual: float
+    total_employee_deductions_annual: float
+    total_employer_contributions_annual: float
     net_annual: float
 
 
