@@ -39,7 +39,7 @@ def create_employee_salary_from_ctc(
         annual_ctc=salary_data.annual_ctc,
         variable_pay_type=salary_data.variable_pay_type.value,
         variable_pay_value=salary_data.variable_pay_value,
-        pan_number=salary_data.pan_number,
+        employer_pf_percentage=salary_data.employer_pf_percentage / 100.0,  # Convert percentage to decimal
         uan_number=salary_data.uan_number,
         bank_name=salary_data.bank_name,
         bank_account=salary_data.bank_account,
@@ -92,26 +92,27 @@ def update_employee_salary_from_ctc(
     
     # Preserve existing non-calculated fields
     existing_data = {
-        "pan_number": salary.pan_number,
         "uan_number": salary.uan_number,
         "bank_name": salary.bank_name,
         "bank_account": salary.bank_account,
         "ifsc_code": salary.ifsc_code,
         "working_days_per_month": salary.working_days_per_month,
-        "payment_mode": salary.payment_mode,
-        "other_deduction_annual": salary.other_deduction_annual,
-        "pf_annual": salary.pf_annual
+        "payment_mode": salary.payment_mode
     }
     
     # Use existing variable pay settings if not provided
     vp_type = ctc_update.variable_pay_type.value if ctc_update.variable_pay_type else "none"
     vp_value = ctc_update.variable_pay_value if ctc_update.variable_pay_value is not None else 0.0
     
+    # Use existing employer PF percentage if not provided
+    employer_pf_pct = ctc_update.employer_pf_percentage / 100.0 if ctc_update.employer_pf_percentage is not None else None
+    
     # Calculate new salary components
     calculated_data = calculate_salary_from_ctc(
         annual_ctc=ctc_update.annual_ctc,
         variable_pay_type=vp_type,
         variable_pay_value=vp_value,
+        employer_pf_percentage=employer_pf_pct,
         **existing_data
     )
     
@@ -166,7 +167,6 @@ def update_employee_salary(
                 annual_ctc=current_ctc,
                 variable_pay_type=vp_type.value if hasattr(vp_type, 'value') else vp_type,
                 variable_pay_value=vp_value,
-                pan_number=salary.pan_number,
                 uan_number=salary.uan_number,
                 bank_name=salary.bank_name,
                 bank_account=salary.bank_account,
@@ -225,16 +225,21 @@ def list_employee_salaries(
 def preview_salary_calculation(
     annual_ctc: float,
     variable_pay_type: str = "none",
-    variable_pay_value: float = 0.0
+    variable_pay_value: float = 0.0,
+    employer_pf_percentage: float = None
 ) -> SalaryCalculationPreview:
     """Preview salary calculation without saving to database"""
     try:
+        # Convert percentage to decimal if provided
+        employer_pf_pct = employer_pf_percentage / 100.0 if employer_pf_percentage is not None else None
+        
         components = SalaryCalculator.calculate_salary_components(
-            annual_ctc, variable_pay_type, variable_pay_value
+            annual_ctc, variable_pay_type, variable_pay_value, employer_pf_pct
         )
         
         return SalaryCalculationPreview(
             annual_ctc=annual_ctc,
+            total_gross_annual=components["total_gross_annual"],
             basic_annual=components["basic_annual"],
             hra_annual=components["hra_annual"],
             special_allowance_annual=components["special_allowance_annual"],
@@ -242,10 +247,13 @@ def preview_salary_calculation(
             medical_allowance_annual=components["medical_allowance_annual"],
             other_allowance_annual=components["other_allowance_annual"],
             professional_tax_annual=components["professional_tax_annual"],
+            other_tax_annual=components["other_tax_annual"],
+            employer_pf_annual=components["employer_pf_annual"],
             variable_pay_annual=components["variable_pay_annual"],
             
             # Monthly breakdown
             monthly_ctc=components["monthly_ctc"],
+            monthly_gross=components["monthly_gross"],
             monthly_basic=round(components["basic_annual"] / 12, 2),
             monthly_hra=round(components["hra_annual"] / 12, 2),
             monthly_special_allowance=round(components["special_allowance_annual"] / 12, 2),
@@ -253,12 +261,15 @@ def preview_salary_calculation(
             monthly_medical=round(components["medical_allowance_annual"] / 12, 2),
             monthly_other=round(components["other_allowance_annual"] / 12, 2),
             monthly_professional_tax=round(components["professional_tax_annual"] / 12, 2),
+            monthly_other_tax=round(components["other_tax_annual"] / 12, 2),
+            monthly_employer_pf=round(components["employer_pf_annual"] / 12, 2),
             monthly_variable_pay=components["monthly_variable_pay"],
             monthly_in_hand=components["monthly_in_hand"],
             
             # Summary
             total_earnings_annual=components["total_earnings_annual"],
-            total_deductions_annual=components["total_deductions_annual"],
+            total_employee_deductions_annual=components["total_employee_deductions_annual"],
+            total_employer_contributions_annual=components["total_employer_contributions_annual"],
             net_annual=components["net_annual"]
         )
     except ValueError as e:

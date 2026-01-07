@@ -369,9 +369,17 @@ def generate_salary_annexure_pdf(
     # Deductions
     professional_tax_annual: float,
     other_deduction_annual: float,
+    # Employer contribution (optional, for CTC calculation)
+    employer_pf_annual: float = 0.0,
+    variable_pay_annual: float = 0.0,
 ) -> io.BytesIO:
     """
-    Generate Salary Annexure PDF matching the exact sample format
+    Generate Salary Annexure PDF matching the exact sample format.
+    
+    Display Logic:
+    - Total Gross = Sum of all earnings (employee receives this)
+    - CTC = Total Gross + Employer PF + Variable Pay
+    - Monthly In-Hand = (Total Gross - Employee Deductions) / 12
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -395,12 +403,21 @@ def generate_salary_annexure_pdf(
     medical_monthly = round(medical_allowance_annual / 12, 2)
     other_monthly = round(other_allowance_annual / 12, 2)
     
-    # Calculate totals
-    total_ctc_annual = (basic_annual + hra_annual + special_allowance_annual + 
-                        conveyance_annual + medical_allowance_annual + other_allowance_annual)
-    monthly_ctc = round(total_ctc_annual / 12, 2)
+    # Calculate totals - CLEAR SEPARATION
+    # Total Gross = Sum of all employee earnings
+    total_gross_annual = (basic_annual + hra_annual + special_allowance_annual + 
+                          conveyance_annual + medical_allowance_annual + other_allowance_annual)
+    monthly_gross = round(total_gross_annual / 12, 2)
+    
+    # CTC = Total Gross + Employer PF + Variable Pay
+    ctc_annual = total_gross_annual + employer_pf_annual + variable_pay_annual
+    monthly_ctc = round(ctc_annual / 12, 2)
+    
+    # Employee deductions (Professional Tax + Other Tax)
     total_deductions_annual = professional_tax_annual + other_deduction_annual
-    monthly_in_hand = round((total_ctc_annual - total_deductions_annual) / 12, 2)
+    
+    # Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    monthly_in_hand = round((total_gross_annual - total_deductions_annual) / 12, 2)
     
     # ===== TITLE =====
     title_style = ParagraphStyle(
@@ -496,11 +513,13 @@ def generate_salary_annexure_pdf(
     elements.append(Spacer(1, 10))
     
     # ===== CTC SUMMARY TABLE =====
+    # Clear separation: Total Gross (employee earnings) vs CTC (company cost)
     ctc_data = [
-        ["CTC", "Pay", "Pay"],
-        ["Total Cost To Company:", format_currency_int(total_ctc_annual), "-"],
-        ["Monthly CTC", "-", format_currency_int(monthly_ctc)],
-        ["Monthly CTC In Hand", "-", format_currency_int(monthly_in_hand)],
+        ["Summary", "Per Annum", "Per Month"],
+        ["Total Gross (Earnings):", format_currency_int(total_gross_annual), format_currency_int(monthly_gross)],
+        ["Employer PF (12% of Basic):", format_currency_int(employer_pf_annual), format_currency_int(round(employer_pf_annual / 12, 2))],
+        ["Total CTC:", format_currency_int(ctc_annual), format_currency_int(monthly_ctc)],
+        ["Monthly In-Hand:", "-", format_currency_int(monthly_in_hand)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)
@@ -905,11 +924,19 @@ def generate_offer_letter_pdf(
     # Deductions
     professional_tax_annual: float,
     other_deduction_annual: float,
+    # Employer contribution (optional, for CTC calculation)
+    employer_pf_annual: float = 0.0,
+    variable_pay_annual: float = 0.0,
     letter_date: Optional[datetime] = None
 ) -> io.BytesIO:
     """
     Generate Offer Letter with Salary Annexure PDF.
     Uses professional Shekru Labs header/footer on all pages via canvas callbacks.
+    
+    Display Logic:
+    - Total Gross = Sum of all earnings (employee receives this)
+    - CTC = Total Gross + Employer PF + Variable Pay
+    - Monthly In-Hand = (Total Gross - Employee Deductions) / 12
     """
     from reportlab.pdfbase.pdfmetrics import stringWidth
     
@@ -1255,11 +1282,21 @@ def generate_offer_letter_pdf(
     medical_monthly = round(medical_allowance_annual / 12, 2)
     other_monthly = round(other_allowance_annual / 12, 2)
     
-    total_ctc_annual = (basic_annual + hra_annual + special_allowance_annual + 
-                        conveyance_annual + medical_allowance_annual + other_allowance_annual)
-    monthly_ctc = round(total_ctc_annual / 12, 2)
+    # Calculate totals - CLEAR SEPARATION
+    # Total Gross = Sum of all employee earnings
+    total_gross_annual = (basic_annual + hra_annual + special_allowance_annual + 
+                          conveyance_annual + medical_allowance_annual + other_allowance_annual)
+    monthly_gross = round(total_gross_annual / 12, 2)
+    
+    # CTC = Total Gross + Employer PF + Variable Pay
+    ctc_annual = total_gross_annual + employer_pf_annual + variable_pay_annual
+    monthly_ctc = round(ctc_annual / 12, 2)
+    
+    # Employee deductions (Professional Tax + Other Tax)
     total_deductions_annual = professional_tax_annual + other_deduction_annual
-    monthly_in_hand = round((total_ctc_annual - total_deductions_annual) / 12, 2)
+    
+    # Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    monthly_in_hand = round((total_gross_annual - total_deductions_annual) / 12, 2)
     
     # Employee info table
     info_data = [
@@ -1340,12 +1377,13 @@ def generate_offer_letter_pdf(
     elements.append(deductions_table)
     elements.append(Spacer(1, 10))
     
-    # CTC Summary table
+    # CTC Summary table - Clear separation of Total Gross vs CTC
     ctc_data = [
-        ["CTC", "Pay", "Pay"],
-        ["Total Cost To Company:", format_currency_int(total_ctc_annual), "-"],
-        ["Monthly CTC", "-", format_currency_int(monthly_ctc)],
-        ["Monthly CTC In Hand", "-", format_currency_int(monthly_in_hand)],
+        ["Summary", "Per Annum", "Per Month"],
+        ["Total Gross (Earnings):", format_currency_int(total_gross_annual), format_currency_int(monthly_gross)],
+        ["Employer PF (12% of Basic):", format_currency_int(employer_pf_annual), format_currency_int(round(employer_pf_annual / 12, 2))],
+        ["Total CTC:", format_currency_int(ctc_annual), format_currency_int(monthly_ctc)],
+        ["Monthly In-Hand:", "-", format_currency_int(monthly_in_hand)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)

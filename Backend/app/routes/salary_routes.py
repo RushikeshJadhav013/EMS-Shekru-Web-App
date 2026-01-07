@@ -53,6 +53,7 @@ def preview_ctc_calculation(
     annual_ctc: float = Query(..., gt=0, description="Annual CTC amount"),
     variable_pay_type: VariablePayType = Query(default=VariablePayType.NONE),
     variable_pay_value: float = Query(default=0.0, ge=0),
+    employer_pf_percentage: float = Query(default=12.0, ge=0, le=100, description="Employer PF percentage"),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
     """
@@ -63,7 +64,8 @@ def preview_ctc_calculation(
         return preview_salary_calculation(
             annual_ctc=annual_ctc,
             variable_pay_type=variable_pay_type.value,
-            variable_pay_value=variable_pay_value
+            variable_pay_value=variable_pay_value,
+            employer_pf_percentage=employer_pf_percentage
         )
     except ValueError as e:
         raise HTTPException(
@@ -363,6 +365,11 @@ def download_salary_slip(
     """
     Download salary slip PDF for an employee.
     Employees can download their own, Admin/HR can download any.
+    
+    The salary slip uses CTC-based calculation logic:
+    - Total Gross = CTC - (Employer PF + Variable Pay)
+    - Deductions: Professional Tax (₹200/month) + Other Tax (₹1,000/month)
+    - Net Payable = Total Gross - Deductions
     """
     # Check permissions
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -390,13 +397,19 @@ def download_salary_slip(
         # Generate PDF
         pdf_buffer = _generate_salary_slip(user, salary, month, year)
         
-        # Record in history
+        # Record in history using CTC-based calculation
+        # Total Gross = sum of all earnings (already calculated from CTC)
         gross = salary.total_earnings_annual / 12
-        deductions = salary.total_deductions_annual / 12
-        net = gross - deductions
+        
+        # Employee deductions = Professional Tax + Other Tax (not Employer PF)
+        # Employer PF is stored in pf_annual but is NOT deducted from employee salary
+        employee_deductions = (salary.professional_tax_annual + salary.other_deduction_annual) / 12
+        
+        # Net = Gross - Employee Deductions
+        net = gross - employee_deductions
         
         create_salary_slip_history(
-            db, user_id, month, year, gross, deductions, net, current_user.user_id
+            db, user_id, month, year, gross, employee_deductions, net, current_user.user_id
         )
         
         # Return PDF
@@ -431,6 +444,8 @@ def send_salary_slip(
     """
     Generate and send salary slip via email.
     Admin/HR only. Requires employee email to be verified.
+    
+    Uses CTC-based calculation logic for salary components.
     """
     try:
         # Get user and salary info
@@ -464,8 +479,12 @@ def send_salary_slip(
         # Generate PDF
         pdf_buffer = _generate_salary_slip(user, salary, month, year)
         
-        # Calculate net salary
-        net_salary = salary.monthly_in_hand
+        # Calculate net salary using CTC-based logic
+        # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax)
+        # Employer PF is NOT deducted from employee salary
+        gross = salary.total_earnings_annual / 12
+        employee_deductions = (salary.professional_tax_annual + salary.other_deduction_annual) / 12
+        net_salary = gross - employee_deductions
         
         # Send email
         success = send_salary_slip_email(
@@ -478,11 +497,9 @@ def send_salary_slip(
         )
         
         if success:
-            # Record in history
-            gross = salary.total_earnings_annual / 12
-            deductions = salary.total_deductions_annual / 12
+            # Record in history using CTC-based calculation
             history = create_salary_slip_history(
-                db, user_id, month, year, gross, deductions, net_salary, current_user.user_id
+                db, user_id, month, year, gross, employee_deductions, net_salary, current_user.user_id
             )
             update_slip_email_sent(db, history.id)
             
@@ -540,7 +557,7 @@ def download_salary_annexure(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF
+        # Generate PDF with employer PF for correct CTC display
         pdf_buffer = generate_salary_annexure_pdf(
             employee_name=user.name,
             designation=user.designation or "Employee",
@@ -552,7 +569,9 @@ def download_salary_annexure(
             medical_allowance_annual=salary.medical_allowance_annual,
             other_allowance_annual=salary.other_allowance_annual,
             professional_tax_annual=salary.professional_tax_annual,
-            other_deduction_annual=salary.other_deduction_annual
+            other_deduction_annual=salary.other_deduction_annual,
+            employer_pf_annual=salary.pf_annual,
+            variable_pay_annual=salary.variable_pay
         )
         
         filename = f"Salary_Annexure_{user.name.replace(' ', '_')}.pdf"
@@ -611,7 +630,7 @@ def send_salary_annexure(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF
+        # Generate PDF with employer PF for correct CTC display
         pdf_buffer = generate_salary_annexure_pdf(
             employee_name=user.name,
             designation=user.designation or "Employee",
@@ -623,7 +642,9 @@ def send_salary_annexure(
             medical_allowance_annual=salary.medical_allowance_annual,
             other_allowance_annual=salary.other_allowance_annual,
             professional_tax_annual=salary.professional_tax_annual,
-            other_deduction_annual=salary.other_deduction_annual
+            other_deduction_annual=salary.other_deduction_annual,
+            employer_pf_annual=salary.pf_annual,
+            variable_pay_annual=salary.variable_pay
         )
         
         # Send email
@@ -830,7 +851,7 @@ def download_offer_letter(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF
+        # Generate PDF with employer PF for correct CTC display
         pdf_buffer = generate_offer_letter_pdf(
             employee_name=user.name,
             designation=user.designation or "Employee",
@@ -843,7 +864,9 @@ def download_offer_letter(
             medical_allowance_annual=salary.medical_allowance_annual,
             other_allowance_annual=salary.other_allowance_annual,
             professional_tax_annual=salary.professional_tax_annual,
-            other_deduction_annual=salary.other_deduction_annual
+            other_deduction_annual=salary.other_deduction_annual,
+            employer_pf_annual=salary.pf_annual,
+            variable_pay_annual=salary.variable_pay
         )
         
         filename = f"Offer_Letter_{user.name.replace(' ', '_')}.pdf"
@@ -923,19 +946,48 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
 
 
 def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: int):
-    """Generate salary slip PDF for user"""
-    # Calculate monthly values
+    """
+    Generate salary slip PDF for user using CTC-based calculation logic.
+    
+    The salary record contains components calculated from CTC:
+    - Total Gross = CTC - (Employer PF + Variable Pay)
+    - Basic = 50% of Total Gross
+    - HRA = 50% of Basic
+    - Medical Allowance = ₹19,200/year (fixed)
+    - Conveyance Allowance = ₹15,000/year (fixed)
+    - Other Allowance = ₹3,000/year (fixed)
+    - Special Allowance = Remaining balance
+    
+    Deductions:
+    - Professional Tax = ₹200/month (₹2,400/year)
+    - Other Tax = ₹1,000/month (₹12,000/year) - stored in other_deduction_annual
+    - Employer PF = 12% of Basic - stored in pf_annual (not deducted from employee)
+    """
+    # Calculate monthly values from annual values
     basic_monthly = round(salary.basic_annual / 12, 2)
     hra_monthly = round(salary.hra_annual / 12, 2)
     special_monthly = round(salary.special_allowance_annual / 12, 2)
     medical_monthly = round(salary.medical_allowance_annual / 12, 2)
     conveyance_monthly = round(salary.conveyance_annual / 12, 2)
     other_monthly = round(salary.other_allowance_annual / 12, 2)
-    pt_monthly = round(salary.professional_tax_annual / 12, 2)
-    other_ded_monthly = round(salary.other_deduction_annual / 12, 2)
+    
+    # Deductions (monthly)
+    pt_monthly = round(salary.professional_tax_annual / 12, 2)  # ₹200/month
+    other_ded_monthly = round(salary.other_deduction_annual / 12, 2)  # ₹1,000/month (Other Tax)
+    
+    # Employer PF (for display, not deducted from employee salary)
+    employer_pf_monthly = round(salary.pf_annual / 12, 2) if salary.pf_annual else 0
+    
+    # Variable pay (monthly)
+    variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0
     
     # Format joining date
     doj = user.joining_date.strftime("%d-%m-%Y") if user.joining_date else "N/A"
+    
+    # Format PF display - show employer PF contribution
+    pf_display = "NA"
+    if employer_pf_monthly > 0:
+        pf_display = f"₹{employer_pf_monthly:,.2f}"
     
     return generate_salary_slip_pdf(
         employee_name=user.name,
@@ -948,8 +1000,8 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
         month=month,
         year=year,
         working_days=salary.working_days_per_month,
-        pf="NA" if salary.pf_annual == 0 else f"₹{round(salary.pf_annual/12, 2)}",
-        variable_pay=salary.variable_pay,
+        pf=pf_display,
+        variable_pay=variable_pay_monthly,
         basic=basic_monthly,
         hra=hra_monthly,
         special_allowance=special_monthly,
