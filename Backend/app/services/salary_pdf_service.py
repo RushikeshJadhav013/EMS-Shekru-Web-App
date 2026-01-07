@@ -5,7 +5,7 @@ Matches the exact format from provided samples using ReportLab
 import io
 from datetime import datetime
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.pagesizes import A4, letter, landscape
 from reportlab.lib.units import inch, mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
@@ -18,7 +18,7 @@ import os
 try:
     from app.config.company_config import (
         COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE,
-        LOGO_PATH, USE_LOGO
+        LOGO_PATH, USE_LOGO, LOGO_WIDTH, LOGO_HEIGHT
     )
 except ImportError:
     COMPANY_NAME = "Shekru Labs India Pvt Ltd"
@@ -26,8 +26,10 @@ except ImportError:
     COMPANY_PHONE = "+91-XXXXXXXXXX"
     COMPANY_EMAIL = "info@shekrulabs.com"
     COMPANY_WEBSITE = "www.shekrulabs.com"
-    LOGO_PATH = "static/company_logo.png"
+    LOGO_PATH = "assets/logo.png"
     USE_LOGO = False
+    LOGO_WIDTH = 2.5
+    LOGO_HEIGHT = 2.0
 
 # Colors matching the sample
 HEADER_GREEN = colors.HexColor('#4CAF50')  # Green header bar
@@ -99,11 +101,11 @@ def generate_salary_slip_pdf(
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=A4,
-        rightMargin=30,
-        leftMargin=30,
-        topMargin=30,
-        bottomMargin=30
+        pagesize=landscape(A4),
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=15,
+        bottomMargin=15
     )
     
     elements = []
@@ -115,60 +117,93 @@ def generate_salary_slip_pdf(
     net_payable = total_earnings - total_deductions
     
     # Page width for calculations
-    page_width = A4[0] - 60  # minus margins
+    page_width = landscape(A4)[0] - 40  # minus margins
+    
+    # Set the col_widths for earnings/deductions and use for both tables
+    col_widths = [1.6*inch, 1.5*inch, 1.6*inch, 1.5*inch]
+    table_total_width = sum(col_widths)  # Total width for all tables
     
     # ===== HEADER SECTION =====
-    # Company Logo and Name (centered)
-    header_style = ParagraphStyle(
-        'CompanyHeader',
-        parent=styles['Heading1'],
-        fontSize=24,
-        textColor=colors.HexColor('#4CAF50'),  # Green
-        alignment=TA_CENTER,
-        fontName='Helvetica-Bold',
-        spaceAfter=5
-    )
-    
-    # Create header with logo-like text (Shekru labs style)
-    logo_text = f'<font color="#4CAF50">(</font><font color="#FF9800">Shekru labs</font>'
-    elements.append(Paragraph(COMPANY_NAME, header_style))
-    
-    # Registered Office Address
+    # Logo and Address side by side in a table
     address_style = ParagraphStyle(
         'Address',
         parent=styles['Normal'],
         fontSize=9,
-        alignment=TA_CENTER,
+        alignment=TA_RIGHT,
         textColor=BLACK,
-        spaceAfter=15
     )
-    elements.append(Paragraph(f"Registered Office: {COMPANY_ADDRESS}", address_style))
+    address_parts = COMPANY_ADDRESS.split(", ")
+    if len(address_parts) >= 6:
+        line_one = ", ".join(address_parts[:3]) + ","
+        line_two = ", ".join(address_parts[3:])
+        address_html = f"Registered Office:<br/>{line_one}<br/>{line_two}"
+    else:
+        address_html = f"Registered Office:<br/>{COMPANY_ADDRESS}"
+    
+    # Prepare logo and address for table
+    if USE_LOGO and LOGO_PATH and os.path.exists(LOGO_PATH):
+        logo = Image(LOGO_PATH, width=LOGO_WIDTH * inch, height=LOGO_HEIGHT * 1.2 * inch)
+        logo_cell = logo
+    else:
+        # Fallback to company name if logo not available
+        header_style = ParagraphStyle(
+            'CompanyHeader',
+            parent=styles['Heading1'],
+            fontSize=20,
+            textColor=colors.HexColor('#4CAF50'),
+            alignment=TA_LEFT,
+            fontName='Helvetica-Bold',
+        )
+        logo_cell = Paragraph(COMPANY_NAME, header_style)
+    
+    address_cell = Paragraph(address_html, address_style)
+    
+    # Create table with logo and address side by side - matching width of tables below
+    header_table_data = [[logo_cell, address_cell]]
+    header_table = Table(header_table_data, colWidths=[table_total_width * 0.4, table_total_width * 0.6])
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),  # Logo left aligned
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),  # Address right aligned
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 1))
     
     # ===== PAYSLIP HEADER BAR =====
     month_name = get_month_name(month)
     payslip_header = [[f"Payslip For the Month of {month_name}- {year}"]]
-    payslip_header_table = Table(payslip_header, colWidths=[page_width])
+    payslip_header_table = Table(payslip_header, colWidths=[sum(col_widths)])
     payslip_header_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), HEADER_GREEN),
-        ('TEXTCOLOR', (0, 0), (-1, -1), WHITE),
+        ('BACKGROUND', (0, 0), (-1, -1), GRAY_BG),
+        ('TEXTCOLOR', (0, 0), (-1, -1), BLACK),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 12),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 1, BLACK),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
     elements.append(payslip_header_table)
     
     # ===== EMPLOYEE NAME ROW =====
     emp_name_data = [["Employee Name", ":", employee_name]]
-    emp_name_table = Table(emp_name_data, colWidths=[1.5*inch, 0.3*inch, page_width - 1.8*inch])
+    # Use column widths proportional to the earnings table's total width
+    emp_name_total_width = sum(col_widths)
+    emp_name_col_widths = [emp_name_total_width * 0.18, emp_name_total_width * 0.04, emp_name_total_width * 0.78]
+    emp_name_table = Table(emp_name_data, colWidths=emp_name_col_widths)
     emp_name_table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, 0), 'Helvetica-Bold'),  # Bold colon to match label/value
         ('FONTNAME', (2, 0), (2, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
     ]))
     elements.append(emp_name_table)
     
@@ -176,33 +211,36 @@ def generate_salary_slip_pdf(
     col_width = page_width / 2
     details_data = [
         [
-            Table([["Employee Id", ":", employee_id]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch]),
-            Table([["Location", ":", location]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch])
+            Table([["Employee Id", ":", employee_id]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Location", ":", location]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
         ],
         [
-            Table([["Designation", ":", designation]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch]),
-            Table([["Working Days", ":", str(working_days)]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch])
+            Table([["Designation", ":", designation]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Working Days", ":", str(working_days)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
         ],
         [
-            Table([["DOJ", ":", doj]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch]),
-            Table([["PF", ":", pf]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch])
+            Table([["DOJ", ":", doj]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["PF", ":", pf]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
         ],
         [
-            Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch]),
-            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch])
+            Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
         ],
         [
-            Table([["UAN", ":", uan]], colWidths=[1.2*inch, 0.2*inch, col_width - 1.6*inch]),
+            Table([["UAN", ":", uan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
             ""
         ],
     ]
     
     # Style for inner tables
     inner_style = TableStyle([
-        ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
+        ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),  # Label bold
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica-Bold'),  # Colon bold to match label/value
         ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 0.5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
     ])
     
     for row in details_data:
@@ -210,14 +248,15 @@ def generate_salary_slip_pdf(
             if isinstance(cell, Table):
                 cell.setStyle(inner_style)
     
-    details_table = Table(details_data, colWidths=[col_width, col_width])
+    details_total_width = sum(col_widths)
+    details_table = Table(details_data, colWidths=[details_total_width / 2, details_total_width / 2])
     details_table.setStyle(TableStyle([
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),  # Outer box border
+        ('LINEAFTER', (0, 0), (0, -1), 1, BLACK),  # Center vertical line
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
     ]))
     elements.append(details_table)
-    elements.append(Spacer(1, 10))
+    elements.append(Spacer(1, 12))
     
     # ===== EARNINGS AND DEDUCTIONS TABLE =====
     earnings_col_width = page_width / 2
@@ -231,7 +270,7 @@ def generate_salary_slip_pdf(
         ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
         ["Special Allowance", format_currency(special_allowance), "", ""],
         ["Medical Allowance", format_currency(medical_allowance), "", ""],
-        ["Convayers Allowance", format_currency(conveyance), "", ""],
+        ["Conveyance Allowance", format_currency(conveyance), "", ""],
         ["Other Allowance", format_currency(other_allowance), "", ""],
     ]
     
@@ -241,7 +280,7 @@ def generate_salary_slip_pdf(
     # Combine all
     full_table_data = earnings_header + earnings_deductions_data + total_row
     
-    col_widths = [2*inch, 1.2*inch, 1.8*inch, 1.2*inch]
+    col_widths = [1.6*inch, 1.5*inch, 1.6*inch, 1.5*inch]
     earnings_table = Table(full_table_data, colWidths=col_widths)
     earnings_table.setStyle(TableStyle([
         # Header styling
@@ -261,31 +300,49 @@ def generate_salary_slip_pdf(
         ('BACKGROUND', (2, -1), (3, -1), LIGHT_GRAY),
         
         # Grid
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),  # Outer border
+        ('LINEBELOW', (0, 0), (-1, 0), 1, BLACK),  # Line below header
+        ('LINEABOVE', (0, -1), (-1, -1), 1, BLACK),  # Line above total row
+        ('LINEAFTER', (1, 0), (1, -1), 1, BLACK),  # Center vertical line after earnings column
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
     elements.append(earnings_table)
     
-    # ===== PAYMENT INFO AND NET PAYABLE =====
-    elements.append(Spacer(1, 5))
-    
+    # ===== PAYMENT INFO AND NET PAYABLE (left-aligned as 'Earnings') =====
+    payment_col_widths = [sum(col_widths) * 0.25, sum(col_widths) * 0.05, sum(col_widths) * 0.70]
     payment_data = [
         ["Mode of Payment", ":", payment_mode],
-        ["Total Net Payable", ":", format_currency(net_payable)],
+        ["Total Net Payable", ":", format_currency(net_payable)]
     ]
-    
-    payment_table = Table(payment_data, colWidths=[1.8*inch, 0.3*inch, 2*inch])
+    payment_table = Table(payment_data, colWidths=payment_col_widths)
     payment_table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTNAME', (2, 1), (2, 1), 'Helvetica-Bold'),
+        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),   # Label bold
+        ('FONTNAME', (1,0), (1,-1), 'Helvetica-Bold'),   # Colon bold to match label/value
+        ('FONTNAME', (2,0), (2,0), 'Helvetica-Bold'),    # Payment value bold
+        ('FONTNAME', (2,1), (2,1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('ALIGN', (0,0), (0,-1), 'LEFT'),
+        ('ALIGN', (1,0), (1,-1), 'CENTER'),
+        ('ALIGN', (2,0), (2,-1), 'LEFT'),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
+        ('BACKGROUND', (0, 0), (-1, -1), LIGHT_GRAY),
     ]))
     elements.append(payment_table)
+
+    # ===== FOOTER NOTE =====
+    # Statement below the last table: "This is system generated payslip and does not require authentication."
+    footer_note_style = ParagraphStyle(
+        'FooterNote',
+        parent=styles['Normal'],
+        fontSize=9,
+        alignment=TA_CENTER,
+        textColor=BLACK,
+        spaceBefore=4,
+    )
+    elements.append(Paragraph("This is system generated payslip and does not require authentication.", footer_note_style))
     
     # Build PDF
     doc.build(elements)
@@ -384,8 +441,8 @@ def generate_salary_annexure_pdf(
         ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 1, BLACK),
     ]))
     elements.append(info_table)
     elements.append(Spacer(1, 15))
@@ -415,8 +472,8 @@ def generate_salary_annexure_pdf(
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 1, BLACK),
     ]))
     elements.append(components_table)
     elements.append(Spacer(1, 10))
@@ -442,8 +499,8 @@ def generate_salary_annexure_pdf(
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 1, BLACK),
     ]))
     elements.append(deductions_table)
     elements.append(Spacer(1, 10))
@@ -470,10 +527,8 @@ def generate_salary_annexure_pdf(
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, BLACK),
-        # Highlight CTC row
-        ('BACKGROUND', (0, 3), (-1, 3), LIGHT_GRAY),
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),
+        ('INNERGRID', (0, 0), (-1, -1), 1, BLACK),
     ]))
     elements.append(ctc_table)
     

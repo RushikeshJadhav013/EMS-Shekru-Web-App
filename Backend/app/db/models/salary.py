@@ -112,6 +112,43 @@ class EmployeeSalary(Base):
         return self.professional_tax_annual + self.other_deduction_annual
     
     @property
+    def total_gross_annual(self):
+        """
+        Alias for total_earnings_annual - Total Gross (employee earnings).
+        This is the sum of all salary components the employee receives.
+        """
+    def total_deductions_annual(self):
+        return self.professional_tax_annual + self.other_deduction_annual
+        """
+        Alias for total_employee_deductions_annual for backward compatibility.
+        Only includes employee deductions (Professional Tax + Other Tax).
+        Employer PF is NOT included as it's not deducted from employee salary.
+        """
+        return self.total_employee_deductions_annual
+    
+    @property
+    def ctc_annual(self):
+        """
+        Annual CTC (Cost to Company).
+        CTC = Total Earnings + Employer PF + Variable Pay
+        """
+        return self.total_earnings_annual + self.pf_annual + self.variable_pay
+    
+    @property
+    def monthly_gross(self):
+        """Monthly gross earnings (Total Gross / 12)"""
+        return round(self.total_gross_annual / 12, 2)
+    
+    @property
+    def total_employee_deductions_annual(self):
+        """
+        Total employee deductions (Professional Tax + Other Tax).
+        These are deducted from employee salary.
+        Note: Employer PF (pf_annual) is NOT deducted from employee salary.
+        """
+        return self.professional_tax_annual + self.other_deduction_annual
+    
+    @property
     def total_deductions_annual(self):
         """
         Alias for total_employee_deductions_annual for backward compatibility.
