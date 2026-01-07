@@ -111,6 +111,9 @@ def generate_salary_slip_pdf(
     elements = []
     styles = getSampleStyleSheet()
     
+    # Add spacing at the top to move content down for consistency
+    elements.append(Spacer(1, 20))
+    
     # Calculate totals
     total_earnings = basic + hra + special_allowance + medical_allowance + conveyance + other_allowance
     total_deductions = professional_tax + other_deduction
@@ -142,7 +145,7 @@ def generate_salary_slip_pdf(
     
     # Prepare logo and address for table
     if USE_LOGO and LOGO_PATH and os.path.exists(LOGO_PATH):
-        logo = Image(LOGO_PATH, width=LOGO_WIDTH * inch, height=LOGO_HEIGHT * 1.2 * inch)
+        logo = Image(LOGO_PATH, width=LOGO_WIDTH * inch, height=LOGO_HEIGHT * 0.35 * inch)
         logo_cell = logo
     else:
         # Fallback to company name if logo not available
@@ -162,16 +165,18 @@ def generate_salary_slip_pdf(
     header_table_data = [[logo_cell, address_cell]]
     header_table = Table(header_table_data, colWidths=[table_total_width * 0.4, table_total_width * 0.6])
     header_table.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 1, BLACK),  # Outer box border
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ALIGN', (0, 0), (0, 0), 'LEFT'),  # Logo left aligned
         ('ALIGN', (1, 0), (1, 0), 'RIGHT'),  # Address right aligned
-        ('TOPPADDING', (0, 0), (-1, -1), 0),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ('LEFTPADDING', (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (0, -1), 8),  # Left padding for logo column
+        ('RIGHTPADDING', (0, 0), (0, -1), 10),  # Right padding for logo column (spacing between columns)
+        ('LEFTPADDING', (1, 0), (1, -1), 10),  # Left padding for address column (spacing between columns)
+        ('RIGHTPADDING', (1, 0), (1, -1), 8),  # Right padding for address column
     ]))
     elements.append(header_table)
-    elements.append(Spacer(1, 1))
     
     # ===== PAYSLIP HEADER BAR =====
     month_name = get_month_name(month)
@@ -410,6 +415,10 @@ def generate_salary_annexure_pdf(
     elements.append(Paragraph("Salary Annexure", title_style))
     elements.append(Spacer(1, 15))
     
+    # Reuse consistent widths across all tables in this section
+    col_widths = [2.5*inch, 1.5*inch, 1.5*inch]
+    table_total_width = sum(col_widths)
+    
     # ===== EMPLOYEE INFO TABLE =====
     info_data = [
         ["Company Name:", COMPANY_NAME],
@@ -418,7 +427,7 @@ def generate_salary_annexure_pdf(
         ["Location:", location],
     ]
     
-    info_table = Table(info_data, colWidths=[2*inch, page_width - 2*inch])
+    info_table = Table(info_data, colWidths=[2*inch, table_total_width - 2*inch])
     info_table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
@@ -431,8 +440,6 @@ def generate_salary_annexure_pdf(
     elements.append(Spacer(1, 15))
     
     # ===== SALARY COMPONENTS TABLE =====
-    col_widths = [2.5*inch, 1.5*inch, 1.5*inch]
-    
     # Components section
     components_data = [
         ["Components", "Per Annum", "Per Month"],
@@ -705,31 +712,81 @@ def generate_increment_letter_pdf(
 
 def _draw_shekru_header(canvas_obj, width, height):
     """
-    Draw Shekru Labs professional header matching the exact sample format.
-    - Green decorative element in top-left corner (curved/angled shape)
-    - "Shekru labs" logo in top-right corner
+    Draw Shekru Labs professional header.
+    For offer letters we now use the official logo image from Backend/assets/logo.png
+    instead of the text-based logo. If the image is not found, we fall back to the
+    previous text logo to avoid breaking PDF generation.
     """
-    # Green decorative shape in top-left corner (triangular/curved element)
+    # Green header bars on the left/top, matching the newer design:
+    #  - A wide top bar with an angled cut on the right
+    #  - A thinner bar below, also with an angled right edge
     canvas_obj.setFillColor(HEADER_GREEN)
-    # Draw a curved green shape at top-left
-    path = canvas_obj.beginPath()
-    path.moveTo(0, height)
-    path.lineTo(0, height - 80)
-    path.curveTo(5, height - 60, 15, height - 40, 25, height - 35)
-    path.lineTo(35, height)
-    path.close()
-    canvas_obj.drawPath(path, fill=True, stroke=False)
+    # Slimmer bars with shorter reach to the right so they don't overlap the logo
+    # Cuts are inverse and symmetrical between the two bars
+    top_bar_height = 35
+    second_bar_height = 14
+    # Make diagonal angles match visually
+    top_bar_cut_width = 240  # upper bar length
+    second_bar_cut_width = 320  # lower bar length
+    slant_offset = 8  # pixels (lower bar horizontal run)
+    # Calculate top bar's slant offset so angles match
+    top_slant_offset = int(top_bar_height * slant_offset / second_bar_height)
+
+    # Top wide bar
+    top_path = canvas_obj.beginPath()
+    top_path.moveTo(0, height - top_bar_height)
+    top_path.lineTo(width - top_bar_cut_width, height - top_bar_height)
+    top_path.lineTo(width - top_bar_cut_width + top_slant_offset, height)
+    top_path.lineTo(0, height)
+    top_path.close()
+    canvas_obj.drawPath(top_path, fill=True, stroke=False)
+
+    # Second, thinner bar
+    bar_gap = 14
+    second_y_top = height - top_bar_height - bar_gap
+    second_y_bottom = second_y_top - second_bar_height
+    second_path = canvas_obj.beginPath()
+    second_path.moveTo(0, second_y_bottom)
+    second_path.lineTo(width - second_bar_cut_width, second_y_bottom)
+    second_path.lineTo(width - second_bar_cut_width + slant_offset, second_y_top)
+    second_path.lineTo(0, second_y_top)
+    second_path.close()
+    canvas_obj.drawPath(second_path, fill=True, stroke=False)
     
-    # Company logo "Shekru labs" in top-right corner
+    # Try to draw the logo image from Backend/assets/logo.png (project root based)
+    try:
+        backend_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..")
+        )
+        logo_path = os.path.join(backend_root, "assets", "logo.png")
+        
+        if os.path.exists(logo_path):
+            # Position logo in top-right, with reasonable size and aspect ratio preserved
+            # Slightly larger logo for better visibility in offer letters
+            logo_width = 170
+            logo_height = 70
+            logo_x = width - logo_width - 40
+            logo_y = height - logo_height - 10
+            canvas_obj.drawImage(
+                logo_path,
+                logo_x,
+                logo_y,
+                width=logo_width,
+                height=logo_height,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            return
+    except Exception:
+        # If anything goes wrong, silently fall back to text-based logo below
+        pass
+    
+    # Fallback: draw the original text-based "Shekru labs" logo
     logo_x = width - 115
     logo_y = height - 35
-    
-    # Green bracket "("
     canvas_obj.setFillColor(HEADER_GREEN)
     canvas_obj.setFont("Helvetica-Bold", 22)
     canvas_obj.drawString(logo_x, logo_y, "(")
-    
-    # Orange "Shekru labs" text
     canvas_obj.setFillColor(HEADER_ORANGE)
     canvas_obj.setFont("Helvetica-Bold", 16)
     canvas_obj.drawString(logo_x + 12, logo_y, "Shekru labs")
@@ -750,7 +807,7 @@ def _draw_shekru_footer(canvas_obj, width):
     
     # Green accent bar at top of footer
     canvas_obj.setFillColor(HEADER_GREEN)
-    canvas_obj.rect(0, footer_y + footer_height - 4, width, 4, fill=True, stroke=False)
+    canvas_obj.rect(0, footer_y + footer_height, width, 4, fill=True, stroke=False)
     
     # Green decorative element at bottom-left corner
     path = canvas_obj.beginPath()
@@ -767,46 +824,57 @@ def _draw_shekru_footer(canvas_obj, width):
     row1_y = footer_y + 38
     row2_y = footer_y + 18
     
-    # Phone icon and number (left column, top row)
+    # FOOTER ICON ALIGNMENT: Perfectly align icon letters with parameter text baselines
+    icon_radius = 8
+    font_size = 11
+    icon_font_size = 9
+    # Circle center positioned to contain letter that's baseline-aligned with parameter text
+    icon_circle_offset = round(icon_font_size / 2)  # Center circle on 9pt letter
+
+    # Phone icon and number (row1_y is baseline for both)
+    circle_cy = row1_y + icon_circle_offset
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.circle(left_col_x - 12, row1_y + 2, 7, fill=True)
+    canvas_obj.circle(left_col_x - 16, circle_cy, icon_radius, fill=True)
     canvas_obj.setFillColor(WHITE)
-    canvas_obj.setFont("Helvetica-Bold", 8)
-    canvas_obj.drawCentredString(left_col_x - 12, row1_y, "C")
+    canvas_obj.setFont("Helvetica-Bold", icon_font_size)
+    canvas_obj.drawCentredString(left_col_x - 16, row1_y, "C")  # Baseline aligned with text
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.setFont("Helvetica", 9)
+    canvas_obj.setFont("Helvetica", font_size)
     canvas_obj.drawString(left_col_x, row1_y, COMPANY_PHONE)
-    
-    # Email icon and address (left column, bottom row)
+
+    # Email icon and address (row2_y is baseline for both)
+    circle_cy = row2_y + icon_circle_offset
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.circle(left_col_x - 12, row2_y + 2, 7, fill=True)
+    canvas_obj.circle(left_col_x - 16, circle_cy, icon_radius, fill=True)
     canvas_obj.setFillColor(WHITE)
-    canvas_obj.setFont("Helvetica-Bold", 7)
-    canvas_obj.drawCentredString(left_col_x - 12, row2_y, "@")
+    canvas_obj.setFont("Helvetica-Bold", icon_font_size)
+    canvas_obj.drawCentredString(left_col_x - 16, row2_y, "@")  # Baseline aligned with text
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.setFont("Helvetica", 9)
+    canvas_obj.setFont("Helvetica", font_size)
     canvas_obj.drawString(left_col_x, row2_y, COMPANY_EMAIL)
-    
-    # Address icon and text (right column, top row - spans 2 lines)
+
+    # Address icon and text (right column, row1_y for first address line)
+    circle_cy = row1_y + icon_circle_offset
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.circle(right_col_x - 12, row1_y + 2, 7, fill=True)
+    canvas_obj.circle(right_col_x - 16, circle_cy, icon_radius, fill=True)
     canvas_obj.setFillColor(WHITE)
-    canvas_obj.setFont("Helvetica-Bold", 8)
-    canvas_obj.drawCentredString(right_col_x - 12, row1_y, "O")
+    canvas_obj.setFont("Helvetica-Bold", icon_font_size)
+    canvas_obj.drawCentredString(right_col_x - 16, row1_y, "O")  # Baseline aligned with text
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.setFont("Helvetica", 8)
-    # Split address into two lines
+    canvas_obj.setFont("Helvetica", font_size)
+    # Address split over two lines
     canvas_obj.drawString(right_col_x, row1_y + 6, "Office 2nd Floor, Manogat Appt., Treasure Park")
     canvas_obj.drawString(right_col_x, row1_y - 6, "Road, Sahakar Nagar, Pune, Maharashtra 411009")
-    
-    # Website icon and URL (right column, bottom row)
+
+    # Website icon and URL (row2_y is baseline for both)
+    circle_cy = row2_y + icon_circle_offset
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.circle(right_col_x - 12, row2_y + 2, 7, fill=True)
+    canvas_obj.circle(right_col_x - 16, circle_cy, icon_radius, fill=True)
     canvas_obj.setFillColor(WHITE)
-    canvas_obj.setFont("Helvetica-Bold", 7)
-    canvas_obj.drawCentredString(right_col_x - 12, row2_y, "W")
+    canvas_obj.setFont("Helvetica-Bold", icon_font_size)
+    canvas_obj.drawCentredString(right_col_x - 16, row2_y, "W")  # Baseline aligned with text
     canvas_obj.setFillColor(BLACK)
-    canvas_obj.setFont("Helvetica", 9)
+    canvas_obj.setFont("Helvetica", font_size)
     canvas_obj.drawString(right_col_x, row2_y, COMPANY_WEBSITE)
 
 
