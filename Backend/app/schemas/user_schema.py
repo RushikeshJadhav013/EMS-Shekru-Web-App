@@ -64,8 +64,8 @@ class UserBase(BaseModel):
         digits = re.sub(r'[^0-9]', '', v)
         if len(digits) < 10:
             raise ValueError('Phone number must have at least 10 digits')
-        if not re.match(r'^[6-9]', digits):
-            raise ValueError('Phone number must start with 6, 7, 8, or 9')
+        if not re.match(r'^[5-9]', digits):
+            raise ValueError('Phone number must start with 5, 6, 7, 8, or 9')
         return v.strip()
 
     @field_validator('pan_card')
@@ -291,12 +291,12 @@ class AdminCreate(BaseModel):
     
     @validator("phone")
     def validate_phone(cls, v: Optional[str]) -> Optional[str]:
-        """Require 10 digits starting with 6/7/8/9; allow missing."""
+        """Require 10 digits starting with 5/6/7/8/9; allow missing."""
         if v is None:
             return None
         digits_only = v.strip()
-        if not re.fullmatch(r"[6789]\d{9}", digits_only):
-            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
+        if not re.fullmatch(r"[56789]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 5, 6, 7, 8, or 9")
         return digits_only
     
     @validator("pan_card")
@@ -369,12 +369,12 @@ class AdminUpdate(BaseModel):
     
     @validator("phone")
     def validate_phone(cls, v: Optional[str]) -> Optional[str]:
-        """Require 10 digits starting with 6/7/8/9; allow missing."""
+        """Require 10 digits starting with 5/6/7/8/9; allow missing."""
         if v is None:
             return None
         digits_only = v.strip()
-        if not re.fullmatch(r"[6789]\d{9}", digits_only):
-            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
+        if not re.fullmatch(r"[56789]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 5, 6, 7, 8, or 9")
         return digits_only
     
     @validator("pan_card")

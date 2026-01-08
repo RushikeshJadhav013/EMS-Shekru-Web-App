@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
+from typing import Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.db.database import get_db
@@ -160,6 +161,8 @@ def approve_leave_request(
 @router.get("/", response_model=list[LeaveDisplayOut])
 def view_my_leave(
     period: str = Query(default="current_month", description="Time period: current_month, last_3_months, last_6_months, last_1_year"),
+    from_date: Optional[str] = Query(None, description="Custom start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Custom end date (YYYY-MM-DD)"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
@@ -168,8 +171,29 @@ def view_my_leave(
     Default: current_month
     Options: current_month, last_3_months, last_6_months, last_1_year
     """
-    if period in ["current_month", "last_3_months", "last_6_months", "last_1_year"]:
-        return list_leave_by_period(db, user.user_id, period)
+    # Parse custom dates if provided
+    custom_start = None
+    custom_end = None
+    
+    if from_date or to_date:
+        period = "custom"
+        if from_date:
+            try:
+                custom_start = datetime.strptime(from_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid from_date format. Use YYYY-MM-DD")
+        if to_date:
+            try:
+                custom_end = datetime.strptime(to_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid to_date format. Use YYYY-MM-DD")
+        
+        # Validate date order if both are present
+        if custom_start and custom_end and custom_start > custom_end:
+             raise HTTPException(status_code=400, detail="from_date cannot be after to_date")
+             
+    if period in ["current_month", "last_3_months", "last_6_months", "last_1_year", "custom"]:
+        return list_leave_by_period(db, user.user_id, period, custom_start_date=custom_start, custom_end_date=custom_end)
     else:
         # Default to current month if invalid period
         return list_leave_by_period(db, user.user_id, "current_month")

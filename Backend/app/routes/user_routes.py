@@ -234,14 +234,55 @@ def register_employee(
 @router.get("/", response_model=List[UserOut])
 def get_all_employees_public(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[RoleEnum] = Query(None, description="Filter by role")
 ):
-    employees = list_users(db)  # ✅ fetch all users properly (no .query(list_users))
-
-    # ✅ Exclude Admin users - Admin is the boss and should not appear in employee lists
-    employees = [emp for emp in employees if emp.role != RoleEnum.ADMIN]
+    """
+    Get all employees with role-based access control.
+    
+    Visibility Rules:
+    - Admin: Can view all users
+    - HR: Can view HR, Manager, TeamLead, and Employee roles
+    - Manager: Can view TeamLead and Employee of their assigned department
+    - TeamLead: Can view Employees of their assigned teams only
+    - Employee: Cannot access this endpoint
+    """
+    employees = list_users(db)
+    
+    # Apply role-based visibility filtering
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin can view all users (including other admins)
+        pass  # Keep all employees
+    
+    elif current_user.role == RoleEnum.HR:
+        # HR can view HR, Manager, TeamLead, and Employee roles
+        allowed_roles = {RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE}
+        employees = [emp for emp in employees if emp.role in allowed_roles]
+    
+    elif current_user.role == RoleEnum.MANAGER:
+        # Manager can view TeamLead and Employee of their assigned department
+        allowed_roles = {RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE}
+        employees = [
+            emp for emp in employees 
+            if emp.role in allowed_roles and emp.department == current_user.department
+        ]
+    
+    elif current_user.role == RoleEnum.TEAM_LEAD:
+        # TeamLead can view Employees of their assigned teams
+        # Employees assigned to this TeamLead (where manager_id matches current_user.user_id)
+        employees = [
+            emp for emp in employees 
+            if emp.role == RoleEnum.EMPLOYEE and emp.manager_id == current_user.user_id
+        ]
+    
+    else:
+        # Employee role cannot access this endpoint
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Employees cannot access the employee directory"
+        )
 
     # Apply search filter
     if search:
@@ -479,17 +520,29 @@ def download_users_pdf(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
 
-@router.get("/export/csv", summary="Download all user details as CSV")
+@router.get("/export/csv", summary="Download user details as CSV with optional filters")
 def download_users_csv(
+    department: Optional[str] = Query(None, description="Filter by department"),
+    role: Optional[str] = Query(None, description="Filter by role"),
     db: Session = Depends(get_db),
     # _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR])) # Example for role-based access
 ):
-    csv_buffer = export_users_csv(db)
+    csv_buffer = export_users_csv(db, department=department, role=role)
+    
+    # Build filename based on filters
+    filename_parts = ["users_report"]
+    if department:
+        filename_parts.append(f"dept_{department}")
+    if role:
+        filename_parts.append(f"role_{role}")
+    
+    filename = "_".join(filename_parts) + ".csv"
+
     return Response(
         content=csv_buffer.getvalue(),
         media_type="text/csv",
         headers={
-            "Content-Disposition": "attachment; filename=\"users_report.csv\""
+            "Content-Disposition": f"attachment; filename=\"{filename}\""
         }
     )
 

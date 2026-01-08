@@ -1,5 +1,14 @@
 """
 Salary Model - Employee Salary Information and Increment History
+
+STRICT CALCULATION RULES:
+1. Total Gross = CTC − (Employer PF + Variable Pay + Medical ₹19,200 + Conveyance ₹15,000 + Other ₹3,000 + Professional Tax ₹2,400 + Other Tax ₹12,000)
+2. Basic = 50% of Total Gross
+3. HRA = 50% of Basic
+4. Special Allowance = Total Gross − (Basic + HRA + Medical + Conveyance + Other)
+5. Total Earnings Annual = Total Gross
+6. Employer PF is part of CTC, NEVER deducted from employee
+7. Monthly In-Hand = (Total Gross − Professional Tax − Other Tax) / 12
 """
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.orm import relationship
@@ -15,9 +24,15 @@ class EmployeeSalary(Base):
     which is the single source of truth for salary calculations.
     
     Field Mapping:
-    - pf_annual: Stores Employer PF (12% of Basic) - reduces CTC, NOT deducted from employee
-    - other_deduction_annual: Stores Other Tax (₹1,000/month)
-    - professional_tax_annual: Stores Professional Tax (₹200/month)
+    - pf_annual: Stores Employer PF (12% of Basic) - part of CTC, NOT deducted from employee
+    - other_deduction_annual: Stores Other Tax (₹1,000/month = ₹12,000/year)
+    - professional_tax_annual: Stores Professional Tax (₹200/month = ₹2,400/year)
+    
+    STRICT RULES:
+    - Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
+    - Total Earnings = Total Gross
+    - CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    - Monthly In-Hand = (Total Gross - PT - Other Tax) / 12
     """
     __tablename__ = "employee_salaries"
 
@@ -32,11 +47,11 @@ class EmployeeSalary(Base):
     medical_allowance_annual = Column(Float, default=0.0)
     other_allowance_annual = Column(Float, default=0.0)
     
-    # Employee Deductions (Annual) - deducted from employee salary
+    # Employee Deductions (Annual) - deducted from Total Gross for in-hand calculation
     professional_tax_annual = Column(Float, default=0.0)  # ₹200/month = ₹2,400/year
     other_deduction_annual = Column(Float, default=0.0)   # Other Tax: ₹1,000/month = ₹12,000/year
     
-    # Employer Contribution (Annual) - reduces CTC, NOT deducted from employee
+    # Employer Contribution (Annual) - part of CTC, NOT deducted from employee
     pf_annual = Column(Float, default=0.0)  # Employer PF: 12% of Basic
     
     # Additional info
@@ -46,7 +61,7 @@ class EmployeeSalary(Base):
     bank_account = Column(String(50), nullable=True)
     ifsc_code = Column(String(20), nullable=True)
     
-    # Variable pay (optional, manual)
+    # Variable pay (optional, manual) - part of CTC, not Total Gross
     variable_pay = Column(Float, default=0.0)
     
     # Working days per month (default 22)
@@ -80,22 +95,21 @@ class EmployeeSalary(Base):
     # ==================== CALCULATED PROPERTIES ====================
     
     @property
-    def total_earnings_annual(self):
+    def total_gross_annual(self):
         """
-        Total gross earnings (sum of all salary components).
-        = Basic + HRA + Special Allowance + Medical + Conveyance + Other
+        Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
         This is what the employee receives before deductions.
+        Total Earnings = Total Gross (STRICT RULE #5)
         """
         return (self.basic_annual + self.hra_annual + self.special_allowance_annual +
                 self.conveyance_annual + self.medical_allowance_annual + self.other_allowance_annual)
     
     @property
-    def total_gross_annual(self):
+    def total_earnings_annual(self):
         """
-        Alias for total_earnings_annual - Total Gross (employee earnings).
-        This is the sum of all salary components the employee receives.
+        Total Earnings Annual = Total Gross (STRICT RULE #5)
         """
-        return self.total_earnings_annual
+        return self.total_gross_annual
     
     @property
     def monthly_gross(self):
@@ -106,44 +120,7 @@ class EmployeeSalary(Base):
     def total_employee_deductions_annual(self):
         """
         Total employee deductions (Professional Tax + Other Tax).
-        These are deducted from employee salary.
-        Note: Employer PF (pf_annual) is NOT deducted from employee salary.
-        """
-        return self.professional_tax_annual + self.other_deduction_annual
-    
-    @property
-    def total_gross_annual(self):
-        """
-        Alias for total_earnings_annual - Total Gross (employee earnings).
-        This is the sum of all salary components the employee receives.
-        """
-    def total_deductions_annual(self):
-        return self.professional_tax_annual + self.other_deduction_annual
-        """
-        Alias for total_employee_deductions_annual for backward compatibility.
-        Only includes employee deductions (Professional Tax + Other Tax).
-        Employer PF is NOT included as it's not deducted from employee salary.
-        """
-        return self.total_employee_deductions_annual
-    
-    @property
-    def ctc_annual(self):
-        """
-        Annual CTC (Cost to Company).
-        CTC = Total Earnings + Employer PF + Variable Pay
-        """
-        return self.total_earnings_annual + self.pf_annual + self.variable_pay
-    
-    @property
-    def monthly_gross(self):
-        """Monthly gross earnings (Total Gross / 12)"""
-        return round(self.total_gross_annual / 12, 2)
-    
-    @property
-    def total_employee_deductions_annual(self):
-        """
-        Total employee deductions (Professional Tax + Other Tax).
-        These are deducted from employee salary.
+        These are deducted from Total Gross for in-hand calculation.
         Note: Employer PF (pf_annual) is NOT deducted from employee salary.
         """
         return self.professional_tax_annual + self.other_deduction_annual
@@ -161,9 +138,11 @@ class EmployeeSalary(Base):
     def ctc_annual(self):
         """
         Annual CTC (Cost to Company).
-        CTC = Total Earnings + Employer PF + Variable Pay
+        CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+        Note: PT and Other Tax are part of CTC but deducted for in-hand
         """
-        return self.total_earnings_annual + self.pf_annual + self.variable_pay
+        return (self.total_gross_annual + self.pf_annual + self.variable_pay + 
+                self.professional_tax_annual + self.other_deduction_annual)
     
     @property
     def monthly_ctc(self):
@@ -174,16 +153,16 @@ class EmployeeSalary(Base):
     def net_annual(self):
         """
         Net annual salary (after employee deductions).
-        Net = Total Earnings - Employee Deductions
+        Net = Total Gross - Professional Tax - Other Tax
         Note: Employer PF is NOT deducted from employee salary.
         """
-        return self.total_earnings_annual - self.total_employee_deductions_annual
+        return self.total_gross_annual - self.total_employee_deductions_annual
     
     @property
     def monthly_in_hand(self):
         """
-        Monthly in-hand salary (after employee deductions).
-        = Net Annual / 12
+        Monthly in-hand salary (STRICT RULE #7).
+        Monthly In-Hand = (Total Gross − Professional Tax − Other Tax) / 12
         Note: Employer PF is NOT deducted from employee salary.
         """
         return round(self.net_annual / 12, 2)

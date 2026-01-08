@@ -744,10 +744,13 @@ def build_monthly_attendance_grid(db, month: int, year: int, department: str = N
             r.check_in.day: r for r in records if r.check_in
         }
 
+        today = now_ist().date()
         for d in range(1, total_days + 1):
             day_date = date(year, month, d)
 
-            if day_date.weekday() == 6:
+            if day_date > today:
+                attendance_map[str(d)] = ""
+            elif day_date.weekday() == 6:
                 attendance_map[str(d)] = "WO"
             elif d in record_by_day:
                 attendance_map[str(d)] = "P"

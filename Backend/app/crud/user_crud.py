@@ -430,8 +430,34 @@ def export_users_pdf(
     elements.append(Paragraph("Employee Directory Report", title_style))
     elements.append(Spacer(1, 12))
     
-    # Fetch all users
-    users = db.query(User).all()
+    # Filter logic
+    query = db.query(User)
+
+    if department:
+        query = query.filter(User.department == department)
+
+    if role:
+        # Robust case-insensitive role filtering
+        role_enum = None
+        normalized_role = role.strip().upper()
+        for r in RoleEnum:
+            if r.value.upper() == normalized_role or r.name.upper() == normalized_role:
+                role_enum = r
+                break
+        
+        if role_enum:
+            query = query.filter(User.role == role_enum)
+        else:
+            # If invalid role is provided, return no results
+            query = query.filter(User.role == None)
+
+    if designation:
+        query = query.filter(User.designation == designation)
+
+    if status is not None:
+        query = query.filter(User.is_active == status)
+
+    users = query.all()
     
     # Info block - matching Task Management report format
     info_data = [
@@ -538,12 +564,36 @@ def export_users_pdf(
     buffer.seek(0)
     return buffer
 
-def export_users_csv(db: Session):
+def export_users_csv(
+    db: Session,
+    department: Optional[str] = None,
+    role: Optional[str] = None
+):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Fetch all users
-    users = db.query(User).all()
+    # Filter logic
+    query = db.query(User)
+
+    if department:
+        query = query.filter(User.department == department)
+
+    if role:
+        # Robust case-insensitive role filtering
+        role_enum = None
+        normalized_role = role.strip().upper()
+        for r in RoleEnum:
+            if r.value.upper() == normalized_role or r.name.upper() == normalized_role:
+                role_enum = r
+                break
+        
+        if role_enum:
+            query = query.filter(User.role == role_enum)
+        else:
+            # If invalid role is provided, return no results
+            query = query.filter(User.role == None)
+
+    users = query.all()
 
     # CSV Header
     writer.writerow(["Employee ID", "Name", "Email", "Role", "Department", "Designation", "Phone", "Address", "PAN Card", "Aadhaar Card", "Shift Type", "Joining Date", "Status"])

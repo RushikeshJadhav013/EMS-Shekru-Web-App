@@ -371,10 +371,12 @@ def generate_salary_annexure_pdf(
     """
     Generate Salary Annexure PDF matching the exact sample format.
     
-    Display Logic:
-    - Total Gross = Sum of all earnings (employee receives this)
-    - CTC = Total Gross + Employer PF + Variable Pay
-    - Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    STRICT CALCULATION RULES:
+    1. Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
+    2. Total Earnings = Total Gross
+    3. CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    4. Monthly In-Hand = (Total Gross - PT - Other Tax) / 12
+    5. Employer PF is part of CTC, NEVER deducted from employee
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -398,20 +400,20 @@ def generate_salary_annexure_pdf(
     medical_monthly = round(medical_allowance_annual / 12, 2)
     other_monthly = round(other_allowance_annual / 12, 2)
     
-    # Calculate totals - CLEAR SEPARATION
-    # Total Gross = Sum of all employee earnings
+    # STRICT RULE: Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
     total_gross_annual = (basic_annual + hra_annual + special_allowance_annual + 
                           conveyance_annual + medical_allowance_annual + other_allowance_annual)
     monthly_gross = round(total_gross_annual / 12, 2)
     
-    # CTC = Total Gross + Employer PF + Variable Pay
-    ctc_annual = total_gross_annual + employer_pf_annual + variable_pay_annual
+    # STRICT RULE: CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    ctc_annual = (total_gross_annual + employer_pf_annual + variable_pay_annual + 
+                  professional_tax_annual + other_deduction_annual)
     monthly_ctc = round(ctc_annual / 12, 2)
     
     # Employee deductions (Professional Tax + Other Tax)
     total_deductions_annual = professional_tax_annual + other_deduction_annual
     
-    # Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    # STRICT RULE: Monthly In-Hand = (Total Gross - PT - Other Tax) / 12
     monthly_in_hand = round((total_gross_annual - total_deductions_annual) / 12, 2)
     
     # ===== TITLE =====
@@ -506,7 +508,8 @@ def generate_salary_annexure_pdf(
     elements.append(Spacer(1, 10))
     
     # ===== CTC SUMMARY TABLE =====
-    # Clear separation: Total Gross (employee earnings) vs CTC (company cost)
+    # STRICT RULES: Total Gross (earnings) vs CTC (company cost)
+    # CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
     ctc_data = [
         ["Summary", "Per Annum", "Per Month"],
         ["Total Gross (Earnings):", format_currency_int(total_gross_annual), format_currency_int(monthly_gross)],
@@ -865,10 +868,12 @@ def generate_offer_letter_pdf(
     Generate Offer Letter with Salary Annexure PDF.
     Uses professional Shekru Labs header/footer on all pages via canvas callbacks.
     
-    Display Logic:
-    - Total Gross = Sum of all earnings (employee receives this)
-    - CTC = Total Gross + Employer PF + Variable Pay
-    - Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    STRICT CALCULATION RULES:
+    1. Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
+    2. Total Earnings = Total Gross
+    3. CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    4. Monthly In-Hand = (Total Gross - PT - Other Tax) / 12
+    5. Employer PF is part of CTC, NEVER deducted from employee
     """
     from reportlab.pdfbase.pdfmetrics import stringWidth
     
@@ -1214,20 +1219,20 @@ def generate_offer_letter_pdf(
     medical_monthly = round(medical_allowance_annual / 12, 2)
     other_monthly = round(other_allowance_annual / 12, 2)
     
-    # Calculate totals - CLEAR SEPARATION
-    # Total Gross = Sum of all employee earnings
+    # STRICT RULE: Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
     total_gross_annual = (basic_annual + hra_annual + special_allowance_annual + 
                           conveyance_annual + medical_allowance_annual + other_allowance_annual)
     monthly_gross = round(total_gross_annual / 12, 2)
     
-    # CTC = Total Gross + Employer PF + Variable Pay
-    ctc_annual = total_gross_annual + employer_pf_annual + variable_pay_annual
+    # STRICT RULE: CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    ctc_annual = (total_gross_annual + employer_pf_annual + variable_pay_annual + 
+                  professional_tax_annual + other_deduction_annual)
     monthly_ctc = round(ctc_annual / 12, 2)
     
     # Employee deductions (Professional Tax + Other Tax)
     total_deductions_annual = professional_tax_annual + other_deduction_annual
     
-    # Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    # STRICT RULE: Monthly In-Hand = (Total Gross - PT - Other Tax) / 12
     monthly_in_hand = round((total_gross_annual - total_deductions_annual) / 12, 2)
     
     # Employee info table
@@ -1309,7 +1314,8 @@ def generate_offer_letter_pdf(
     elements.append(deductions_table)
     elements.append(Spacer(1, 10))
     
-    # CTC Summary table - Clear separation of Total Gross vs CTC
+    # CTC Summary table - STRICT RULES: Total Gross vs CTC
+    # CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
     ctc_data = [
         ["Summary", "Per Annum", "Per Month"],
         ["Total Gross (Earnings):", format_currency_int(total_gross_annual), format_currency_int(monthly_gross)],

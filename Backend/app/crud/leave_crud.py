@@ -482,15 +482,34 @@ def get_leave_balance(db: Session, user_id: int):
     return list(balances.values())
 
 
-def list_leave_by_period(db: Session, user_id: int, period: str = "current_month") -> List[Leave]:
+def list_leave_by_period(
+    db: Session, 
+    user_id: int, 
+    period: str = "current_month", 
+    custom_start_date: Optional[datetime] = None, 
+    custom_end_date: Optional[datetime] = None
+) -> List[Leave]:
     """
     Get leave history for a user filtered by time period.
     Shows ALL leaves (pending, approved, rejected) for the user within the specified period.
-    period options: "current_month", "last_3_months", "last_6_months", "last_1_year"
+    period options: "current_month", "last_3_months", "last_6_months", "last_1_year", "custom"
     """
     now = now_ist()
     
-    if period == "current_month":
+    if period == "custom":
+        start_date = custom_start_date if custom_start_date else datetime(now.year, now.month, 1) # Default to start of current month
+        end_date = custom_end_date if custom_end_date else now + timedelta(days=365) # Default to 1 year in future to catch everything? Or just now? Let's say far future to be safe or end of current month. 
+        # Actually safer default if missing is just unrestricted, but code structure expects start_date/end_date.
+        # Let's default end_date to end of time if missing? Or just now? 
+        # User request implies filtering. If just from_date given, maybe from X to forever.
+        if not custom_end_date:
+             # If only start date is given, go up to 10 years in future (practically forever)
+             end_date = datetime(2035, 12, 31) 
+        if not custom_start_date:
+             # If only end date is given, start from beginning of usage (e.g. 2020)
+             start_date = datetime(2020, 1, 1)
+
+    elif period == "current_month":
         # Current month only - show leaves that start or end in current month
         month_start = datetime(now.year, now.month, 1)
         if now.month == 12:

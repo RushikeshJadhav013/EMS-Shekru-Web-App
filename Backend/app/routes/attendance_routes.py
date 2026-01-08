@@ -1497,6 +1497,7 @@ def download_attendance_csv(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     department: Optional[str] = Query(None, description="Filter by department"),
+    date_range: Optional[str] = Query(None, description="Optional date range: 'last_6_months' or 'last_1_year'"),
     db: Session = Depends(get_db)
 ):
     """Download attendance data as a CSV file with optional filters."""
@@ -1515,6 +1516,16 @@ def download_attendance_csv(
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+    # Apply date range shortcut if explicit start date is not provided
+    if not start_dt and date_range:
+        now = now_ist()
+        if date_range == "last_6_months":
+            # 6 months ~ 180 days
+            start_dt = now - timedelta(days=180)
+        elif date_range == "last_1_year":
+             # 1 year ~ 365 days
+            start_dt = now - timedelta(days=365)
     
     output = export_attendance_csv(
         db,
