@@ -355,45 +355,27 @@ def generate_salary_slip_pdf(
     return buffer
 
 
-def generate_salary_annexure_pdf(
+def _build_salary_annexure_elements(
     employee_name: str,
     designation: str,
     location: str,
-    # Annual components
     basic_annual: float,
     hra_annual: float,
     special_allowance_annual: float,
     conveyance_annual: float,
     medical_allowance_annual: float,
     other_allowance_annual: float,
-    # Deductions
     professional_tax_annual: float,
     other_deduction_annual: float,
-    # Employer contribution (optional, for CTC calculation)
     employer_pf_annual: float = 0.0,
     variable_pay_annual: float = 0.0,
-) -> io.BytesIO:
+) -> list:
     """
-    Generate Salary Annexure PDF matching the exact sample format.
-    
-    Display Logic:
-    - Total Gross = Sum of all earnings (employee receives this)
-    - CTC = Total Gross + Employer PF + Variable Pay
-    - Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    Build salary annexure content elements (tables, paragraphs, etc.)
+    Returns a list of flowable elements that can be used in BaseDocTemplate.
     """
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=40,
-        leftMargin=40,
-        topMargin=40,
-        bottomMargin=40
-    )
-    
     elements = []
     styles = getSampleStyleSheet()
-    page_width = A4[0] - 80  # minus margins
     
     # Calculate monthly values
     basic_monthly = round(basic_annual / 12, 2)
@@ -539,6 +521,74 @@ def generate_salary_annexure_pdf(
     ]))
     elements.append(ctc_table)
     
+    return elements
+
+
+def generate_salary_annexure_pdf(
+    employee_name: str,
+    designation: str,
+    location: str,
+    # Annual components
+    basic_annual: float,
+    hra_annual: float,
+    special_allowance_annual: float,
+    conveyance_annual: float,
+    medical_allowance_annual: float,
+    other_allowance_annual: float,
+    # Deductions
+    professional_tax_annual: float,
+    other_deduction_annual: float,
+    # Employer contribution (optional, for CTC calculation)
+    employer_pf_annual: float = 0.0,
+    variable_pay_annual: float = 0.0,
+) -> io.BytesIO:
+    """
+    Generate Salary Annexure PDF matching the exact sample format.
+    
+    Display Logic:
+    - Total Gross = Sum of all earnings (employee receives this)
+    - CTC = Total Gross + Employer PF + Variable Pay
+    - Monthly In-Hand = (Total Gross - Employee Deductions) / 12
+    """
+    buffer = io.BytesIO()
+    width, height = A4
+    left_margin = 50
+    right_margin = 50  # Equal to left_margin for symmetric table spacing
+    top_margin = 100   # header space (extra room between header and content)
+    bottom_margin = 75  # footer space
+
+    # Switch to BaseDocTemplate like offer_letter
+    doc = BaseDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin
+    )
+    frame = Frame(
+        left_margin,
+        bottom_margin,
+        width - left_margin - right_margin,
+        height - top_margin - bottom_margin,
+        id='normal_annexure'
+    )
+    template = PageTemplate(
+        id='annexure',
+        frames=frame,
+        onPage=_offer_letter_header_footer
+    )
+    doc.addPageTemplates([template])
+
+    # Use the helper function to build salary annexure elements
+    elements = _build_salary_annexure_elements(
+        employee_name, designation, location,
+        basic_annual, hra_annual, special_allowance_annual,
+        conveyance_annual, medical_allowance_annual, other_allowance_annual,
+        professional_tax_annual, other_deduction_annual,
+        employer_pf_annual, variable_pay_annual
+    )
+    
     # Build PDF
     doc.build(elements)
     buffer.seek(0)
@@ -553,126 +603,161 @@ def generate_increment_letter_pdf(
     increment_amount: float,
     new_salary: float,
     effective_date: datetime,
-    letter_date: Optional[datetime] = None
+    letter_date: Optional[datetime] = None,
+    # Optional salary annexure parameters
+    include_salary_annexure: bool = False,
+    basic_annual: float = 0.0,
+    hra_annual: float = 0.0,
+    special_allowance_annual: float = 0.0,
+    conveyance_annual: float = 0.0,
+    medical_allowance_annual: float = 0.0,
+    other_allowance_annual: float = 0.0,
+    professional_tax_annual: float = 0.0,
+    other_deduction_annual: float = 0.0,
+    employer_pf_annual: float = 0.0,
+    variable_pay_annual: float = 0.0,
 ) -> io.BytesIO:
     """
-    Generate Increment Letter PDF matching the exact sample format
+    Generate Increment Letter PDF matching the exact sample format.
+    Optionally includes salary annexure as second page.
     """
     buffer = io.BytesIO()
-    
-    # Use canvas for more control over positioning
-    c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     
     # Margins
     left_margin = 50
-    right_margin = width - 50
-    top_margin = height - 50
+    right_margin = 50
+    top_margin = 100
+    bottom_margin = 75
     
-    # ===== GREEN HEADER BAR =====
-    c.setFillColor(HEADER_GREEN)
-    c.rect(0, height - 30, width, 30, fill=True, stroke=False)
+    # Use BaseDocTemplate for multi-page support and consistent header/footer
+    doc = BaseDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin
+    )
+    frame = Frame(
+        left_margin,
+        bottom_margin,
+        width - left_margin - right_margin,
+        height - top_margin - bottom_margin,
+        id='normal'
+    )
+    template = PageTemplate(
+        id='increment_letter',
+        frames=frame,
+        onPage=_offer_letter_header_footer
+    )
+    doc.addPageTemplates([template])
     
-    # ===== COMPANY LOGO (Right side) =====
-    # Draw logo text "Shekru labs" style
-    logo_x = right_margin - 100
-    logo_y = height - 70
-    
-    # Green bracket
-    c.setFillColor(HEADER_GREEN)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawString(logo_x, logo_y, "(")
-    
-    # Orange "Shekru labs" text
-    c.setFillColor(HEADER_ORANGE)
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(logo_x + 15, logo_y, "Shekru labs")
+    elements = []
+    styles = getSampleStyleSheet()
     
     # ===== DATE =====
     if letter_date is None:
         letter_date = datetime.now()
     
     date_str = letter_date.strftime("%d %B %Y")
-    c.setFillColor(BLACK)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, height - 100, f"Date: {date_str}")
+    date_style = ParagraphStyle(
+        'DateStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=20
+    )
+    elements.append(Paragraph(f"Date: {date_str}", date_style))
     
     # ===== TO SECTION =====
-    y_pos = height - 140
-    c.setFont("Helvetica", 11)
-    c.drawString(left_margin, y_pos, "To,")
+    to_style = ParagraphStyle(
+        'ToStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica',
+        spaceAfter=5
+    )
+    elements.append(Paragraph("To,", to_style))
     
-    y_pos -= 20
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, f"Mr. {employee_name},")
+    name_style = ParagraphStyle(
+        'NameStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=5
+    )
+    elements.append(Paragraph(f"Mr. {employee_name},", name_style))
     
-    y_pos -= 18
-    c.setFont("Helvetica", 11)
-    c.drawString(left_margin, y_pos, f"{designation}, {location}.")
+    designation_style = ParagraphStyle(
+        'DesignationStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica',
+        spaceAfter=30
+    )
+    elements.append(Paragraph(f"{designation}, {location}.", designation_style))
     
     # ===== SUBJECT =====
-    y_pos -= 50
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width / 2, y_pos, "Sub: Letter of Increment")
+    subject_style = ParagraphStyle(
+        'SubjectStyle',
+        parent=styles['Normal'],
+        fontSize=14,
+        fontName='Helvetica-Bold',
+        alignment=TA_CENTER,
+        spaceAfter=20
+    )
+    elements.append(Paragraph("Sub: Letter of Increment", subject_style))
     
     # ===== GREETING =====
-    y_pos -= 40
-    c.setFont("Helvetica-Bold", 11)
     first_name = employee_name.split()[0] if employee_name else "Employee"
-    c.drawString(left_margin, y_pos, f"Dear {first_name},")
+    greeting_style = ParagraphStyle(
+        'GreetingStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=15
+    )
+    elements.append(Paragraph(f"Dear {first_name},", greeting_style))
     
     # ===== BODY TEXT =====
-    y_pos -= 30
-    c.setFont("Helvetica", 11)
-    
-    # Format effective date with ordinal
     eff_day = ordinal(effective_date.day)
     eff_month = effective_date.strftime("%B")
     eff_year = effective_date.year
     
-    # First paragraph
-    text_width = right_margin - left_margin
     body_text = (
         f"We are pleased to inform you that after evaluating your performance we are your monthly salary "
         f"has been revised w.e.f {eff_day} {eff_month} {eff_year}, and the new salary structure will be:"
     )
     
-    # Draw wrapped text
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-    
-    words = body_text.split()
-    lines = []
-    current_line = ""
-    
-    for word in words:
-        test_line = current_line + " " + word if current_line else word
-        if stringWidth(test_line, "Helvetica", 11) < text_width:
-            current_line = test_line
-        else:
-            lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
-    
-    for line in lines:
-        c.drawString(left_margin, y_pos, line)
-        y_pos -= 18
+    body_style = ParagraphStyle(
+        'BodyStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica',
+        alignment=TA_LEFT,
+        spaceAfter=10,
+        leading=14
+    )
+    elements.append(Paragraph(body_text, body_style))
     
     # ===== SALARY DETAILS =====
-    y_pos -= 10
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, f"Previous Salary: {format_currency(previous_salary)}/-")
-    
-    y_pos -= 20
-    c.drawString(left_margin, y_pos, f"Increment: {format_currency(increment_amount)}/-")
-    
-    y_pos -= 20
-    c.drawString(left_margin, y_pos, f"New Salary: {format_currency(new_salary)}/-")
+    # Slightly tighter spacing between salary lines
+    salary_style = ParagraphStyle(
+        'SalaryStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=4,
+        leading=14
+    )
+    elements.append(Paragraph(f"Previous Salary: {format_currency(previous_salary)}/-", salary_style))
+    elements.append(Paragraph(f"Increment: {format_currency(increment_amount)}/-", salary_style))
+    elements.append(Paragraph(f"New Salary: {format_currency(new_salary)}/-", salary_style))
+    # Extra spacing before closing paragraph to separate sections
+    elements.append(Spacer(1, 14))
     
     # ===== CLOSING PARAGRAPH =====
-    y_pos -= 40
-    c.setFont("Helvetica", 11)
-    
     closing_text = (
         "For remaining salary breakup details and other terms and conditions please contact the HR "
         "department. We look forward to your valuable contributions to the organization and wishing "
@@ -680,52 +765,105 @@ def generate_increment_letter_pdf(
         "the same."
     )
     
-    words = closing_text.split()
-    lines = []
-    current_line = ""
-    
-    for word in words:
-        test_line = current_line + " " + word if current_line else word
-        if stringWidth(test_line, "Helvetica", 11) < text_width:
-            current_line = test_line
-        else:
-            lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
-    
-    for line in lines:
-        c.drawString(left_margin, y_pos, line)
-        y_pos -= 18
+    closing_style = ParagraphStyle(
+        'ClosingStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica',
+        alignment=TA_LEFT,
+        spaceAfter=20,
+        leading=14
+    )
+    elements.append(Paragraph(closing_text, closing_style))
     
     # ===== SIGNATURE SECTION =====
-    y_pos -= 50
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, "Yours Sincerely,")
+    elements.append(Spacer(1, 20))
     
-    y_pos -= 40
-    c.drawString(left_margin, y_pos, "For " + COMPANY_NAME)
+    signature_style = ParagraphStyle(
+        'SignatureStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=5
+    )
+    elements.append(Paragraph("Yours Sincerely,", signature_style))
     
-    y_pos -= 50
-    c.drawString(left_margin, y_pos, "_______________________")
-    y_pos -= 15
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, y_pos, "Authorized Signatory")
+    company_style = ParagraphStyle(
+        'CompanyStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=40
+    )
+    elements.append(Paragraph("For " + COMPANY_NAME, company_style))
     
-    # ===== EMPLOYEE ACCEPTANCE =====
-    y_pos -= 50
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y_pos, "Employee Acceptance:")
+    line_style = ParagraphStyle(
+        'LineStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica',
+        spaceAfter=8
+    )
+    elements.append(Paragraph("_______________________", line_style))
     
-    y_pos -= 30
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, y_pos, "I hereby accept the revised salary as mentioned above.")
+    signatory_style = ParagraphStyle(
+        'SignatoryStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        fontName='Helvetica',
+        spaceAfter=15
+    )
+    elements.append(Paragraph("Authorized Signatory", signatory_style))
     
-    y_pos -= 40
-    c.drawString(left_margin, y_pos, "Signature: _______________________")
-    c.drawString(left_margin + 250, y_pos, "Date: _______________________")
+    acceptance_style = ParagraphStyle(
+        'AcceptanceStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=15
+    )
+    elements.append(Paragraph("Employee Acceptance:", acceptance_style))
     
-    c.save()
+    acceptance_text_style = ParagraphStyle(
+        'AcceptanceTextStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        fontName='Helvetica',
+        spaceAfter=20
+    )
+    elements.append(Paragraph("I hereby accept the revised salary as mentioned above.", acceptance_text_style))
+    
+    # Signature and date line
+    signature_line_data = [
+        ["Signature: _______________________", "Date: _______________________"]
+    ]
+    # Ensure the signature table itself is left-aligned with the page content
+    signature_table = Table(signature_line_data, colWidths=[3*inch, 3*inch], hAlign='LEFT')
+    signature_table.setStyle(TableStyle([
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        # Remove default padding so text aligns with left margin of other paragraphs
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+    ]))
+    elements.append(signature_table)
+    
+    # If salary annexure is requested, add a page break and append annexure elements
+    if include_salary_annexure:
+        elements.append(PageBreak())
+        annexure_elements = _build_salary_annexure_elements(
+            employee_name, designation, location,
+            basic_annual, hra_annual, special_allowance_annual,
+            conveyance_annual, medical_allowance_annual, other_allowance_annual,
+            professional_tax_annual, other_deduction_annual,
+            employer_pf_annual, variable_pay_annual
+        )
+        elements.extend(annexure_elements)
+    
+    # Build PDF
+    doc.build(elements)
     buffer.seek(0)
     return buffer
 
@@ -829,13 +967,13 @@ def _draw_shekru_footer(canvas_obj, width):
     canvas_obj.rect(0, footer_y + footer_height, width, 4, fill=True, stroke=False)
     
     # Green decorative element at bottom-left corner
-    path = canvas_obj.beginPath()
-    path.moveTo(0, 0)
-    path.lineTo(0, 50)
-    path.curveTo(5, 35, 15, 20, 25, 15)
-    path.lineTo(30, 0)
-    path.close()
-    canvas_obj.drawPath(path, fill=True, stroke=False)
+    # path = canvas_obj.beginPath()
+    # path.moveTo(0, 0)
+    # path.lineTo(0, 50)
+    # path.curveTo(5, 35, 15, 20, 25, 15)
+    # path.lineTo(30, 0)
+    # path.close()
+    # canvas_obj.drawPath(path, fill=True, stroke=False)
     
     # Footer text styling
     left_col_x = 55
