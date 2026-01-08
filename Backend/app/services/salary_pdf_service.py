@@ -9,7 +9,7 @@ from reportlab.lib.pagesizes import A4, letter, landscape
 from reportlab.lib.units import inch, mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak, BaseDocTemplate, PageTemplate, Frame
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak, BaseDocTemplate, PageTemplate, Frame, KeepTogether
 from reportlab.pdfgen import canvas
 from typing import Optional
 import os
@@ -845,8 +845,8 @@ def generate_increment_letter_pdf(
         # Remove default padding so text aligns with left margin of other paragraphs
         ('LEFTPADDING', (0, 0), (-1, -1), 0),
         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
-        ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),  # Signature column left-aligned
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),  # Date column right-aligned
     ]))
     elements.append(signature_table)
     
@@ -1210,12 +1210,9 @@ def generate_offer_letter_pdf(
         parent=styles['Normal'],
         fontSize=11,
         fontName='Helvetica-Bold',
-        spaceBefore=15,
+        spaceBefore=0,  # Consistent, control with Spacer
         spaceAfter=10
     )
-    
-    # Probation section
-    elements.append(Paragraph("<b>Probation:</b>", section_style))
     
     # Numbered list style
     list_style = ParagraphStyle(
@@ -1229,15 +1226,8 @@ def generate_offer_letter_pdf(
         leading=13
     )
     
-    probation_items = [
-        "1. Your appointment includes a 3-month probation period. Based on your performance and conduct, "
-        "this period may be extended or concluded earlier at management's discretion.",
-        "2. Absence of leave during the probation period is not allowed."
-    ]
-    for item in probation_items:
-        elements.append(Paragraph(item, list_style))
-    
     # Joining Documentation section
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Joining Documentations:</b>", section_style))
     
     elements.append(Paragraph("1. Your appointment is subject to your providing the following listed documents:", list_style))
@@ -1266,10 +1256,32 @@ def generate_offer_letter_pdf(
     for item in doc_items:
         elements.append(Paragraph(item, sublist_style))
     
-    # Page break for next section
-    elements.append(PageBreak())
+    # Probation section
+    elements.append(Spacer(1, 18))
+    elements.append(Paragraph("<b>Probation:</b>", section_style))
+    
+    # Numbered list style
+    list_style = ParagraphStyle(
+        'ListStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        fontName='Helvetica',
+        leftIndent=20,
+        spaceAfter=6,
+        alignment=TA_JUSTIFY,
+        leading=13
+    )
+    
+    probation_items = [
+        "1. Your appointment includes a 3-month probation period. Based on your performance and conduct, "
+        "this period may be extended or concluded earlier at management's discretion.",
+        "2. Absence of leave during the probation period is not allowed."
+    ]
+    for item in probation_items:
+        elements.append(Paragraph(item, list_style))
     
     # Duties, Responsibilities section
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Duties, Responsibilities & Other Employment Clauses:</b>", section_style))
     
     duties_items = [
@@ -1285,6 +1297,7 @@ def generate_offer_letter_pdf(
         elements.append(Paragraph(item, list_style))
     
     # Rules, Regulations and Confidentiality
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Rules, Regulations and Confidentiality:</b>", section_style))
     
     conf_intro = (
@@ -1325,10 +1338,8 @@ def generate_offer_letter_pdf(
     for item in more_conf_items:
         elements.append(Paragraph(item, list_style))
     
-    # Page break
-    elements.append(PageBreak())
-    
     # Intellectual Property
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Intellectual Property:</b>", section_style))
     
     ip_items = [
@@ -1353,6 +1364,7 @@ def generate_offer_letter_pdf(
         elements.append(Paragraph(item, list_style))
     
     # Conflict of Interest
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Conflict of Interest:</b>", section_style))
     
     conflict_items = [
@@ -1365,10 +1377,8 @@ def generate_offer_letter_pdf(
     for item in conflict_items:
         elements.append(Paragraph(item, list_style))
     
-    # Page break
-    elements.append(PageBreak())
-    
     # Leave and WFH policies
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Leave and work from home policies:</b>", section_style))
     
     leave_items = [
@@ -1383,6 +1393,7 @@ def generate_offer_letter_pdf(
         elements.append(Paragraph(item, list_style))
     
     # Miscellaneous
+    elements.append(Spacer(1, 18))
     elements.append(Paragraph("<b>Miscellaneous:</b>", section_style))
     
     misc_items = [
@@ -1393,15 +1404,36 @@ def generate_offer_letter_pdf(
         f"without prior written consent. Any articles mentioning {COMPANY_NAME} require {COMPANY_NAME}'s approval.",
         f"41. Non-Disparagement: You agree not to make false, defamatory, or disparaging statements about {COMPANY_NAME}, its employees, officers, or directors.",
         "42. Waiver: No delay or failure in exercising any rights shall be a waiver. Any waiver must be in writing and signed by an authorized representative.",
-        "43. Integration: This Letter and its Exhibit constitute the entire agreement, superseding all previous agreements between the Parties."
+        "43. Integration: This Letter and its Exhibit constitute the entire agreement, superseding all previous agreements between the Parties.",
+        f"44. Rights to Injunctive Relief: You acknowledge that breaching your obligations under this Agreement or {COMPANY_NAME}'s policies could cause significant, "
+        f"ongoing harm. Therefore, {COMPANY_NAME} may seek injunctive relief in a court of appropriate jurisdiction."
     ]
     for item in misc_items:
+        elements.append(Paragraph(item, list_style))
+    
+    # Jurisdiction
+    elements.append(Spacer(1, 18))
+    elements.append(Paragraph("<b>Jurisdiction:</b>", section_style))
+    
+    jurisdiction_items = [
+        "45. If any term or provision of this appointment letter or any application thereof is declared or held invalid, illegal, or unenforceable, "
+        "in whole or in part, whether generally or in any particular jurisdiction, such provision shall be deemed amended to the extent necessary to cure "
+        "such invalidity, illegality, or unenforceability. The validity, legality, or enforceability of the remaining provisions, both generally and in "
+        "every other jurisdiction, shall not be affected or impaired thereby.",
+        "46. Courts of Mumbai shall have exclusive jurisdiction over any disputes arising out of or in connection with this contract.",
+        f"47. As a full-time employee of {COMPANY_NAME}, you shall not be an employee and/or contractor worker or freelance worker of any other Company. "
+        f"If found so, you are subjected to legal actions against you by {COMPANY_NAME}."
+    ]
+    for item in jurisdiction_items:
         elements.append(Paragraph(item, list_style))
     
     # Page break for Salary Annexure
     elements.append(PageBreak())
     
     # ===== SALARY ANNEXURE PAGE =====
+    # Add spacing between header and title
+    elements.append(Spacer(1, 20))
+    
     annexure_title_style = ParagraphStyle(
         'AnnexureTitle',
         parent=styles['Heading1'],
@@ -1436,12 +1468,16 @@ def generate_offer_letter_pdf(
     # Monthly In-Hand = (Total Gross - Employee Deductions) / 12
     monthly_in_hand = round((total_gross_annual - total_deductions_annual) / 12, 2)
     
-    # Employee info table
+    # Salary Components table
+    col_widths = [2.5*inch, 1.3*inch, 1.3*inch]
+    table_total_width = sum(col_widths)  # Total width: 5.1*inch
+    
+    # Employee info table - use same width as components table
     info_data = [
         ["Company Name:", COMPANY_NAME],
-        ["Candidate Name:", f"<b>{employee_name}</b>"],
-        ["Designation:", f"<b>{designation}</b>"],
-        ["Location:", f"<b>{location}</b>"],
+        ["Candidate Name:", f"{employee_name}"],
+        ["Designation:", f"{designation}"],
+        ["Location:", f"{location}"],
     ]
     
     # Convert to Paragraphs for bold support
@@ -1452,7 +1488,7 @@ def generate_offer_letter_pdf(
             Paragraph(row[1], ParagraphStyle('InfoValue', fontName='Helvetica', fontSize=10))
         ])
     
-    info_table = Table(info_table_data, colWidths=[2*inch, content_width - 2*inch])
+    info_table = Table(info_table_data, colWidths=[2*inch, table_total_width - 2*inch])
     info_table.setStyle(TableStyle([
         ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
@@ -1463,9 +1499,7 @@ def generate_offer_letter_pdf(
     elements.append(info_table)
     elements.append(Spacer(1, 15))
     
-    # Salary Components table
-    col_widths = [2.5*inch, 1.3*inch, 1.3*inch]
-    
+    # Salary Components table (col_widths already defined above)
     components_data = [
         ["Components", "Per Annum", "Per Month"],
         ["Basic", format_currency_int(basic_annual), format_currency(basic_monthly)],

@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from datetime import datetime
-from app.services.salary_pdf_service import (
+from app.services.salary_pdf_services import (
     generate_salary_slip_pdf,
     generate_salary_annexure_pdf,
     generate_increment_letter_pdf,
