@@ -31,7 +31,7 @@ from app.crud.salary_crud import (
     create_salary_slip_history, get_salary_slip_history, update_slip_email_sent,
     get_user_salary_slip_history
 )
-from app.services.salary_pdf_services import (
+from app.services.salary_pdf_service import (
     generate_salary_slip_pdf, generate_salary_annexure_pdf,
     generate_increment_letter_pdf, generate_offer_letter_pdf
 )
