@@ -712,16 +712,43 @@ def download_increment_letter(
                 detail="Employee not found"
             )
         
-        # Generate PDF
-        pdf_buffer = generate_increment_letter_pdf(
-            employee_name=user.name,
-            designation=user.designation or "Employee",
-            location=user.address or "Office",
-            previous_salary=increment.previous_salary,
-            increment_amount=increment.increment_amount,
-            new_salary=increment.new_salary,
-            effective_date=increment.effective_date
-        )
+        # Fetch employee salary record for annexure details
+        salary = get_employee_salary(db, increment.user_id)
+        
+        # Generate PDF with salary annexure if salary record exists
+        if salary:
+            pdf_buffer = generate_increment_letter_pdf(
+                employee_name=user.name,
+                designation=user.designation or "Employee",
+                location=user.address or "Office",
+                previous_salary=increment.previous_salary,
+                increment_amount=increment.increment_amount,
+                new_salary=increment.new_salary,
+                effective_date=increment.effective_date,
+                include_salary_annexure=True,
+                basic_annual=salary.basic_annual,
+                hra_annual=salary.hra_annual,
+                special_allowance_annual=salary.special_allowance_annual,
+                conveyance_annual=salary.conveyance_annual,
+                medical_allowance_annual=salary.medical_allowance_annual,
+                other_allowance_annual=salary.other_allowance_annual,
+                professional_tax_annual=salary.professional_tax_annual,
+                other_deduction_annual=salary.other_deduction_annual,
+                employer_pf_annual=salary.pf_annual,
+                variable_pay_annual=salary.variable_pay
+            )
+        else:
+            # Generate without annexure if salary record doesn't exist
+            pdf_buffer = generate_increment_letter_pdf(
+                employee_name=user.name,
+                designation=user.designation or "Employee",
+                location=user.address or "Office",
+                previous_salary=increment.previous_salary,
+                increment_amount=increment.increment_amount,
+                new_salary=increment.new_salary,
+                effective_date=increment.effective_date,
+                include_salary_annexure=False
+            )
         
         filename = f"Increment_Letter_{user.name.replace(' ', '_')}.pdf"
         
@@ -779,16 +806,43 @@ def send_increment_letter(
                 detail="Employee email is not verified. Employee must login via OTP at least once before receiving salary documents."
             )
         
-        # Generate PDF
-        pdf_buffer = generate_increment_letter_pdf(
-            employee_name=user.name,
-            designation=user.designation or "Employee",
-            location=user.address or "Office",
-            previous_salary=increment.previous_salary,
-            increment_amount=increment.increment_amount,
-            new_salary=increment.new_salary,
-            effective_date=increment.effective_date
-        )
+        # Fetch employee salary record for annexure details
+        salary = get_employee_salary(db, increment.user_id)
+        
+        # Generate PDF with salary annexure if salary record exists
+        if salary:
+            pdf_buffer = generate_increment_letter_pdf(
+                employee_name=user.name,
+                designation=user.designation or "Employee",
+                location=user.address or "Office",
+                previous_salary=increment.previous_salary,
+                increment_amount=increment.increment_amount,
+                new_salary=increment.new_salary,
+                effective_date=increment.effective_date,
+                include_salary_annexure=True,
+                basic_annual=salary.basic_annual,
+                hra_annual=salary.hra_annual,
+                special_allowance_annual=salary.special_allowance_annual,
+                conveyance_annual=salary.conveyance_annual,
+                medical_allowance_annual=salary.medical_allowance_annual,
+                other_allowance_annual=salary.other_allowance_annual,
+                professional_tax_annual=salary.professional_tax_annual,
+                other_deduction_annual=salary.other_deduction_annual,
+                employer_pf_annual=salary.pf_annual,
+                variable_pay_annual=salary.variable_pay
+            )
+        else:
+            # Generate without annexure if salary record doesn't exist
+            pdf_buffer = generate_increment_letter_pdf(
+                employee_name=user.name,
+                designation=user.designation or "Employee",
+                location=user.address or "Office",
+                previous_salary=increment.previous_salary,
+                increment_amount=increment.increment_amount,
+                new_salary=increment.new_salary,
+                effective_date=increment.effective_date,
+                include_salary_annexure=False
+            )
         
         # Send email
         success = send_increment_letter_email(
