@@ -135,9 +135,7 @@ class SalaryCalculator:
             + variable_pay_annual
             + medical
             + conveyance
-            + other
-            + professional_tax
-            + other_tax,
+            + other,
             2
         )
 
