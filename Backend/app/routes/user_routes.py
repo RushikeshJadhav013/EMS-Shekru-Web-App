@@ -270,11 +270,10 @@ def get_all_employees_public(
         ]
     
     elif current_user.role == RoleEnum.TEAM_LEAD:
-        # TeamLead can view Employees of their assigned teams
-        # Employees assigned to this TeamLead (where manager_id matches current_user.user_id)
+        # TeamLead can view Employees in their department.
         employees = [
-            emp for emp in employees 
-            if emp.role == RoleEnum.EMPLOYEE and emp.manager_id == current_user.user_id
+            emp for emp in employees
+            if emp.role == RoleEnum.EMPLOYEE and emp.department == current_user.department
         ]
     
     else:
@@ -338,13 +337,46 @@ def update_employee(
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    # Check for duplicate phone number (excluding current employee)
+    # Validate phone format and check for duplicate phone number (excluding current employee)
     if phone and phone.strip():
+        digits = re.sub(r'[^0-9]', '', phone)
+        if len(digits) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Phone number must have at least 10 digits",
+            )
+        if not re.match(r'^[6-9]', digits):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Phone number must start with 6, 7, 8, or 9",
+            )
         existing_phone = get_user_by_phone(db, phone.strip())
         if existing_phone and existing_phone.user_id != user_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+    # Validate address (no emojis)
+    if address and address.strip():
+        addr = address.strip()
+        emoji_pattern = re.compile(
+            "[" 
+            "\U0001F300-\U0001F5FF"
+            "\U0001F600-\U0001F64F"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U0001F700-\U0001F77F"
+            "\U0001F780-\U0001F7FF"
+            "\U0001F900-\U0001F9FF"
+            "\U0001FA70-\U0001FAFF"
+            "\u2600-\u26FF\u2700-\u27BF"
+            "]",
+            flags=re.UNICODE,
+        )
+        if emoji_pattern.search(addr):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Address must not contain emojis",
             )
 
     # Check for duplicate PAN card (excluding current employee)

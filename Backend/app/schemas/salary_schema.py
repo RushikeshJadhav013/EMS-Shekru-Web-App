@@ -2,6 +2,7 @@
 Salary Schemas - Pydantic models for salary slip and increment letter
 """
 from pydantic import BaseModel, Field, validator
+import re
 from typing import Optional, Literal
 from datetime import datetime
 from enum import Enum
@@ -42,6 +43,27 @@ class EmployeeSalaryCTCCreate(BaseModel):
                 raise ValueError('Variable pay percentage must be between 0 and 100')
         return v
 
+    @validator("uan_number", pre=True, always=False)
+    def validate_uan_number_ctc_create(cls, v):
+        if v is None:
+            return v
+        digits = re.sub(r'[^0-9]', '', str(v))
+        if len(digits) != 12:
+            raise ValueError("UAN must be exactly 12 digits")
+        return digits
+
+    @validator("ifsc_code", pre=True, always=False)
+    def validate_ifsc_ctc_create(cls, v):
+        if v is None:
+            return v
+        code = str(v).strip().upper()
+        if len(code) != 11:
+            raise ValueError("IFSC must be exactly 11 characters")
+        # 4 letters, '0', then 6 alnum uppercase
+        if not re.fullmatch(r'[A-Z]{4}0[A-Z0-9]{6}', code):
+            raise ValueError("Invalid IFSC format. Expected 4 letters, '0', then 6 alphanumeric characters (uppercase)")
+        return code
+
 
 class EmployeeSalaryCreate(BaseModel):
     """Schema for creating employee salary record (legacy - manual entry)"""
@@ -69,6 +91,26 @@ class EmployeeSalaryCreate(BaseModel):
     working_days_per_month: int = Field(default=22, ge=1, le=31)
     payment_mode: str = Field(default="Bank Transfer")
 
+    @validator("uan_number", pre=True, always=False)
+    def validate_uan_number_create(cls, v):
+        if v is None:
+            return v
+        digits = re.sub(r'[^0-9]', '', str(v))
+        if len(digits) != 12:
+            raise ValueError("UAN must be exactly 12 digits")
+        return digits
+
+    @validator("ifsc_code", pre=True, always=False)
+    def validate_ifsc_create(cls, v):
+        if v is None:
+            return v
+        code = str(v).strip().upper()
+        if len(code) != 11:
+            raise ValueError("IFSC must be exactly 11 characters")
+        if not re.fullmatch(r'[A-Z]{4}0[A-Z0-9]{6}', code):
+            raise ValueError("Invalid IFSC format. Expected 4 letters, '0', then 6 alphanumeric characters (uppercase)")
+        return code
+
 
 class EmployeeSalaryUpdate(BaseModel):
     """Schema for updating employee salary record - only non-fixed components"""
@@ -88,6 +130,26 @@ class EmployeeSalaryUpdate(BaseModel):
     other_deduction_annual: Optional[float] = Field(default=None, ge=0)
     pf_annual: Optional[float] = Field(default=None, ge=0)
 
+    @validator("uan_number", pre=True, always=False)
+    def validate_uan_number_update(cls, v):
+        if v is None:
+            return v
+        digits = re.sub(r'[^0-9]', '', str(v))
+        if len(digits) != 12:
+            raise ValueError("UAN must be exactly 12 digits")
+        return digits
+
+    @validator("ifsc_code", pre=True, always=False)
+    def validate_ifsc_update(cls, v):
+        if v is None:
+            return v
+        code = str(v).strip().upper()
+        if len(code) != 11:
+            raise ValueError("IFSC must be exactly 11 characters")
+        if not re.fullmatch(r'[A-Z]{4}0[A-Z0-9]{6}', code):
+            raise ValueError("Invalid IFSC format. Expected 4 letters, '0', then 6 alphanumeric characters (uppercase)")
+        return code
+
 
 class EmployeeSalaryCTCUpdate(BaseModel):
     """Schema for updating salary by changing CTC"""
@@ -103,6 +165,10 @@ class EmployeeSalaryCTCUpdate(BaseModel):
             if vp_type == VariablePayType.PERCENTAGE and not (0 <= v <= 100):
                 raise ValueError('Variable pay percentage must be between 0 and 100')
         return v
+
+
+    # Note: CTC update does not include uan_number by default. UAN validation is handled
+    # by the create/update salary schemas where the field is present.
 
 
 class EmployeeSalaryOut(BaseModel):

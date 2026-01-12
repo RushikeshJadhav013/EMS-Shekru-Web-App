@@ -56,7 +56,8 @@ class EmployeeSalary(Base):
     
     # Additional info
     pan_number = Column(String(20), nullable=True)
-    uan_number = Column(String(20), nullable=True)
+    # UAN must be unique per salary record (12 digits). Add index and unique constraint.
+    uan_number = Column(String(20), nullable=True, unique=True, index=True)
     bank_name = Column(String(100), nullable=True)
     bank_account = Column(String(50), nullable=True)
     ifsc_code = Column(String(20), nullable=True)

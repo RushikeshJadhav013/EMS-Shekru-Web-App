@@ -64,9 +64,35 @@ class UserBase(BaseModel):
         digits = re.sub(r'[^0-9]', '', v)
         if len(digits) < 10:
             raise ValueError('Phone number must have at least 10 digits')
-        if not re.match(r'^[5-9]', digits):
-            raise ValueError('Phone number must start with 5, 6, 7, 8, or 9')
+        if not re.match(r'^[6-9]', digits):
+            raise ValueError('Phone number must start with 6, 7, 8, or 9')
         return v.strip()
+
+    @field_validator('address')
+    @classmethod
+    def validate_address(cls, v: Optional[str]) -> Optional[str]:
+        """Validate address does not contain emojis"""
+        if v is None:
+            return v
+        addr = v.strip()
+        # Emoji detection: common emoji Unicode ranges
+        emoji_pattern = re.compile(
+            "[" 
+            "\U0001F300-\U0001F5FF"
+            "\U0001F600-\U0001F64F"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U0001F700-\U0001F77F"
+            "\U0001F780-\U0001F7FF"
+            "\U0001F900-\U0001F9FF"
+            "\U0001FA70-\U0001FAFF"
+            "\u2600-\u26FF\u2700-\u27BF"
+            "]",
+            flags=re.UNICODE,
+        )
+        if emoji_pattern.search(addr):
+            raise ValueError("Address must not contain emojis")
+        return addr
 
     @field_validator('pan_card')
     @classmethod
@@ -100,6 +126,30 @@ class UserBase(BaseModel):
         if not re.match(r'^\d{4}-\d{4}-\d{4}$', v):
             raise ValueError('Invalid Aadhar card format. Expected format: 1234-5678-9012')
         return v
+
+    @validator("address", pre=True, always=False)
+    def validate_admin_address(cls, v: Optional[str]) -> Optional[str]:
+        """Admin address validator: disallow emojis and normalize"""
+        if v is None:
+            return v
+        addr = v.strip()
+        emoji_pattern = re.compile(
+            "[" 
+            "\U0001F300-\U0001F5FF"
+            "\U0001F600-\U0001F64F"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U0001F700-\U0001F77F"
+            "\U0001F780-\U0001F7FF"
+            "\U0001F900-\U0001F9FF"
+            "\U0001FA70-\U0001FAFF"
+            "\u2600-\u26FF\u2700-\u27BF"
+            "]",
+            flags=re.UNICODE,
+        )
+        if emoji_pattern.search(addr):
+            raise ValueError("Address must not contain emojis")
+        return addr
 
     @field_validator('email')
     @classmethod
@@ -288,6 +338,30 @@ class AdminCreate(BaseModel):
             raise ValueError("Email cannot be empty")
         normalized = v.strip().lower()
         return normalized
+
+    @validator("address", pre=True, always=False)
+    def validate_address_admincreate(cls, v: Optional[str]) -> Optional[str]:
+        """Disallow emojis in admin-created addresses"""
+        if v is None:
+            return v
+        addr = v.strip()
+        emoji_pattern = re.compile(
+            "[" 
+            "\U0001F300-\U0001F5FF"
+            "\U0001F600-\U0001F64F"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U0001F700-\U0001F77F"
+            "\U0001F780-\U0001F7FF"
+            "\U0001F900-\U0001F9FF"
+            "\U0001FA70-\U0001FAFF"
+            "\u2600-\u26FF\u2700-\u27BF"
+            "]",
+            flags=re.UNICODE,
+        )
+        if emoji_pattern.search(addr):
+            raise ValueError("Address must not contain emojis")
+        return addr
     
     @validator("phone")
     def validate_phone(cls, v: Optional[str]) -> Optional[str]:
@@ -295,8 +369,8 @@ class AdminCreate(BaseModel):
         if v is None:
             return None
         digits_only = v.strip()
-        if not re.fullmatch(r"[56789]\d{9}", digits_only):
-            raise ValueError("Phone number must be 10 digits starting with 5, 6, 7, 8, or 9")
+        if not re.fullmatch(r"[6-9]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
         return digits_only
     
     @validator("pan_card")
@@ -373,8 +447,8 @@ class AdminUpdate(BaseModel):
         if v is None:
             return None
         digits_only = v.strip()
-        if not re.fullmatch(r"[56789]\d{9}", digits_only):
-            raise ValueError("Phone number must be 10 digits starting with 5, 6, 7, 8, or 9")
+        if not re.fullmatch(r"[6-9]\d{9}", digits_only):
+            raise ValueError("Phone number must be 10 digits starting with 6, 7, 8, or 9")
         return digits_only
     
     @validator("pan_card")
@@ -389,6 +463,30 @@ class AdminUpdate(BaseModel):
         if not re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", normalized):
             raise ValueError("PAN must be 10 chars: 5 letters, 4 digits, last letter")
         return normalized
+
+    @validator("address", pre=True, always=False)
+    def validate_address_adminupdate(cls, v: Optional[str]) -> Optional[str]:
+        """Disallow emojis in admin-updated addresses"""
+        if v is None:
+            return v
+        addr = v.strip()
+        emoji_pattern = re.compile(
+            "[" 
+            "\U0001F300-\U0001F5FF"
+            "\U0001F600-\U0001F64F"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U0001F700-\U0001F77F"
+            "\U0001F780-\U0001F7FF"
+            "\U0001F900-\U0001F9FF"
+            "\U0001FA70-\U0001FAFF"
+            "\u2600-\u26FF\u2700-\u27BF"
+            "]",
+            flags=re.UNICODE,
+        )
+        if emoji_pattern.search(addr):
+            raise ValueError("Address must not contain emojis")
+        return addr
     
     email: Optional[EmailStr] = None
     employee_id: Optional[str] = None
