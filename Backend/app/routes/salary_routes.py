@@ -1173,7 +1173,7 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
     # Format PF display - show employer PF contribution
     pf_display = "NA"
     if employer_pf_monthly > 0:
-        pf_display = f"₹{employer_pf_monthly:,.2f}"
+        pf_display = f"{employer_pf_monthly:,.2f}"
     
     return generate_salary_slip_pdf(
         employee_name=user.name,

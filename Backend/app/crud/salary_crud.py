@@ -16,6 +16,7 @@ from app.schemas.salary_schema import (
 from app.services.salary_calculation_service import calculate_salary_from_ctc, SalaryCalculator
 from app.utils.timezone import now_ist
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,21 @@ def create_employee_salary_from_ctc(
         payment_mode=salary_data.payment_mode
     )
     
+    # Validate UAN uniqueness if provided
+    if salary_data.uan_number:
+        uan_digits = re.sub(r'[^0-9]', '', str(salary_data.uan_number))
+        existing_uan = db.query(EmployeeSalary).filter(
+            EmployeeSalary.uan_number == uan_digits,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_uan:
+            raise ValueError(f"UAN '{uan_digits}' is already associated with another salary record")
+
     # Add user_id to calculated data
     calculated_data["user_id"] = salary_data.user_id
+    # Normalize IFSC code to uppercase without surrounding whitespace (if present)
+    if calculated_data.get("ifsc_code") is not None:
+        calculated_data["ifsc_code"] = str(calculated_data["ifsc_code"]).strip().upper()
     
     # Add package CTC if provided
     if salary_data.package_ctc_annual is not None:
@@ -76,8 +90,22 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
     
     if existing:
         raise ValueError(f"Salary record already exists for user_id {salary_data.user_id}")
-    
-    db_salary = EmployeeSalary(**salary_data.model_dump())
+    # Validate UAN uniqueness if provided
+    if salary_data.uan_number:
+        uan_digits = re.sub(r'[^0-9]', '', str(salary_data.uan_number))
+        existing_uan = db.query(EmployeeSalary).filter(
+            EmployeeSalary.uan_number == uan_digits,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_uan:
+            raise ValueError(f"UAN '{uan_digits}' is already associated with another salary record")
+
+    # Normalize IFSC code to uppercase without surrounding whitespace (if present)
+    create_payload = salary_data.model_dump()
+    if create_payload.get("ifsc_code") is not None:
+        create_payload["ifsc_code"] = str(create_payload["ifsc_code"]).strip().upper()
+
+    db_salary = EmployeeSalary(**create_payload)
     db.add(db_salary)
     db.commit()
     db.refresh(db_salary)
@@ -191,6 +219,21 @@ def update_employee_salary(
             logger.error(f"Error recalculating variable pay: {e}")
     
     # Update other allowed fields
+    # If UAN is being updated, ensure uniqueness (exclude current user's salary record)
+    if 'uan_number' in update_data and update_data.get('uan_number') is not None:
+        uan_digits = re.sub(r'[^0-9]', '', str(update_data.get('uan_number')))
+        existing_uan = db.query(EmployeeSalary).filter(
+            EmployeeSalary.uan_number == uan_digits,
+            EmployeeSalary.user_id != user_id,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_uan:
+            raise ValueError(f"UAN '{uan_digits}' is already associated with another salary record")
+
+    # Normalize IFSC in update payload if present
+    if 'ifsc_code' in update_data and update_data.get('ifsc_code') is not None:
+        update_data['ifsc_code'] = str(update_data['ifsc_code']).strip().upper()
+
     for key, value in update_data.items():
         if key not in ['variable_pay_type', 'variable_pay_value'] and value is not None:
             setattr(salary, key, value)

@@ -107,6 +107,8 @@ class CandidateBase(BaseModel):
                 raise ValueError('Phone number must have at least 10 digits')
             if len(digits) > 15:
                 raise ValueError('Phone number cannot exceed 15 digits')
+            if not re.match(r'^[6-9]', digits):
+                raise ValueError('Phone number must start with 6, 7, 8, or 9')
         return v
 
     @field_validator('experience_years')
