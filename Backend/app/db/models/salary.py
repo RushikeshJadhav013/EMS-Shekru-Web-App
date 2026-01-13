@@ -54,6 +54,9 @@ class EmployeeSalary(Base):
     # Employer Contribution (Annual) - part of CTC, NOT deducted from employee
     pf_annual = Column(Float, default=0.0)  # Employer PF: 12% of Basic
     
+    # Package CTC (optional) - for display purposes only
+    package_ctc_annual = Column(Float, nullable=True)  # Offered package CTC for display (e.g., ₹7,00,000)
+    
     # Additional info
     pan_number = Column(String(20), nullable=True)
     uan_number = Column(String(20), nullable=True)
@@ -166,6 +169,21 @@ class EmployeeSalary(Base):
         Note: Employer PF is NOT deducted from employee salary.
         """
         return round(self.net_annual / 12, 2)
+    
+    @property
+    def display_ctc_annual(self):
+        """
+        CTC for display purposes (in APIs, UI, documents).
+        Returns package_ctc_annual if set, otherwise returns calculated ctc_annual.
+        This allows showing offered package amount (e.g., ₹7,00,000) while using
+        calculated CTC (e.g., ₹6,77,200) for all internal computations.
+        """
+        return self.package_ctc_annual if self.package_ctc_annual is not None else self.ctc_annual
+    
+    @property
+    def display_monthly_ctc(self):
+        """Monthly CTC for display purposes"""
+        return round(self.display_ctc_annual / 12, 2)
 
 
 class SalaryIncrement(Base):
@@ -175,11 +193,16 @@ class SalaryIncrement(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
     
-    # Increment details
+    # Increment details (Monthly - for backward compatibility)
     previous_salary = Column(Float, nullable=False)  # Monthly
     increment_amount = Column(Float, nullable=False)  # Monthly
     new_salary = Column(Float, nullable=False)  # Monthly
     increment_percentage = Column(Float, nullable=True)
+    
+    # CTC-based increment tracking (Annual)
+    previous_ctc_annual = Column(Float, nullable=True)  # Previous annual CTC
+    increment_ctc_annual = Column(Float, nullable=True)  # Increment amount (annual)
+    new_ctc_annual = Column(Float, nullable=True)  # New annual CTC after increment
     
     # Effective date
     effective_date = Column(DateTime, nullable=False)
