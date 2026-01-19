@@ -20,7 +20,7 @@ from app.schemas.salary_schema import (
     EmployeeSalaryCTCCreate, EmployeeSalaryCTCUpdate, SalaryCalculationPreview,
     SalaryIncrementCreate, SalaryIncrementOut,
     SalarySlipRequest, IncrementLetterRequest, SalaryAnnexureRequest,
-    EmailResponse, VariablePayType
+    EmailResponse, VariablePayType, SalaryNotificationOut
 )
 from app.crud.salary_crud import (
     create_employee_salary, create_employee_salary_from_ctc, get_employee_salary, 
@@ -29,7 +29,9 @@ from app.crud.salary_crud import (
     create_salary_increment, get_salary_increment, get_user_increments,
     get_latest_increment, update_increment_letter_sent,
     create_salary_slip_history, get_salary_slip_history, update_slip_email_sent,
-    get_user_salary_slip_history
+    get_user_salary_slip_history,
+    create_salary_notification, list_salary_notifications,
+    mark_salary_notification_as_read, get_unread_salary_notifications_count
 )
 from app.services.salary_pdf_service import (
     generate_salary_slip_pdf, generate_salary_annexure_pdf,
@@ -285,7 +287,18 @@ def create_increment(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
     """
-    Create salary increment record.
+    Create salary increment record with automatic CTC calculation and update.
+    
+    Provide either:
+    - increment_ctc_annual: Annual CTC increment amount (e.g., 50000 for ₹50,000/year)
+    - increment_percentage: Increment percentage (e.g., 10 for 10%)
+    
+    The system will:
+    1. Calculate the new CTC based on the employee's current CTC
+    2. Update the employee's salary record (recalculates all components)
+    3. Create an increment record with CTC details
+    4. Send a notification to the employee
+    
     Admin/HR only.
     """
     # Verify user exists
@@ -298,7 +311,26 @@ def create_increment(
     
     try:
         increment = create_salary_increment(db, increment_data, current_user.user_id)
+        
+        # Create notification for the employee with CTC details
+        create_salary_notification(
+            db=db,
+            user_id=increment_data.user_id,
+            notification_type="increment",
+            title="Salary Increment Approved",
+            message=f"Congratulations! Your salary increment of ₹{increment.increment_ctc_annual:,.2f} "
+                    f"({increment.increment_percentage}%) has been approved. "
+                    f"New CTC: ₹{increment.new_ctc_annual:,.2f}"
+        )
+        
         return increment
+    except ValueError as e:
+        # Handle validation errors (e.g., no salary record found)
+        logger.error(f"Validation error creating increment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
         logger.error(f"Error creating increment: {str(e)}")
         raise HTTPException(
@@ -503,6 +535,15 @@ def send_salary_slip(
             )
             update_slip_email_sent(db, history.id)
             
+            # Create notification for the employee
+            create_salary_notification(
+                db=db,
+                user_id=user_id,
+                notification_type="salary_slip",
+                title="Salary Slip Generated",
+                message=f"Your salary slip for {_get_month_name(month)} {year} has been generated and sent to your email."
+            )
+            
             return EmailResponse(
                 success=True,
                 message=f"Salary slip sent successfully to {user.email}",
@@ -657,6 +698,15 @@ def send_salary_annexure(
         )
         
         if success:
+            # Create notification for the employee
+            create_salary_notification(
+                db=db,
+                user_id=user_id,
+                notification_type="annexure",
+                title="Salary Annexure Sent",
+                message="Your salary annexure has been generated and sent to your email."
+            )
+            
             return EmailResponse(
                 success=True,
                 message=f"Salary annexure sent successfully to {user.email}",
@@ -863,6 +913,16 @@ def send_increment_letter(
         
         if success:
             update_increment_letter_sent(db, increment_id)
+            
+            # Create notification for the employee
+            create_salary_notification(
+                db=db,
+                user_id=increment.user_id,
+                notification_type="increment",
+                title="Increment Letter Sent",
+                message=f"Your increment letter has been generated and sent to your email. New salary: ₹{increment.new_salary:,.2f}"
+            )
+            
             return EmailResponse(
                 success=True,
                 message=f"Increment letter sent successfully to {user.email}",
@@ -991,6 +1051,75 @@ def get_slip_history(
     return {"history": history}
 
 
+# ==================== SALARY NOTIFICATION ENDPOINTS ====================
+
+@router.get("/notifications", response_model=List[SalaryNotificationOut])
+def get_my_salary_notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all salary notifications for the current user.
+    Employees can view their own notifications.
+    """
+    notifications = list_salary_notifications(db, current_user.user_id)
+    return notifications
+
+
+@router.get("/notifications/{user_id}", response_model=List[SalaryNotificationOut])
+def get_user_salary_notifications(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all salary notifications for a specific user.
+    Employees can view their own, Admin/HR can view any.
+    """
+    # Check permissions
+    if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view your own notifications"
+        )
+    
+    notifications = list_salary_notifications(db, user_id)
+    return notifications
+
+
+@router.put("/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Mark a salary notification as read.
+    Users can only mark their own notifications as read.
+    """
+    notification = mark_salary_notification_as_read(db, notification_id, current_user.user_id)
+    
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification not found or does not belong to you"
+        )
+    
+    return {"success": True, "message": "Notification marked as read"}
+
+
+@router.get("/notifications/unread/count")
+def get_unread_notifications_count(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get count of unread salary notifications for the current user.
+    """
+    count = get_unread_salary_notifications_count(db, current_user.user_id)
+    return {"unread_count": count}
+
+
 # ==================== HELPER FUNCTIONS ====================
 
 def _salary_to_response(salary: EmployeeSalary) -> dict:
@@ -1020,8 +1149,11 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "updated_at": salary.updated_at,
         "total_earnings_annual": salary.total_earnings_annual,
         "total_deductions_annual": salary.total_deductions_annual,
-        "ctc_annual": salary.ctc_annual,
-        "monthly_ctc": salary.monthly_ctc,
+        "ctc_annual": salary.ctc_annual,  # Calculated CTC (for internal use)
+        "package_ctc_annual": salary.package_ctc_annual,  # Offered package CTC (for display)
+        "display_ctc_annual": salary.display_ctc_annual,  # CTC to display (package if set, else calculated)
+        "monthly_ctc": salary.monthly_ctc,  # Calculated monthly CTC
+        "display_monthly_ctc": salary.display_monthly_ctc,  # Monthly CTC to display
         "monthly_in_hand": salary.monthly_in_hand
     }
 

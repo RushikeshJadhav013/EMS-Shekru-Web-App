@@ -8,6 +8,7 @@ from datetime import datetime
 
 from app.db.models.salary import EmployeeSalary, SalaryIncrement, SalarySlipHistory
 from app.db.models.user import User
+from app.db.models.notification import SalaryNotification
 from app.schemas.salary_schema import (
     EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryCTCCreate,
     EmployeeSalaryCTCUpdate, SalaryIncrementCreate, SalaryCalculationPreview
@@ -65,13 +66,18 @@ def create_employee_salary_from_ctc(
     if calculated_data.get("ifsc_code") is not None:
         calculated_data["ifsc_code"] = str(calculated_data["ifsc_code"]).strip().upper()
     
+    # Add package CTC if provided
+    if salary_data.package_ctc_annual is not None:
+        calculated_data["package_ctc_annual"] = salary_data.package_ctc_annual
+    
     # Create salary record
     db_salary = EmployeeSalary(**calculated_data)
     db.add(db_salary)
     db.commit()
     db.refresh(db_salary)
     
-    logger.info(f"Created salary record from CTC {salary_data.annual_ctc} for user_id: {salary_data.user_id}")
+    logger.info(f"Created salary record from CTC {salary_data.annual_ctc} for user_id: {salary_data.user_id}, "
+                f"package_ctc: {salary_data.package_ctc_annual or 'None'}")
     return db_salary
 
 
@@ -148,11 +154,16 @@ def update_employee_salary_from_ctc(
     for key, value in calculated_data.items():
         setattr(salary, key, value)
     
+    # Update package CTC if provided
+    if ctc_update.package_ctc_annual is not None:
+        salary.package_ctc_annual = ctc_update.package_ctc_annual
+    
     salary.updated_at = now_ist()
     db.commit()
     db.refresh(salary)
     
-    logger.info(f"Updated salary record from CTC {ctc_update.annual_ctc} for user_id: {user_id}")
+    logger.info(f"Updated salary record from CTC {ctc_update.annual_ctc} for user_id: {user_id}, "
+                f"package_ctc: {ctc_update.package_ctc_annual or 'unchanged'}")
     return salary
 
 
@@ -326,20 +337,66 @@ def create_salary_increment(
     increment_data: SalaryIncrementCreate,
     approved_by: int
 ) -> SalaryIncrement:
-    """Create a new salary increment record"""
-    # Calculate percentage if not provided
-    percentage = increment_data.increment_percentage
-    if percentage is None and increment_data.previous_salary > 0:
-        percentage = round(
-            (increment_data.increment_amount / increment_data.previous_salary) * 100, 2
-        )
+    """
+    Create a new salary increment record with automatic CTC calculation and update.
     
+    This function:
+    1. Fetches the employee's current salary record to get their current CTC
+    2. Calculates the new CTC based on increment amount OR percentage
+    3. Updates the employee's salary record with the new CTC (recalculates all components)
+    4. Creates an increment record with both CTC (annual) and monthly salary values
+    """
+    # 1. Get employee's current salary record
+    current_salary = get_employee_salary(db, increment_data.user_id)
+    if not current_salary:
+        raise ValueError(f"No salary record found for user_id {increment_data.user_id}. "
+                        f"Please create a salary record before applying increment.")
+    
+    # 2. Calculate CTC increment
+    previous_ctc = current_salary.ctc_annual
+    
+    if increment_data.increment_ctc_annual is not None:
+        # Option 1: Increment amount provided
+        increment_ctc = increment_data.increment_ctc_annual
+        increment_percentage = round((increment_ctc / previous_ctc) * 100, 2) if previous_ctc > 0 else 0
+    else:
+        # Option 2: Increment percentage provided
+        increment_percentage = increment_data.increment_percentage
+        increment_ctc = round((previous_ctc * increment_percentage) / 100, 2)
+    
+    new_ctc = previous_ctc + increment_ctc
+    
+    logger.info(f"Calculating increment for user_id {increment_data.user_id}: "
+                f"Previous CTC: ₹{previous_ctc:,.2f}, "
+                f"Increment: ₹{increment_ctc:,.2f} ({increment_percentage}%), "
+                f"New CTC: ₹{new_ctc:,.2f}")
+    
+    # 3. Update employee's CTC (this recalculates all salary components)
+    from app.schemas.salary_schema import EmployeeSalaryCTCUpdate
+    ctc_update = EmployeeSalaryCTCUpdate(annual_ctc=new_ctc)
+    updated_salary = update_employee_salary_from_ctc(db, increment_data.user_id, ctc_update)
+    
+    if not updated_salary:
+        raise ValueError(f"Failed to update salary for user_id {increment_data.user_id}")
+    
+    # 4. Calculate monthly values for legacy fields (backward compatibility)
+    previous_monthly = round(previous_ctc / 12, 2)
+    increment_monthly = round(increment_ctc / 12, 2)
+    new_monthly = round(new_ctc / 12, 2)
+    
+    # 5. Create increment record with both CTC and monthly values
     db_increment = SalaryIncrement(
         user_id=increment_data.user_id,
-        previous_salary=increment_data.previous_salary,
-        increment_amount=increment_data.increment_amount,
-        new_salary=increment_data.new_salary,
-        increment_percentage=percentage,
+        # CTC values (annual)
+        previous_ctc_annual=previous_ctc,
+        increment_ctc_annual=increment_ctc,
+        new_ctc_annual=new_ctc,
+        increment_percentage=increment_percentage,
+        # Monthly values (for backward compatibility)
+        previous_salary=previous_monthly,
+        increment_amount=increment_monthly,
+        new_salary=new_monthly,
+        # Other fields
         effective_date=increment_data.effective_date,
         reason=increment_data.reason,
         approved_by=approved_by
@@ -349,7 +406,12 @@ def create_salary_increment(
     db.commit()
     db.refresh(db_increment)
     
-    logger.info(f"Created increment record for user_id: {increment_data.user_id}")
+    logger.info(f"Created increment record for user_id: {increment_data.user_id}, "
+                f"increment_id: {db_increment.id}, "
+                f"previous_ctc: ₹{previous_ctc:,.2f}, "
+                f"new_ctc: ₹{new_ctc:,.2f}, "
+                f"increment: ₹{increment_ctc:,.2f} ({increment_percentage}%)")
+    
     return db_increment
 
 
@@ -474,3 +536,65 @@ def get_user_salary_slip_history(
         SalarySlipHistory.year.desc(),
         SalarySlipHistory.month.desc()
     ).all()
+
+
+# ==================== SALARY NOTIFICATION CRUD ====================
+
+def create_salary_notification(
+    db: Session,
+    user_id: int,
+    notification_type: str,
+    title: str,
+    message: str
+) -> SalaryNotification:
+    """Create a salary notification for a user"""
+    db_notification = SalaryNotification(
+        user_id=user_id,
+        notification_type=notification_type,
+        title=title,
+        message=message
+    )
+    
+    db.add(db_notification)
+    db.commit()
+    db.refresh(db_notification)
+    
+    logger.info(f"Created salary notification for user_id: {user_id}, type: {notification_type}")
+    return db_notification
+
+
+def list_salary_notifications(db: Session, user_id: int) -> List[SalaryNotification]:
+    """Get all salary notifications for a user, ordered by most recent first"""
+    return db.query(SalaryNotification).filter(
+        SalaryNotification.user_id == user_id
+    ).order_by(SalaryNotification.created_at.desc()).all()
+
+
+def mark_salary_notification_as_read(
+    db: Session, 
+    notification_id: int, 
+    user_id: int
+) -> Optional[SalaryNotification]:
+    """Mark a salary notification as read for a specific user"""
+    notification = db.query(SalaryNotification).filter(
+        SalaryNotification.notification_id == notification_id,
+        SalaryNotification.user_id == user_id
+    ).first()
+    
+    if not notification:
+        return None
+    
+    notification.is_read = True
+    db.commit()
+    db.refresh(notification)
+    
+    logger.info(f"Marked salary notification {notification_id} as read for user_id: {user_id}")
+    return notification
+
+
+def get_unread_salary_notifications_count(db: Session, user_id: int) -> int:
+    """Get count of unread salary notifications for a user"""
+    return db.query(SalaryNotification).filter(
+        SalaryNotification.user_id == user_id,
+        SalaryNotification.is_read == False
+    ).count()

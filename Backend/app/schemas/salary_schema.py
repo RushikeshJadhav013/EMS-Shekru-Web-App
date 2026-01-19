@@ -6,6 +6,7 @@ import re
 from typing import Optional, Literal
 from datetime import datetime
 from enum import Enum
+import re
 
 
 class VariablePayType(str, Enum):
@@ -19,6 +20,10 @@ class EmployeeSalaryCTCCreate(BaseModel):
     """Schema for creating employee salary record from CTC"""
     user_id: int
     annual_ctc: float = Field(..., gt=0, description="Annual CTC amount (Package)")
+    
+    # Optional: Specify a different package CTC for display
+    package_ctc_annual: Optional[float] = Field(None, gt=0, 
+                                                description="Offered package CTC for display (optional)")
     
     # Variable pay configuration
     variable_pay_type: VariablePayType = Field(default=VariablePayType.NONE)
@@ -154,6 +159,8 @@ class EmployeeSalaryUpdate(BaseModel):
 class EmployeeSalaryCTCUpdate(BaseModel):
     """Schema for updating salary by changing CTC"""
     annual_ctc: float = Field(..., gt=0, description="New Annual CTC amount (Package)")
+    package_ctc_annual: Optional[float] = Field(None, gt=0, 
+                                                description="Offered package CTC for display (optional)")
     variable_pay_type: Optional[VariablePayType] = None
     variable_pay_value: Optional[float] = Field(default=None, ge=0)
     employer_pf_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Employer PF percentage (editable)")
@@ -199,8 +206,11 @@ class EmployeeSalaryOut(BaseModel):
     # Computed fields
     total_earnings_annual: float
     total_deductions_annual: float
-    ctc_annual: float
-    monthly_ctc: float
+    ctc_annual: float  # Calculated CTC (for internal use)
+    package_ctc_annual: Optional[float]  # Offered package CTC (for display)
+    display_ctc_annual: float  # CTC to display (package if set, else calculated)
+    monthly_ctc: float  # Calculated monthly CTC
+    display_monthly_ctc: float  # Monthly CTC to display
     monthly_in_hand: float
     
     class Config:
@@ -245,24 +255,46 @@ class SalaryCalculationPreview(BaseModel):
 
 
 class SalaryIncrementCreate(BaseModel):
-    """Schema for creating salary increment"""
+    """Schema for creating salary increment with CTC calculation"""
     user_id: int
-    previous_salary: float = Field(..., gt=0)
-    increment_amount: float = Field(..., gt=0)
-    new_salary: float = Field(..., gt=0)
-    increment_percentage: Optional[float] = None
+    
+    # Option 1: Provide increment amount (annual CTC increment)
+    increment_ctc_annual: Optional[float] = Field(None, gt=0, description="Annual CTC increment amount")
+    
+    # Option 2: Provide increment percentage
+    increment_percentage: Optional[float] = Field(None, gt=0, le=100, description="Increment percentage")
+    
+    # Required fields
     effective_date: datetime
     reason: Optional[str] = None
+    
+    @validator('increment_percentage')
+    def validate_increment_input(cls, v, values):
+        """Ensure either increment_ctc_annual OR increment_percentage is provided"""
+        increment_amount = values.get('increment_ctc_annual')
+        if v is None and increment_amount is None:
+            raise ValueError('Either increment_ctc_annual or increment_percentage must be provided')
+        if v is not None and increment_amount is not None:
+            raise ValueError('Provide either increment_ctc_annual OR increment_percentage, not both')
+        return v
 
 
 class SalaryIncrementOut(BaseModel):
     """Schema for increment output"""
     id: int
     user_id: int
+    
+    # Legacy monthly salary fields (for backward compatibility)
     previous_salary: float
     increment_amount: float
     new_salary: float
+    
+    # CTC fields (Annual)
+    previous_ctc_annual: Optional[float]
+    increment_ctc_annual: Optional[float]
+    new_ctc_annual: Optional[float]
     increment_percentage: Optional[float]
+    
     effective_date: datetime
     reason: Optional[str]
     approved_by: Optional[int]
@@ -299,3 +331,25 @@ class EmailResponse(BaseModel):
     success: bool
     message: str
     email_sent_to: Optional[str] = None
+
+
+class SalaryNotificationCreate(BaseModel):
+    """Schema for creating a salary notification"""
+    user_id: int
+    notification_type: str
+    title: str
+    message: str
+
+
+class SalaryNotificationOut(BaseModel):
+    """Schema for salary notification output"""
+    notification_id: int
+    user_id: int
+    notification_type: str
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
