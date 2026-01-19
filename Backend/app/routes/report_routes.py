@@ -759,6 +759,10 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
+    page_width = A4[0]
+    available_width = page_width - doc.leftMargin - doc.rightMargin
+    # Consistent table width: 90% of available width (leaves some margin on sides)
+    table_width = available_width * 0.90
     
     # Container for the 'Flowable' objects
     elements = []
@@ -794,15 +798,19 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         ['Total Employees:', str(len(data))]
     ]
     
-    info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+    info_table = Table(info_data, colWidths=[table_width * 0.4, table_width * 0.6], hAlign='CENTER')
     info_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#e0e7ff')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#d1d5db')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+        # Consistent inner spacing on all sides
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
     
     elements.append(info_table)
@@ -810,8 +818,18 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     
     # Employee performance summary
     for emp in data:
-        # Employee header
-        emp_heading = Paragraph(f"<b>{emp['name']}</b> ({emp['employee_id']})", heading_style)
+        # Employee header aligned with table width
+        emp_heading = Table(
+            [[Paragraph(f"<b>{emp['name']}</b> ({emp['employee_id']})", heading_style)]],
+            colWidths=[table_width],
+            hAlign="CENTER",
+        )
+        emp_heading.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
         elements.append(emp_heading)
         
         # Employee details
@@ -820,15 +838,28 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
             ['Email:', emp['email'], 'Role:', emp['role']],
         ]
         
-        details_table = Table(emp_details, colWidths=[1.2*inch, 2*inch, 1.2*inch, 2*inch])
+        details_table = Table(
+            emp_details,
+            colWidths=[
+                table_width * 0.20,
+                table_width * 0.30,
+                table_width * 0.20,
+                table_width * 0.30,
+            ],
+            hAlign='CENTER',
+        )
         details_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
-            ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f3f4f6')),
+            ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#d1d5db')),
+            ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#d1d5db')),
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
             ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+            # Consistent inner padding
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black)
         ]))
         
         elements.append(details_table)
@@ -845,15 +876,19 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
             ['Approved Leaves', str(emp['approved_leaves']), 'Total Leave Days', str(emp['total_leave_days'])],
         ]
         
-        metrics_table = Table(metrics_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
+        metrics_table = Table(metrics_data, colWidths=[table_width / 4] * 4, hAlign='CENTER')
         metrics_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#d1d5db')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 10),
             ('FONTSIZE', (0, 1), (-1, -1), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            # Consistent inner padding
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')])
@@ -864,22 +899,40 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         # Leave type breakdown
         if emp['leave_types']:
             elements.append(Spacer(1, 10))
-            leave_heading = Paragraph("<b>Leave Type Breakdown:</b>", styles['Normal'])
+            leave_heading = Table(
+                [[Paragraph("<b>Leave Type Breakdown:</b>", styles['Normal'])]],
+                colWidths=[table_width],
+                hAlign="CENTER",
+            )
+            leave_heading.setStyle(TableStyle([
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
             elements.append(leave_heading)
             
             leave_data = [['Leave Type', 'Count']]
             for leave_type, count in emp['leave_types'].items():
                 leave_data.append([leave_type.title(), str(count)])
             
-            leave_table = Table(leave_data, colWidths=[3*inch, 1*inch])
+            leave_table = Table(
+                leave_data,
+                colWidths=[table_width * 0.6, table_width * 0.4],
+                hAlign='CENTER',
+            )
             leave_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8b5cf6')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#d1d5db')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 9),
+                # Consistent inner padding
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
                 ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')])
             ]))
             
@@ -889,14 +942,23 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         elements.append(Spacer(1, 10))
         score_color = colors.green if emp['performance_score'] >= 75 else colors.orange if emp['performance_score'] >= 60 else colors.red
         score_data = [['Overall Performance Score', f"{emp['performance_score']}%"]]
-        score_table = Table(score_data, colWidths=[4*inch, 2*inch])
+        score_table = Table(
+            score_data,
+            colWidths=[table_width * 0.6, table_width * 0.4],
+            hAlign='CENTER',
+        )
         score_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), score_color),
             ('TEXTCOLOR', (0, 0), (-1, -1), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+            # Consistent inner padding
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
         ]))
         
         elements.append(score_table)

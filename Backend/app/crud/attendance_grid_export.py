@@ -248,15 +248,31 @@ def export_monthly_grid_pdf(db, month, year, department=None, employee_id=None, 
     total_columns = len(header_days)
     page_width = A4[1]  # landscape width
 
-    col_widths = (
-        [35, 70, 120] +
-        [(page_width - 225) / (total_columns - 3)] * (total_columns - 3)
-    )
+    # Compute available width inside page margins
+    available_width = page_width - doc.leftMargin - doc.rightMargin
+
+    # Fixed widths for the first three columns
+    fixed_cols = [35, 70, 120]
+    fixed_total = sum(fixed_cols)
+
+    remaining_columns = max(total_columns - len(fixed_cols), 1)
+    remaining_width = available_width - fixed_total
+
+    # Sensible min/max per-day column widths to avoid stretching
+    per_day_min = 12
+    per_day_max = 18
+    if remaining_width <= remaining_columns * per_day_min:
+        per_day = per_day_min
+    else:
+        per_day = min(per_day_max, float(remaining_width) / remaining_columns)
+
+    col_widths = fixed_cols + [per_day] * remaining_columns
 
     table = Table(
         table_data,
         colWidths=col_widths,
-        repeatRows=2
+        repeatRows=2,
+        hAlign="LEFT"
     )
 
     # -------------------------
@@ -264,8 +280,8 @@ def export_monthly_grid_pdf(db, month, year, department=None, employee_id=None, 
     # -------------------------
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-        ("BACKGROUND", (0, 1), (-1, 1), colors.whitesmoke),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor('#d1d5db')),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor('#d1d5db')),
         ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 7),
 
@@ -279,7 +295,7 @@ def export_monthly_grid_pdf(db, month, year, department=None, employee_id=None, 
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
 
         ("ROWBACKGROUNDS", (0, 2), (-1, -1),
-         [colors.white, colors.HexColor("#f0fdf4")]),
+         [colors.white, colors.HexColor("#e3fceb")]),
     ]))
 
     elements.append(table)

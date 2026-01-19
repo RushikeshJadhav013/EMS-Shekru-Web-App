@@ -621,6 +621,7 @@ def generate_increment_letter_pdf(
     new_salary: float,
     effective_date: datetime,
     letter_date: Optional[datetime] = None,
+    title: Optional[str] = None,
     # Optional salary annexure parameters
     include_salary_annexure: bool = False,
     basic_annual: float = 0.0,
@@ -704,7 +705,10 @@ def generate_increment_letter_pdf(
         fontName='Helvetica-Bold',
         spaceAfter=5
     )
-    elements.append(Paragraph(f"Mr. {employee_name},", name_style))
+    # Title handling: allow optional title override (Mr, Mrs, Miss). Default was previously "Mr."
+    title_map = {'Mr': 'Mr.', 'Mrs': 'Mrs.', 'Miss': 'Miss'}
+    display_title = title_map.get(title, 'Mr.')
+    elements.append(Paragraph(f"{display_title} {employee_name},", name_style))
     
     designation_style = ParagraphStyle(
         'DesignationStyle',
@@ -976,7 +980,7 @@ def _draw_shekru_footer(canvas_obj, width):
     footer_y = 0
     
     # Light gray/neutral footer background
-    canvas_obj.setFillColor(colors.HexColor('#F5F5F5'))
+    canvas_obj.setFillColor(colors.HexColor('#d1d5db'))
     canvas_obj.rect(0, footer_y, width, footer_height, fill=True, stroke=False)
     
     # Green accent bar at top of footer

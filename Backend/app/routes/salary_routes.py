@@ -5,7 +5,7 @@ Admin/HR only access with role-based permissions
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 import logging
 import traceback
@@ -683,6 +683,7 @@ def send_salary_annexure(
 @router.get("/increment-letter/download/{increment_id}")
 def download_increment_letter(
     increment_id: int,
+    title: Optional[Literal['Mr', 'Mrs', 'Miss']] = Query(None, description="Optional title to use before the employee name (Mr, Mrs, Miss)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -725,6 +726,7 @@ def download_increment_letter(
                 increment_amount=increment.increment_amount,
                 new_salary=increment.new_salary,
                 effective_date=increment.effective_date,
+                title=title,
                 include_salary_annexure=True,
                 basic_annual=salary.basic_annual,
                 hra_annual=salary.hra_annual,
@@ -747,6 +749,7 @@ def download_increment_letter(
                 increment_amount=increment.increment_amount,
                 new_salary=increment.new_salary,
                 effective_date=increment.effective_date,
+                title=title,
                 include_salary_annexure=False
             )
         
@@ -771,6 +774,7 @@ def download_increment_letter(
 @router.post("/increment-letter/send/{increment_id}", response_model=EmailResponse)
 def send_increment_letter(
     increment_id: int,
+    title: Optional[Literal['Mr', 'Mrs', 'Miss']] = Query(None, description="Optional title to use before the employee name (Mr, Mrs, Miss)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
@@ -819,6 +823,7 @@ def send_increment_letter(
                 increment_amount=increment.increment_amount,
                 new_salary=increment.new_salary,
                 effective_date=increment.effective_date,
+                title=title,
                 include_salary_annexure=True,
                 basic_annual=salary.basic_annual,
                 hra_annual=salary.hra_annual,
@@ -841,6 +846,7 @@ def send_increment_letter(
                 increment_amount=increment.increment_amount,
                 new_salary=increment.new_salary,
                 effective_date=increment.effective_date,
+                title=title,
                 include_salary_annexure=False
             )
         
@@ -883,6 +889,8 @@ def send_increment_letter(
 @router.get("/offer-letter/download/{user_id}")
 def download_offer_letter(
     user_id: int,
+    letter_date: str = Query(..., description="Letter creation date (YYYY-MM-DD). Must not be earlier than today"),
+    joining_date: str = Query(..., description="Joining date (YYYY-MM-DD). Must be same or later than letter_date"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
@@ -905,12 +913,30 @@ def download_offer_letter(
                 detail="Salary record not found for this employee"
             )
         
+        # Parse and validate letter_date (required)
+        try:
+            parsed_letter = datetime.strptime(letter_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid letter_date format. Use YYYY-MM-DD")
+        # letter_date must not be earlier than today
+        if parsed_letter.date() < datetime.now().date():
+            raise HTTPException(status_code=400, detail="letter_date cannot be earlier than today")
+
+        # joining_date is required; parse and validate it against parsed_letter
+        try:
+            parsed_joining = datetime.strptime(joining_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid joining_date format. Use YYYY-MM-DD")
+        if parsed_joining.date() < parsed_letter.date():
+            raise HTTPException(status_code=400, detail="joining_date cannot be earlier than the letter date")
+        resolved_joining_date = parsed_joining
+
         # Generate PDF with employer PF for correct CTC display
         pdf_buffer = generate_offer_letter_pdf(
             employee_name=user.name,
             designation=user.designation or "Employee",
             location=user.address or "Office",
-            joining_date=user.joining_date or datetime.now(),
+            joining_date=resolved_joining_date,
             basic_annual=salary.basic_annual,
             hra_annual=salary.hra_annual,
             special_allowance_annual=salary.special_allowance_annual,
@@ -920,7 +946,8 @@ def download_offer_letter(
             professional_tax_annual=salary.professional_tax_annual,
             other_deduction_annual=salary.other_deduction_annual,
             employer_pf_annual=salary.pf_annual,
-            variable_pay_annual=salary.variable_pay
+            variable_pay_annual=salary.variable_pay,
+            letter_date=parsed_letter
         )
         
         filename = f"Offer_Letter_{user.name.replace(' ', '_')}.pdf"
