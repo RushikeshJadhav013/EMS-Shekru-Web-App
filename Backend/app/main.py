@@ -274,7 +274,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 async def home():
-    return {"message": "TestingEmployee Management System API is running"}
+    return {"message": "Testing Employee Management System API is running"}
 
 @app.get("/test-cors", tags=["Test"])
 async def test_cors():
