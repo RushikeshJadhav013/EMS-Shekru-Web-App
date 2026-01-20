@@ -105,7 +105,7 @@ except Exception as _e:
 
 # Initialize FastAPI
 app = FastAPI(
-    title="Employee Management System",
+    title="Testing Employee Management System",
     version="1.0"
 )
 
@@ -274,7 +274,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 async def home():
-    return {"message": "Employee Management System API is running"}
+    return {"message": "TestingEmployee Management System API is running"}
 
 @app.get("/test-cors", tags=["Test"])
 async def test_cors():
