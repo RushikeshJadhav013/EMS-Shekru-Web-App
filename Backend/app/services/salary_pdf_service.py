@@ -93,6 +93,7 @@ def generate_salary_slip_pdf(
     # Deductions
     professional_tax: float,
     other_deduction: float,
+    pf_no: str = "",
     payment_mode: str = "Bank Transfer"
 ) -> io.BytesIO:
     """
@@ -102,8 +103,8 @@ def generate_salary_slip_pdf(
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        rightMargin=20,
-        leftMargin=20,
+        rightMargin=10,
+        leftMargin=10,
         topMargin=15,
         bottomMargin=15
     )
@@ -116,14 +117,22 @@ def generate_salary_slip_pdf(
     
     # Calculate totals
     total_earnings = basic + hra + special_allowance + medical_allowance + conveyance + other_allowance
-    total_deductions = professional_tax + other_deduction
+    # Parse pf (may be string like "3,102.83" or numeric); include in total deductions
+    pf_numeric = 0.0
+    try:
+        if pf is not None and str(pf).strip().upper() not in ("", "NA", "-"):
+            pf_numeric = float(str(pf).replace(",", ""))
+    except Exception:
+        pf_numeric = 0.0
+
+    total_deductions = professional_tax + other_deduction + pf_numeric
     net_payable = total_earnings - total_deductions
     
     # Page width for calculations
     page_width = landscape(A4)[0] - 40  # minus margins
     
     # Set the col_widths for earnings/deductions and use for both tables
-    col_widths = [1.6*inch, 1.5*inch, 1.6*inch, 1.5*inch]
+    col_widths = [1.8*inch, 1.8*inch, 1.8*inch, 1.8*inch]
     table_total_width = sum(col_widths)  # Total width for all tables
     
     # ===== HEADER SECTION =====
@@ -131,17 +140,14 @@ def generate_salary_slip_pdf(
     address_style = ParagraphStyle(
         'Address',
         parent=styles['Normal'],
-        fontSize=9,
-        alignment=TA_RIGHT,
+        fontSize=10,
+        alignment=TA_LEFT,
         textColor=BLACK,
     )
-    address_parts = COMPANY_ADDRESS.split(", ")
-    if len(address_parts) >= 6:
-        line_one = ", ".join(address_parts[:3]) + ","
-        line_two = ", ".join(address_parts[3:])
-        address_html = f"Registered Office:<br/>{line_one}<br/>{line_two}"
-    else:
-        address_html = f"Registered Office:<br/>{COMPANY_ADDRESS}"
+    # Use the full address without forcing <br/> line breaks so ReportLab can
+    # wrap the text naturally within the available column width.
+    # Put company name above the registered address
+    address_html = f"<b>Shekru Labs India Pvt. Ltd.</b><br/>Registered Address: <br/>{COMPANY_ADDRESS}"
     
     # Prepare logo and address for table
     if USE_LOGO and LOGO_PATH and os.path.exists(LOGO_PATH):
@@ -168,12 +174,16 @@ def generate_salary_slip_pdf(
         ('BOX', (0, 0), (-1, -1), 1, BLACK),  # Outer box border
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ALIGN', (0, 0), (0, 0), 'LEFT'),  # Logo left aligned
-        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),  # Address right aligned
+        # Address cell: left-align text but add left padding so the text starts
+        # from the center margin of the overall header box (i.e., shift right).
+        ('ALIGN', (1, 0), (1, 0), 'LEFT'),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
         ('LEFTPADDING', (0, 0), (0, -1), 8),  # Left padding for logo column
         ('RIGHTPADDING', (0, 0), (0, -1), 10),  # Right padding for logo column (spacing between columns)
-        ('LEFTPADDING', (1, 0), (1, -1), 10),  # Left padding for address column (spacing between columns)
+        # Shift the address start so the text begins at the centre margin of
+        # the overall header (same visual starting point as the employee details section).
+        ('LEFTPADDING', (1, 0), (1, -1), table_total_width * 0.1 + 8),
         ('RIGHTPADDING', (1, 0), (1, -1), 8),  # Right padding for address column
     ]))
     elements.append(header_table)
@@ -187,11 +197,11 @@ def generate_salary_slip_pdf(
         ('TEXTCOLOR', (0, 0), (-1, -1), BLACK),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
         ('BOX', (0, 0), (-1, -1), 1, BLACK),
         ('INNERGRID', (0, 0), (-1, -1), 1, BLACK),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
     elements.append(payslip_header_table)
     
@@ -205,9 +215,9 @@ def generate_salary_slip_pdf(
         ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
         ('FONTNAME', (1, 0), (1, 0), 'Helvetica-Bold'),  # Bold colon to match label/value
         ('FONTNAME', (2, 0), (2, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ('BOX', (0, 0), (-1, -1), 1, BLACK),
     ]))
     elements.append(emp_name_table)
@@ -225,7 +235,7 @@ def generate_salary_slip_pdf(
         ],
         [
             Table([["DOJ", ":", doj]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-            Table([["PF", ":", pf]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
+            Table([["PF No.", ":", pf_no]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
         ],
         [
             Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
@@ -241,7 +251,7 @@ def generate_salary_slip_pdf(
     inner_style = TableStyle([
         ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),  # Label bold
         ('FONTNAME', (1, 0), (1, -1), 'Helvetica-Bold'),  # Colon bold to match label/value
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
         ('TOPPADDING', (0, 0), (-1, -1), 0.5),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 0.5),
         ('LEFTPADDING', (0, 0), (-1, -1), 2),
@@ -270,10 +280,17 @@ def generate_salary_slip_pdf(
     earnings_header = [["Earnings", "Amount(Rs)", "Deductions", "Amount(Rs)"]]
     
     # Data rows - align earnings and deductions side by side
+    # Prepare a display string for PF using parsed numeric value when available
+    if pf_numeric and pf_numeric > 0:
+        pf_display = format_currency(pf_numeric)
+    else:
+        pf_display = str(pf) if pf else "-"
+
     earnings_deductions_data = [
         ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
         ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
-        ["Special Allowance", format_currency(special_allowance), "", ""],
+        # Put PF in the same row as Special Allowance (deductions columns)
+        ["Special Allowance", format_currency(special_allowance), "PF", pf_display],
         ["Medical Allowance", format_currency(medical_allowance), "", ""],
         ["Conveyance Allowance", format_currency(conveyance), "", ""],
         ["Other Allowance", format_currency(other_allowance), "", ""],
@@ -285,19 +302,33 @@ def generate_salary_slip_pdf(
     # Combine all
     full_table_data = earnings_header + earnings_deductions_data + total_row
     
-    col_widths = [1.6*inch, 1.5*inch, 1.6*inch, 1.5*inch]
+    col_widths = [1.8*inch, 1.8*inch, 1.8*inch, 1.8*inch]
     earnings_table = Table(full_table_data, colWidths=col_widths)
     earnings_table.setStyle(TableStyle([
         # Header styling
         ('BACKGROUND', (0, 0), (1, 0), GRAY_BG),
         ('BACKGROUND', (2, 0), (3, 0), GRAY_BG),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        # Header alignment: labels left, amount headers right
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+        ('ALIGN', (2, 0), (2, 0), 'LEFT'),
+        ('ALIGN', (3, 0), (3, 0), 'RIGHT'),
         
-        # Data styling
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
-        ('ALIGN', (3, 1), (3, -1), 'RIGHT'),
+        # Header font size (keep as-is)
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        # Data rows: 10pt regular
+        ('FONTSIZE', (0, 1), (-1, -2), 11),
+        ('FONTNAME', (0, 1), (-1, -2), 'Helvetica'),
+        ('ALIGN', (1, 1), (1, -2), 'RIGHT'),
+        ('ALIGN', (3, 1), (3, -2), 'RIGHT'),
+        # Total row styling - keep font size same as header
+        ('FONTSIZE', (0, -1), (-1, -1), 12),
+        # Total row alignment: labels left, amounts right
+        ('ALIGN', (0, -1), (0, -1), 'LEFT'),
+        ('ALIGN', (1, -1), (1, -1), 'RIGHT'),
+        ('ALIGN', (2, -1), (2, -1), 'LEFT'),
+        ('ALIGN', (3, -1), (3, -1), 'RIGHT'),
         
         # Total row styling
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
@@ -309,8 +340,13 @@ def generate_salary_slip_pdf(
         ('LINEBELOW', (0, 0), (-1, 0), 1, BLACK),  # Line below header
         ('LINEABOVE', (0, -1), (-1, -1), 1, BLACK),  # Line above total row
         ('LINEAFTER', (1, 0), (1, -1), 1, BLACK),  # Center vertical line after earnings column
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        # Different vertical padding for header, data rows and total row
+        ('TOPPADDING', (0, 0), (-1, 0), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('TOPPADDING', (0, 1), (-1, -2), 3),
+        ('BOTTOMPADDING', (0, 1), (-1, -2), 3),
+        ('TOPPADDING', (0, -1), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, -1), (-1, -1), 6),
     ]))
     elements.append(earnings_table)
     
@@ -326,7 +362,7 @@ def generate_salary_slip_pdf(
         ('FONTNAME', (1,0), (1,-1), 'Helvetica-Bold'),   # Colon bold to match label/value
         ('FONTNAME', (2,0), (2,0), 'Helvetica-Bold'),    # Payment value bold
         ('FONTNAME', (2,1), (2,1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
         ('ALIGN', (0,0), (0,-1), 'LEFT'),
         ('ALIGN', (1,0), (1,-1), 'CENTER'),
         ('ALIGN', (2,0), (2,-1), 'LEFT'),
@@ -431,21 +467,21 @@ def _build_salary_annexure_elements(
     elements.append(Spacer(1, 15))
     
     # Reuse consistent widths across all tables in this section
-    col_widths = [2.5*inch, 1.5*inch, 1.5*inch]
-    table_total_width = sum(col_widths)
+    col_widths = [2.8*inch, 1.5*inch, 1.5*inch]
+    table_total_width = sum(col_widths)  # Total width: 5.8*inch
     
     # ===== EMPLOYEE INFO TABLE =====
     info_data = [
         ["Company Name:", COMPANY_NAME],
         ["Candidate Name:", employee_name],
         ["Designation:", designation],
-        ["Location:", location],
+        ["Location:", "Pune"],
     ]
     
     info_table = Table(info_data, colWidths=[2*inch, table_total_width - 2*inch])
     info_table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ('BOX', (0, 0), (-1, -1), 1, BLACK),
@@ -457,7 +493,7 @@ def _build_salary_annexure_elements(
     # ===== SALARY COMPONENTS TABLE =====
     # Components section
     components_data = [
-        ["Components", "Per Annum", "Per Month"],
+        ["A) Fixed Gross Salary", "Per Annum", "Per Month"],
         ["Basic", format_currency_int(basic_annual), format_currency(basic_monthly)],
         ["HRA", format_currency_int(hra_annual), format_currency(hra_monthly)],
         ["Special Allowance", format_currency_int(special_allowance_annual), format_currency(special_monthly)],
@@ -473,7 +509,7 @@ def _build_salary_annexure_elements(
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         # Data
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -488,9 +524,11 @@ def _build_salary_annexure_elements(
     pt_monthly_note = f"PM 200 In Feb 300" if professional_tax_annual > 0 else "-"
     
     deductions_data = [
-        ["Deductions Amount(B)", "Per Annum", "Per Month"],
+        ["B) Employee Contribution", "Per Annum", "Per Month"],
         ["Professional Tax Deduction", format_currency_int(professional_tax_annual), pt_monthly_note],
         ["Other", format_currency_int(other_deduction_annual), format_currency(round(other_deduction_annual / 12, 2))],
+        ["PF", format_currency_int(employer_pf_annual), format_currency(round(employer_pf_annual / 12, 2))],
+        ["Variable Pay", format_currency_int(variable_pay_annual), format_currency(round(variable_pay_annual / 12, 2))],
     ]
     
     deductions_table = Table(deductions_data, colWidths=col_widths)
@@ -500,7 +538,7 @@ def _build_salary_annexure_elements(
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         # Data
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -513,12 +551,14 @@ def _build_salary_annexure_elements(
     # ===== CTC SUMMARY TABLE =====
     # STRICT RULES: Total Gross (earnings) vs CTC (company cost)
     # CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    # Keep header row (Per Annum / Per Month) and present A/B/CTC rows
+    employee_contribution_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
     ctc_data = [
-        ["Summary", "Per Annum", "Per Month"],
-        ["Total Gross (Earnings):", format_currency_int(total_gross_annual), format_currency_int(monthly_gross)],
-        ["Employer PF (12% of Basic):", format_currency_int(employer_pf_annual), format_currency_int(round(employer_pf_annual / 12, 2))],
-        ["Total CTC:", format_currency_int(ctc_annual), format_currency_int(monthly_ctc)],
-        ["Monthly In-Hand:", "-", format_currency_int(monthly_in_hand)],
+        ["", "Per Annum", "Per Month"],
+        ["A) Gross Salary", format_currency_int(total_gross_annual), format_currency(monthly_gross)],
+        ["B) Employee Contribution", format_currency_int(employee_contribution_annual), format_currency(round(employee_contribution_annual / 12, 2))],
+        ["Total Cost To Company (CTC):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
+        ["Monthly CTC", "-", format_currency(monthly_ctc)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)
@@ -529,7 +569,7 @@ def _build_salary_annexure_elements(
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         # Data
         ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1106,7 +1146,7 @@ def generate_offer_letter_pdf(
     
     # Define margins accounting for header/footer space
     left_margin = 50
-    right_margin = 40
+    right_margin = 50
     top_margin = 70  # Space for header
     bottom_margin = 75  # Space for footer
     
@@ -1492,28 +1532,28 @@ def generate_offer_letter_pdf(
     monthly_in_hand = round((total_gross_annual - total_deductions_annual) / 12, 2)
     
     # Salary Components table
-    col_widths = [2.5*inch, 1.3*inch, 1.3*inch]
-    table_total_width = sum(col_widths)  # Total width: 5.1*inch
+    col_widths = [2.8*inch, 1.5*inch, 1.5*inch]
+    table_total_width = sum(col_widths)  # Total width: 5.8*inch
     
     # Employee info table - use same width as components table
     info_data = [
         ["Company Name:", COMPANY_NAME],
         ["Candidate Name:", f"{employee_name}"],
         ["Designation:", f"{designation}"],
-        ["Location:", f"{location}"],
+        ["Location:", "Pune"],
     ]
     
     # Convert to Paragraphs for bold support
     info_table_data = []
     for row in info_data:
         info_table_data.append([
-            Paragraph(row[0], ParagraphStyle('InfoLabel', fontName='Helvetica-Bold', fontSize=10)),
-            Paragraph(row[1], ParagraphStyle('InfoValue', fontName='Helvetica', fontSize=10))
+            Paragraph(row[0], ParagraphStyle('InfoLabel', fontName='Helvetica-Bold', fontSize=11)),
+            Paragraph(row[1], ParagraphStyle('InfoValue', fontName='Helvetica', fontSize=11))
         ])
     
     info_table = Table(info_table_data, colWidths=[2*inch, table_total_width - 2*inch])
     info_table.setStyle(TableStyle([
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ('BOX', (0, 0), (-1, -1), 0.5, BLACK),
@@ -1524,7 +1564,7 @@ def generate_offer_letter_pdf(
     
     # Salary Components table (col_widths already defined above)
     components_data = [
-        ["Components", "Per Annum", "Per Month"],
+        ["A) Fixed Gross Salary", "Per Annum", "Per Month"],
         ["Basic", format_currency_int(basic_annual), format_currency(basic_monthly)],
         ["HRA", format_currency_int(hra_annual), format_currency(hra_monthly)],
         ["Special Allowance", format_currency_int(special_allowance_annual), format_currency(special_monthly)],
@@ -1538,7 +1578,10 @@ def generate_offer_letter_pdf(
         ('BACKGROUND', (0, 0), (-1, 0), GRAY_BG),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        # Header font size 12pt
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        # Data rows 11pt
+        ('FONTSIZE', (0, 1), (-1, -1), 11),
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1552,9 +1595,11 @@ def generate_offer_letter_pdf(
     pt_monthly_note = "PM 200 In Feb 300" if professional_tax_annual > 0 else "-"
     
     deductions_data = [
-        ["Deductions Amount(B)", "Per Annum", "Per Month"],
+        ["B) Employee Contribution", "Per Annum", "Per Month"],
         ["Professional Tax Deduction", format_currency_int(professional_tax_annual), pt_monthly_note],
         ["Other", format_currency_int(other_deduction_annual), format_currency(round(other_deduction_annual / 12, 2))],
+        ["PF", format_currency_int(employer_pf_annual), format_currency(round(employer_pf_annual / 12, 2))],
+        ["Variable Pay", format_currency_int(variable_pay_annual), format_currency(round(variable_pay_annual / 12, 2))],
     ]
     
     deductions_table = Table(deductions_data, colWidths=col_widths)
@@ -1562,7 +1607,10 @@ def generate_offer_letter_pdf(
         ('BACKGROUND', (0, 0), (-1, 0), GRAY_BG),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        # Header font size 12pt
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        # Data rows 11pt
+        ('FONTSIZE', (0, 1), (-1, -1), 11),
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1574,12 +1622,14 @@ def generate_offer_letter_pdf(
     
     # CTC Summary table - STRICT RULES: Total Gross vs CTC
     # CTC = Total Gross + Employer PF + Variable Pay + PT + Other Tax
+    # Keep header row (Per Annum / Per Month) and present A/B/CTC rows
+    employee_contribution_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
     ctc_data = [
-        ["Summary", "Per Annum", "Per Month"],
-        ["Total Gross (Earnings):", format_currency_int(total_gross_annual), format_currency_int(monthly_gross)],
-        ["Employer PF (12% of Basic):", format_currency_int(employer_pf_annual), format_currency_int(round(employer_pf_annual / 12, 2))],
-        ["Total CTC:", format_currency_int(ctc_annual), format_currency_int(monthly_ctc)],
-        ["Monthly In-Hand:", "-", format_currency_int(monthly_in_hand)],
+        ["", "Per Annum", "Per Month"],
+        ["A) Gross Salary", format_currency_int(total_gross_annual), format_currency(monthly_gross)],
+        ["B) Employee Contribution", format_currency_int(employee_contribution_annual), format_currency(round(employee_contribution_annual / 12, 2))],
+        ["Total Cost To Company (CTC):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
+        ["Monthly CTC", "-", format_currency(monthly_ctc)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)
@@ -1588,7 +1638,10 @@ def generate_offer_letter_pdf(
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        # Header font size 12pt (empty label cell kept but header row size set)
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        # Data rows 11pt
+        ('FONTSIZE', (0, 1), (-1, -1), 11),
         ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),

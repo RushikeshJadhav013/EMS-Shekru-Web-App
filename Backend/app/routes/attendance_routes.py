@@ -2276,6 +2276,38 @@ def download_monthly_grid_pdf(
     )
 
 
+@router.get("/report/monthly-detailed-grid/download/pdf")
+def download_monthly_detailed_grid_pdf(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(...),
+    department: Optional[str] = Query(None, description="Filter by department"),
+    employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
+    date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
+    status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
+    db: Session = Depends(get_db)
+):
+    from app.crud.attendance_grid_export import export_monthly_detailed_pdf
+
+    buffer = export_monthly_detailed_pdf(
+        db,
+        month,
+        year,
+        department=department,
+        employee_id=employee_id,
+        date_from=date_from,
+        date_to=date_to,
+        status=status
+    )
+
+    filename = f"attendance_detailed_grid_{month:02d}_{year}.pdf"
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 @router.get("/report/monthly-grid/download/csv")
 def download_monthly_grid_csv(
     month: int = Query(..., ge=1, le=12),

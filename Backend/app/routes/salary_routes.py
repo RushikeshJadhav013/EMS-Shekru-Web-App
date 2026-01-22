@@ -391,6 +391,7 @@ def download_salary_slip(
     user_id: int,
     month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., ge=2000, le=2100, description="Year"),
+    pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -426,8 +427,8 @@ def download_salary_slip(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF
-        pdf_buffer = _generate_salary_slip(user, salary, month, year)
+        # Generate PDF (pass optional PF number if provided)
+        pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
         
         # Record in history using CTC-based calculation
         # Total Gross = sum of all earnings (already calculated from CTC)
@@ -470,6 +471,7 @@ def send_salary_slip(
     user_id: int,
     month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., ge=2000, le=2100, description="Year"),
+    pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
@@ -508,8 +510,8 @@ def send_salary_slip(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF
-        pdf_buffer = _generate_salary_slip(user, salary, month, year)
+        # Generate PDF (pass optional PF number if provided)
+        pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
         
         # Calculate net salary using CTC-based logic
         # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax)
@@ -949,7 +951,7 @@ def send_increment_letter(
 @router.get("/offer-letter/download/{user_id}")
 def download_offer_letter(
     user_id: int,
-    letter_date: str = Query(..., description="Letter creation date (YYYY-MM-DD). Must not be earlier than today"),
+    letter_date: str = Query(..., description="Letter creation date (YYYY-MM-DD)."),
     joining_date: str = Query(..., description="Joining date (YYYY-MM-DD). Must be same or later than letter_date"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
@@ -978,10 +980,6 @@ def download_offer_letter(
             parsed_letter = datetime.strptime(letter_date, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid letter_date format. Use YYYY-MM-DD")
-        # letter_date must not be earlier than today
-        if parsed_letter.date() < datetime.now().date():
-            raise HTTPException(status_code=400, detail="letter_date cannot be earlier than today")
-
         # joining_date is required; parse and validate it against parsed_letter
         try:
             parsed_joining = datetime.strptime(joining_date, "%Y-%m-%d")
@@ -1158,7 +1156,7 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
     }
 
 
-def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: int):
+def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: int, pf_no: Optional[str] = None):
     """
     Generate salary slip PDF for user using CTC-based calculation logic.
     
@@ -1202,11 +1200,11 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
     if employer_pf_monthly > 0:
         pf_display = f"{employer_pf_monthly:,.2f}"
     
-    return generate_salary_slip_pdf(
+        return generate_salary_slip_pdf(
         employee_name=user.name,
         employee_id=user.employee_id or str(user.user_id),
         designation=user.designation or "Employee",
-        location=user.address or "Office",
+        location="Pune",
         doj=doj,
         pan=salary.pan_number or user.pan_card or "N/A",
         uan=salary.uan_number or "NA",
@@ -1223,6 +1221,7 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
         other_allowance=other_monthly,
         professional_tax=pt_monthly,
         other_deduction=other_ded_monthly,
+        pf_no=pf_no or "",
         payment_mode=salary.payment_mode
     )
 

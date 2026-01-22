@@ -827,7 +827,7 @@ def build_monthly_attendance_grid(db, month: int, year: int, department: str = N
         })
 
     return {
-        "title": "Daily Attendance Log",
+        "title": "Monthly Standard Attendance Report",
         "duration": f"01/{month:02d}/{year} - {total_days}/{month:02d}/{year}",
         "printed_on": date.today().strftime("%d/%m/%Y"),
         "days": days,
