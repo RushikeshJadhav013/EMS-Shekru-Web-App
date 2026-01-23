@@ -17,6 +17,7 @@ from app.services.salary_calculation_service import calculate_salary_from_ctc, S
 from app.utils.timezone import now_ist
 import logging
 import re
+from decimal import Decimal, ROUND_HALF_UP
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,9 @@ def create_employee_salary_from_ctc(
     if existing:
         raise ValueError(f"Salary record already exists for user_id {salary_data.user_id}")
     
-    # Calculate salary components from CTC
+    # Calculate salary components from package CTC (package_ctc_annual is required)
     calculated_data = calculate_salary_from_ctc(
-        annual_ctc=salary_data.annual_ctc,
+        annual_ctc=salary_data.package_ctc_annual,
         variable_pay_type=salary_data.variable_pay_type.value,
         variable_pay_value=salary_data.variable_pay_value,
         employer_pf_percentage=salary_data.employer_pf_percentage / 100.0,  # Convert percentage to decimal
@@ -66,9 +67,8 @@ def create_employee_salary_from_ctc(
     if calculated_data.get("ifsc_code") is not None:
         calculated_data["ifsc_code"] = str(calculated_data["ifsc_code"]).strip().upper()
     
-    # Add package CTC if provided
-    if salary_data.package_ctc_annual is not None:
-        calculated_data["package_ctc_annual"] = salary_data.package_ctc_annual
+    # Package CTC is required — store it for display
+    calculated_data["package_ctc_annual"] = salary_data.package_ctc_annual
     
     # Create salary record
     db_salary = EmployeeSalary(**calculated_data)
@@ -76,8 +76,7 @@ def create_employee_salary_from_ctc(
     db.commit()
     db.refresh(db_salary)
     
-    logger.info(f"Created salary record from CTC {salary_data.annual_ctc} for user_id: {salary_data.user_id}, "
-                f"package_ctc: {salary_data.package_ctc_annual or 'None'}")
+    logger.info(f"Created salary record from package CTC {salary_data.package_ctc_annual} for user_id: {salary_data.user_id}")
     return db_salary
 
 
@@ -141,9 +140,9 @@ def update_employee_salary_from_ctc(
     # Use existing employer PF percentage if not provided
     employer_pf_pct = ctc_update.employer_pf_percentage / 100.0 if ctc_update.employer_pf_percentage is not None else None
     
-    # Calculate new salary components
+    # Calculate new salary components using package CTC
     calculated_data = calculate_salary_from_ctc(
-        annual_ctc=ctc_update.annual_ctc,
+        annual_ctc=ctc_update.package_ctc_annual,
         variable_pay_type=vp_type,
         variable_pay_value=vp_value,
         employer_pf_percentage=employer_pf_pct,
@@ -154,16 +153,14 @@ def update_employee_salary_from_ctc(
     for key, value in calculated_data.items():
         setattr(salary, key, value)
     
-    # Update package CTC if provided
-    if ctc_update.package_ctc_annual is not None:
-        salary.package_ctc_annual = ctc_update.package_ctc_annual
+    # Update stored package CTC (required)
+    salary.package_ctc_annual = ctc_update.package_ctc_annual
     
     salary.updated_at = now_ist()
     db.commit()
     db.refresh(salary)
     
-    logger.info(f"Updated salary record from CTC {ctc_update.annual_ctc} for user_id: {user_id}, "
-                f"package_ctc: {ctc_update.package_ctc_annual or 'unchanged'}")
+    logger.info(f"Updated salary record from package CTC {ctc_update.package_ctc_annual} for user_id: {user_id}")
     return salary
 
 
@@ -196,7 +193,8 @@ def update_employee_salary(
     
     # Handle variable pay update - recalculate if changed
     if 'variable_pay_type' in update_data or 'variable_pay_value' in update_data:
-        current_ctc = salary.ctc_annual
+        # Use stored package CTC for recalculation
+        current_ctc = salary.package_ctc_annual
         vp_type = update_data.get('variable_pay_type', 'none')
         vp_value = update_data.get('variable_pay_value', 0.0)
         
@@ -277,7 +275,7 @@ def list_employee_salaries(
 
 
 def preview_salary_calculation(
-    annual_ctc: float,
+    package_ctc_annual: float,
     variable_pay_type: str = "none",
     variable_pay_value: float = 0.0,
     employer_pf_percentage: float = None
@@ -288,11 +286,11 @@ def preview_salary_calculation(
         employer_pf_pct = employer_pf_percentage / 100.0 if employer_pf_percentage is not None else None
         
         components = SalaryCalculator.calculate_salary_components(
-            annual_ctc, variable_pay_type, variable_pay_value, employer_pf_pct
+            package_ctc_annual, variable_pay_type, variable_pay_value, employer_pf_pct
         )
         
         return SalaryCalculationPreview(
-            annual_ctc=annual_ctc,
+            package_ctc_annual=package_ctc_annual,
             total_gross_annual=components["total_gross_annual"],
             basic_annual=components["basic_annual"],
             hra_annual=components["hra_annual"],
@@ -373,16 +371,17 @@ def create_salary_increment(
     
     # 3. Update employee's CTC (this recalculates all salary components)
     from app.schemas.salary_schema import EmployeeSalaryCTCUpdate
-    ctc_update = EmployeeSalaryCTCUpdate(annual_ctc=new_ctc)
+    ctc_update = EmployeeSalaryCTCUpdate(package_ctc_annual=new_ctc)
     updated_salary = update_employee_salary_from_ctc(db, increment_data.user_id, ctc_update)
     
     if not updated_salary:
         raise ValueError(f"Failed to update salary for user_id {increment_data.user_id}")
     
     # 4. Calculate monthly values for legacy fields (backward compatibility)
-    previous_monthly = round(previous_ctc / 12, 2)
-    increment_monthly = round(increment_ctc / 12, 2)
-    new_monthly = round(new_ctc / 12, 2)
+    # Use Decimal with fixed 2-decimal quantization for monthly monetary fields
+    previous_monthly = (Decimal(str(previous_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    increment_monthly = (Decimal(str(increment_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    new_monthly = (Decimal(str(new_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     
     # 5. Create increment record with both CTC and monthly values
     db_increment = SalaryIncrement(

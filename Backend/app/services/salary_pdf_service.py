@@ -558,7 +558,6 @@ def _build_salary_annexure_elements(
         ["A) Gross Salary", format_currency_int(total_gross_annual), format_currency(monthly_gross)],
         ["B) Employee Contribution", format_currency_int(employee_contribution_annual), format_currency(round(employee_contribution_annual / 12, 2))],
         ["Total Cost To Company (CTC):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
-        ["Monthly CTC", "-", format_currency(monthly_ctc)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)
@@ -1629,7 +1628,6 @@ def generate_offer_letter_pdf(
         ["A) Gross Salary", format_currency_int(total_gross_annual), format_currency(monthly_gross)],
         ["B) Employee Contribution", format_currency_int(employee_contribution_annual), format_currency(round(employee_contribution_annual / 12, 2))],
         ["Total Cost To Company (CTC):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
-        ["Monthly CTC", "-", format_currency(monthly_ctc)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)

@@ -52,7 +52,7 @@ router = APIRouter(prefix="/salary", tags=["Salary Management"])
 
 @router.post("/calculate-preview", response_model=SalaryCalculationPreview)
 def preview_ctc_calculation(
-    annual_ctc: float = Query(..., gt=0, description="Annual CTC amount"),
+    package_ctc_annual: float = Query(..., gt=0, description="Package Annual CTC amount"),
     variable_pay_type: VariablePayType = Query(default=VariablePayType.NONE),
     variable_pay_value: float = Query(default=0.0, ge=0),
     employer_pf_percentage: float = Query(default=12.0, ge=0, le=100, description="Employer PF percentage"),
@@ -64,7 +64,7 @@ def preview_ctc_calculation(
     """
     try:
         return preview_salary_calculation(
-            annual_ctc=annual_ctc,
+            annual_ctc=package_ctc_annual,
             variable_pay_type=variable_pay_type.value,
             variable_pay_value=variable_pay_value,
             employer_pf_percentage=employer_pf_percentage
@@ -1147,7 +1147,6 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "updated_at": salary.updated_at,
         "total_earnings_annual": salary.total_earnings_annual,
         "total_deductions_annual": salary.total_deductions_annual,
-        "ctc_annual": salary.ctc_annual,  # Calculated CTC (for internal use)
         "package_ctc_annual": salary.package_ctc_annual,  # Offered package CTC (for display)
         "display_ctc_annual": salary.display_ctc_annual,  # CTC to display (package if set, else calculated)
         "monthly_ctc": salary.monthly_ctc,  # Calculated monthly CTC

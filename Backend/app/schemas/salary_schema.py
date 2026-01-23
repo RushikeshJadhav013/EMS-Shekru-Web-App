@@ -19,11 +19,8 @@ class VariablePayType(str, Enum):
 class EmployeeSalaryCTCCreate(BaseModel):
     """Schema for creating employee salary record from CTC"""
     user_id: int
-    annual_ctc: float = Field(..., gt=0, description="Annual CTC amount (Package)")
-    
-    # Optional: Specify a different package CTC for display
-    package_ctc_annual: Optional[float] = Field(None, gt=0, 
-                                                description="Offered package CTC for display (optional)")
+    # Package CTC is now required and used for all calculations (replaces annual_ctc)
+    package_ctc_annual: float = Field(..., gt=0, description="Offered package CTC for display (required)")
     
     # Variable pay configuration
     variable_pay_type: VariablePayType = Field(default=VariablePayType.NONE)
@@ -158,9 +155,11 @@ class EmployeeSalaryUpdate(BaseModel):
 
 class EmployeeSalaryCTCUpdate(BaseModel):
     """Schema for updating salary by changing CTC"""
-    annual_ctc: float = Field(..., gt=0, description="New Annual CTC amount (Package)")
-    package_ctc_annual: Optional[float] = Field(None, gt=0, 
-                                                description="Offered package CTC for display (optional)")
+    # New package CTC to replace annual_ctc usage
+    package_ctc_annual: float = Field(..., gt=0, description="New package CTC amount (Package)")
+    variable_pay_type: Optional[VariablePayType] = None
+    variable_pay_value: Optional[float] = Field(default=None, ge=0)
+    employer_pf_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Employer PF percentage (editable)")
     variable_pay_type: Optional[VariablePayType] = None
     variable_pay_value: Optional[float] = Field(default=None, ge=0)
     employer_pf_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Employer PF percentage (editable)")
@@ -206,8 +205,7 @@ class EmployeeSalaryOut(BaseModel):
     # Computed fields
     total_earnings_annual: float
     total_deductions_annual: float
-    ctc_annual: float  # Calculated CTC (for internal use)
-    package_ctc_annual: Optional[float]  # Offered package CTC (for display)
+    package_ctc_annual: float  # Offered package CTC (for display) - required replacement for ctc_annual
     display_ctc_annual: float  # CTC to display (package if set, else calculated)
     monthly_ctc: float  # Calculated monthly CTC
     display_monthly_ctc: float  # Monthly CTC to display
@@ -219,7 +217,7 @@ class EmployeeSalaryOut(BaseModel):
 
 class SalaryCalculationPreview(BaseModel):
     """Schema for previewing salary calculation before saving"""
-    annual_ctc: float
+    package_ctc_annual: float
     total_gross_annual: float
     basic_annual: float
     hra_annual: float

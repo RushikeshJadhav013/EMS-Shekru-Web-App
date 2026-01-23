@@ -10,7 +10,7 @@ STRICT CALCULATION RULES:
 6. Employer PF is part of CTC, NEVER deducted from employee
 7. Monthly In-Hand = (Total Gross − Professional Tax − Other Tax) / 12
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Numeric
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 from app.utils.timezone import now_ist
@@ -54,8 +54,8 @@ class EmployeeSalary(Base):
     # Employer Contribution (Annual) - part of CTC, NOT deducted from employee
     pf_annual = Column(Float, default=0.0)  # Employer PF: 12% of Basic
     
-    # Package CTC (optional) - for display purposes only
-    package_ctc_annual = Column(Float, nullable=True)  # Offered package CTC for display (e.g., ₹7,00,000)
+    # Package CTC (required) - for display purposes and now used for calculations
+    package_ctc_annual = Column(Float, nullable=False)  # Offered package CTC for display (e.g., ₹7,00,000)
     
     # Additional info
     pan_number = Column(String(20), nullable=True)
@@ -132,11 +132,14 @@ class EmployeeSalary(Base):
     @property
     def total_deductions_annual(self):
         """
-        Alias for total_employee_deductions_annual for backward compatibility.
-        Only includes employee deductions (Professional Tax + Other Tax).
-        Employer PF is NOT included as it's not deducted from employee salary.
+        Total deductions annual used in responses and reports.
+        Includes employee deductions (Professional Tax + Other Tax) PLUS
+        Employer PF to present the full deductions/ employer contributions
+        related to the salary package where required.
+        Note: Historically this was an alias for employee deductions only;
+        changed to include PF per updated requirement.
         """
-        return self.total_employee_deductions_annual
+        return self.professional_tax_annual + self.other_deduction_annual + self.pf_annual
     
     @property
     def ctc_annual(self):
@@ -166,10 +169,11 @@ class EmployeeSalary(Base):
     def monthly_in_hand(self):
         """
         Monthly in-hand salary (STRICT RULE #7).
-        Monthly In-Hand = (Total Gross − Professional Tax − Other Tax) / 12
+        Monthly In-Hand = Total Earnings / 12
+        (Total Earnings = Total Gross)
         Note: Employer PF is NOT deducted from employee salary.
         """
-        return round(self.net_annual / 12, 2)
+        return round(self.total_earnings_annual / 12, 2)
     
     @property
     def display_ctc_annual(self):
@@ -195,9 +199,10 @@ class SalaryIncrement(Base):
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
     
     # Increment details (Monthly - for backward compatibility)
-    previous_salary = Column(Float, nullable=False)  # Monthly
-    increment_amount = Column(Float, nullable=False)  # Monthly
-    new_salary = Column(Float, nullable=False)  # Monthly
+    # Use fixed scale numeric for monetary monthly fields (2 decimal places)
+    previous_salary = Column(Numeric(12, 2), nullable=False)  # Monthly
+    increment_amount = Column(Numeric(12, 2), nullable=False)  # Monthly
+    new_salary = Column(Numeric(12, 2), nullable=False)  # Monthly
     increment_percentage = Column(Float, nullable=True)
     
     # CTC-based increment tracking (Annual)
