@@ -315,7 +315,7 @@ def update_employee(
     phone: Optional[str] = Form(None),
     address: Optional[str] = Form(None),
     role: Optional[RoleEnum] = Form(RoleEnum.EMPLOYEE),
-    gender: Optional[str] = Form(None),
+    gender: str = Form(...),
     resignation_date: Optional[str] = Form(None),
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
@@ -338,19 +338,15 @@ def update_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     # Validate phone format and check for duplicate phone number (excluding current employee)
+    digits = None
     if phone and phone.strip():
         digits = re.sub(r'[^0-9]', '', phone)
-        if len(digits) < 10:
+        if not re.fullmatch(r'[6-9]\d{9}', digits):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Phone number must have at least 10 digits",
+                detail="Phone number must be exactly 10 digits and start with 6, 7, 8, or 9",
             )
-        if not re.match(r'^[6-9]', digits):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Phone number must start with 6, 7, 8, or 9",
-            )
-        existing_phone = get_user_by_phone(db, phone.strip())
+        existing_phone = get_user_by_phone(db, digits)
         if existing_phone and existing_phone.user_id != user_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -425,7 +421,8 @@ def update_employee(
     employee.employee_id = employee_id
     employee.department = department
     employee.designation = designation
-    employee.phone = phone
+    # store normalized digits if provided
+    employee.phone = digits if digits is not None else phone
     employee.address = address
     
     # ✅ Only Admin/HR can change roles with restrictions
@@ -440,14 +437,19 @@ def update_employee(
         employee.role = role
     
     # Validate and convert gender to GenderEnum
-    if gender:
-        try:
-            employee.gender = GenderEnum(gender.strip()).value
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
-            )
+    # Gender is required for updates
+    if gender is None or not str(gender).strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Gender is required"
+        )
+    try:
+        employee.gender = GenderEnum(gender.strip()).value
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
+        )
     employee.resignation_date = resignation_date
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card

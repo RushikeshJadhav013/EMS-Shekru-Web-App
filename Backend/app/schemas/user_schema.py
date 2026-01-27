@@ -62,11 +62,10 @@ class UserBase(BaseModel):
             return v
         # Remove all non-digit characters for validation
         digits = re.sub(r'[^0-9]', '', v)
-        if len(digits) < 10:
-            raise ValueError('Phone number must have at least 10 digits')
-        if not re.match(r'^[6-9]', digits):
-            raise ValueError('Phone number must start with 6, 7, 8, or 9')
-        return v.strip()
+        # Require exactly 10 digits and starting with 6-9
+        if not re.fullmatch(r'[6-9]\d{9}', digits):
+            raise ValueError('Phone number must be exactly 10 digits and start with 6, 7, 8, or 9')
+        return digits
 
     @field_validator('address')
     @classmethod
@@ -171,6 +170,16 @@ class UserBase(BaseModel):
             return v
         if v < datetime(1900, 1, 1):
             raise ValueError('Resignation date cannot be before 1900')
+        return v
+    
+    @field_validator('shift_type', mode='before')
+    @classmethod
+    def normalize_shift_type(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize shift_type to lowercase before Literal validation"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v.strip().lower()
         return v
 
 class UserCreate(UserBase):
@@ -494,8 +503,8 @@ class AdminUpdate(BaseModel):
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    # For updates, gender is optional in the request, but if provided it must not be null.
-    gender: Optional[str] = None
+    # For updates, gender is required and must not be null.
+    gender: str
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
@@ -505,7 +514,7 @@ class AdminUpdate(BaseModel):
     @validator("gender", pre=True, always=True)
     def validate_gender(cls, v):
         if v is None:
-            return v
+            raise ValueError('Gender is required')
         if isinstance(v, str):
             normalized = v.strip().lower()
             if normalized in ['male', 'm']:

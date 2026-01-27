@@ -561,22 +561,22 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
         "check_out": attendance.check_out,
         "total_hours": total_hours_value,
         "total_hours_formatted": _format_hours_to_hhmm(total_hours_value or 0),
-        "totalHoursFormatted": _format_hours_to_hhmm(total_hours_value or 0),
+        # "totalHoursFormatted": _format_hours_to_hhmm(total_hours_value or 0),
         "gps_location": location_label,
-        "locationLabel": location_label,
+        # "locationLabel": location_label,
         "checkInLocationLabel": location_sections.get("check_in"),
         "checkOutLocationLabel": location_sections.get("check_out"),
-        "selfie": check_in_selfie_path,
+        # "selfie": check_in_selfie_path,
         "checkInSelfie": check_in_selfie_path,
         "checkOutSelfie": check_out_selfie_path,
         "work_summary": getattr(attendance, "work_summary", None),
-        "workSummary": getattr(attendance, "work_summary", None),
+        # "workSummary": getattr(attendance, "work_summary", None),
         "work_report": work_report_url,
-        "workReport": work_report_url,
+        # "workReport": work_report_url,
         "work_location": getattr(attendance, "work_location", "office"),
-        "workLocation": getattr(attendance, "work_location", "office"),
+        # "workLocation": getattr(attendance, "work_location", "office"),
         "task_deadline_reason": getattr(attendance, "task_deadline_reason", None),
-        "taskDeadlineReason": getattr(attendance, "task_deadline_reason", None),
+        # "taskDeadlineReason": getattr(attendance, "task_deadline_reason", None),
     }
 
 def get_attendance_summary(db: Session) -> Dict[str, Any]:
@@ -1430,9 +1430,15 @@ async def employee_check_out_json(
             attendance.work_report = work_report_path
         if overdue_tasks and payload.task_deadline_reason:
             attendance.task_deadline_reason = payload.task_deadline_reason.strip()
-
-        time_worked = attendance.check_out - attendance.check_in
-        attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)
+        # Compute online-only working hours and store
+        try:
+            from app.crud.attendance_crud import compute_online_work_hours
+            hours = compute_online_work_hours(db, attendance)
+            attendance.total_hours = round(hours, 2)
+        except Exception:
+            # Fallback to wall-clock duration if online-hours calc fails for any reason
+            time_worked = attendance.check_out - attendance.check_in
+            attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)
         
         # Automatically set user as offline after check-out
         from app.db.models.online_status import OnlineStatus
@@ -1759,11 +1765,11 @@ def get_all_attendance_history(
         payload.update(
             {
                 "name": name,
-                "userName": name,
+                # "userName": name,
                 "department": dept,
                 "employee_id": emp_id,
                 "email": email,
-                "userEmail": email,
+                # "userEmail": email,
             }
         )
         check_in_value = payload.get("check_in")

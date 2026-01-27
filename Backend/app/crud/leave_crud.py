@@ -609,7 +609,6 @@ def list_leave_by_period(
                 and_(Leave.start_date <= start_date, Leave.end_date >= end_date)
             )
         )
-        .order_by(Leave.leave_id.asc(), User.department.asc(), Leave.start_date.asc())
         .all()
     )
 

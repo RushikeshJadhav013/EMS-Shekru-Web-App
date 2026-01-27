@@ -70,6 +70,58 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
     if not attendance:
         return None
         
+def compute_online_work_hours(db: Session, attendance: Attendance) -> float:
+    """
+    Compute total online-only working hours for an attendance record using OnlineStatus logs.
+    Returns hours as float (not rounded).
+    """
+    from app.db.models.online_status import OnlineStatus
+    from app.utils.timezone import now_ist
+
+    total_online_seconds = 0
+    check_in_time = attendance.check_in
+    if not check_in_time:
+        return 0.0
+
+    status_logs = (
+        db.query(OnlineStatus)
+        .filter(OnlineStatus.attendance_id == attendance.attendance_id)
+        .order_by(OnlineStatus.timestamp.asc())
+        .all()
+    )
+
+    # If no status logs, assume online for the whole duration until checkout or now
+    if not status_logs:
+        end_time = attendance.check_out if attendance.check_out else now_ist()
+        return max(0.0, (end_time - check_in_time).total_seconds() / 3600)
+
+    current_status = True  # assume online since check-in unless logs say otherwise
+    last_online_time = check_in_time
+    last_status_change_time = check_in_time
+
+    for log in status_logs:
+        log_ts = log.timestamp
+        if log.is_online:
+            # transitioned to online
+            if not current_status:
+                last_online_time = log_ts
+            last_status_change_time = log_ts
+            current_status = True
+        else:
+            # transitioned to offline - add online duration if any
+            if current_status and last_online_time:
+                total_online_seconds += (log_ts - last_online_time).total_seconds()
+            last_online_time = None
+            last_status_change_time = log_ts
+            current_status = False
+
+    # handle tail period up to checkout or now
+    end_time = attendance.check_out if attendance.check_out else now_ist()
+    if current_status and last_online_time:
+        total_online_seconds += (end_time - last_online_time).total_seconds()
+
+    return max(0.0, total_online_seconds / 3600)
+
 def _draw_shekru_footer(canvas_obj, width):
     """
     Draw Shekru Labs professional footer with contact information.
