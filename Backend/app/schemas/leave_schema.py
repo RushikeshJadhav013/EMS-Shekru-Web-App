@@ -6,7 +6,7 @@ class LeaveBase(BaseModel):
     start_date: date = Field(..., description="Leave start date")
     end_date: date = Field(..., description="Leave end date")
     reason: Optional[constr(min_length=10, max_length=500, strip_whitespace=True)] = Field(None, description="Leave reason (10-500 characters)")
-    status: Optional[Literal['Pending', 'Approved', 'Rejected']] = Field("Pending", description="Leave status")
+    # status: Optional[Literal['Pending', 'Approved', 'Rejected']] = Field("Pending", description="Leave status")
     leave_type: Literal['annual', 'sick', 'casual', 'maternity', 'paternity', 'unpaid'] = Field("annual", description="Type of leave")
 
     @field_validator('end_date')
@@ -48,15 +48,8 @@ class LeaveBase(BaseModel):
 
 
 class LeaveCreate(LeaveBase):
-    employee_id: constr(min_length=1, max_length=50, strip_whitespace=True) = Field(..., description="Employee ID")
-
-    @field_validator('employee_id')
-    @classmethod
-    def validate_employee_id(cls, v: str) -> str:
-        """Validate employee ID is not empty"""
-        if not v or not v.strip():
-            raise ValueError('Employee ID cannot be empty')
-        return v.strip()
+    """Request schema for creating a leave — uses authenticated user, no employee_id in request body."""
+    pass
 
 
 class LeaveOut(LeaveBase):

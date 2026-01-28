@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from typing import Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 from app.db.database import get_db
 from app.utils.timezone import now_ist
@@ -66,6 +66,10 @@ def request_leave(
     
     # Calculate leave duration
     leave_days = (end_dt - start_dt).days + 1
+    
+    # Validation 0: Admins cannot apply for leave
+    if getattr(user, "role", None) == RoleEnum.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin users cannot apply for leave")
     
     # Validation 1: Sick leave minimum duration check
     if leave.leave_type.lower() == 'sick' and leave_days < 3:
@@ -137,23 +141,66 @@ def request_leave(
     return new_leave
 
 
-# Manager/Admin can approve leave
+# Approve or reject a leave request with role-based validation
 @router.put("/{leave_id}/approve", response_model=LeaveOut)
 def approve_leave_request(
     leave_id: int,
     approved: bool = Body(default=True, embed=True),
     db: Session = Depends(get_db),
-    _=Depends(require_roles("Manager", "Admin", "HR"))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
 ):
-    leave = approve_leave_db(db, leave_id)
+    # Load the leave and requester
+    leave = db.query(Leave).filter(Leave.leave_id == leave_id).first()
     if not leave:
         raise HTTPException(status_code=404, detail="Leave not found")
-    if not approved:
-        # simple rejection path
+
+    if leave.status != "Pending":
+        raise HTTPException(status_code=400, detail="Only pending leave requests can be approved/rejected")
+
+    requester = db.query(User).filter(User.user_id == leave.user_id).first()
+    if not requester:
+        raise HTTPException(status_code=404, detail="Requesting user not found")
+
+    # Prevent self-approval
+    if requester.user_id == current_user.user_id:
+        raise HTTPException(status_code=400, detail="You cannot approve/reject your own leave request")
+
+    requester_role = getattr(requester.role, "value", str(requester.role))
+
+    # Role-based approval rules:
+    # - Employee/TeamLead -> Manager or HR (must be same department)
+    # - Manager -> Admin or HR
+    # - HR -> Admin only
+    if requester_role in (RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value):
+        if current_user.role not in (RoleEnum.MANAGER, RoleEnum.HR):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Manager or HR can approve/reject this request")
+        # Manager/HR may only act on requests from their department
+        req_dept = (requester.department or "").strip().lower()
+        approver_dept = (current_user.department or "").strip().lower()
+        if not req_dept or approver_dept != req_dept:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only approve/reject requests from your department")
+    elif requester_role == RoleEnum.MANAGER.value:
+        if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR can approve/reject Manager requests")
+    elif requester_role == RoleEnum.HR.value:
+        if current_user.role != RoleEnum.ADMIN:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin can approve/reject HR requests")
+    else:
+        # Other roles (including Admin) should not be approvable via this endpoint
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No approver available for this requester role")
+
+    # Apply decision
+    if approved:
+        updated = approve_leave_db(db, leave_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Leave not found")
+        leave = updated
+    else:
         leave.status = "Rejected"
         db.commit()
         db.refresh(leave)
-    create_leave_decision_notification(db, leave=leave, approver=_, approved=approved)
+
+    create_leave_decision_notification(db, leave=leave, approver=current_user, approved=approved)
     return leave
 
 
@@ -362,7 +409,7 @@ def approvals_inbox(
             "employee_id": u.employee_id if u else "",
             "name": u.name if u else "",
             "department": u.department if u else None,
-            "role": str(u.role) if u and u.role else None,
+            "role": getattr(u.role, "value", str(u.role)) if u and u.role else None,
         })
     return results
 
@@ -373,7 +420,36 @@ def approvals_history(
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
-    decided = list_decided_by_approver(db, user.user_id)
+    """
+    Return decided (non-pending) leave decisions visible to the current user:
+    - Admin/HR: all decided leaves
+    - Manager: decided leaves for users in the manager's department
+    - Employee/TeamLead: their own decided leaves
+    """
+    role_value = getattr(user.role, "value", str(user.role))
+
+    # Base query for decided leaves
+    base_query = db.query(Leave).options(joinedload(Leave.user)).filter(Leave.status != "Pending")
+
+    if role_value in (RoleEnum.ADMIN.value, RoleEnum.HR.value):
+        decided = base_query.order_by(Leave.end_date.desc()).all()
+    elif role_value == RoleEnum.MANAGER.value:
+        # Managers see decided leaves for their department only
+        if not user.department:
+            return []
+        decided = (
+            base_query.join(User, Leave.user_id == User.user_id)
+            .filter(User.department == user.department)
+            .order_by(Leave.end_date.desc())
+            .all()
+        )
+    elif role_value in (RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value):
+        # Employees/TeamLeads see only their own decided leaves
+        decided = base_query.filter(Leave.user_id == user.user_id).order_by(Leave.end_date.desc()).all()
+    else:
+        # Other roles: no access
+        return []
+
     results: list[dict] = []
     for leave in decided:
         u: User = leave.user
@@ -389,7 +465,7 @@ def approvals_history(
             "employee_id": u.employee_id if u else "",
             "name": u.name if u else "",
             "department": u.department if u else None,
-            "role": str(u.role) if u and u.role else None,
+            "role": getattr(u.role, "value", str(u.role)) if u and u.role else None,
         })
     return results
 
