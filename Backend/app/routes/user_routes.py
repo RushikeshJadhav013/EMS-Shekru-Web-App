@@ -253,13 +253,23 @@ def get_all_employees_public(
     
     # Apply role-based visibility filtering
     if current_user.role == RoleEnum.ADMIN:
-        # Admin can view all users (including other admins)
-        pass  # Keep all employees
+        # Admin can view all non-admin users (exclude other admins and themselves)
+        employees = [
+            emp for emp in employees
+            if not (getattr(emp, "role", None) == RoleEnum.ADMIN or getattr(emp, "user_id", None) == current_user.user_id)
+        ]
     
     elif current_user.role == RoleEnum.HR:
-        # HR can view HR, Manager, TeamLead, and Employee roles
-        allowed_roles = {RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE}
-        employees = [emp for emp in employees if emp.role in allowed_roles]
+        # HR list rules:
+        # - Cannot see Admins
+        # - Cannot see other HRs
+        # - Cannot see themselves in the listing
+        # HR should only see Managers, TeamLeads, and Employees
+        allowed_roles = {RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE}
+        employees = [
+            emp for emp in employees
+            if emp.role in allowed_roles and getattr(emp, "user_id", None) != current_user.user_id
+        ]
     
     elif current_user.role == RoleEnum.MANAGER:
         # Manager can view TeamLead and Employee of their assigned department
@@ -607,17 +617,40 @@ def get_single_employee(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Check permissions: User can view their own profile OR must be Admin/HR to view others
-    if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Operation not permitted. You can only view your own profile."
-        )
-    
+    # Load the employee first
     employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(employee)
+
+    # Allow users to view their own profile
+    if current_user.user_id == user_id:
+        return _sanitize_users_response(employee)
+
+    # HR can view own profile, Managers, TeamLeads, and Employees but not Admins or other HRs
+    if current_user.role == RoleEnum.HR:
+        if employee.user_id == current_user.user_id:
+            return _sanitize_users_response(employee)
+        if getattr(employee, "role", None) in {RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE}:
+            return _sanitize_users_response(employee)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted. HR cannot view Admin or other HR profiles."
+        )
+
+    # Admins: allow viewing non-admins only (cannot view other admins)
+    if current_user.role == RoleEnum.ADMIN:
+        if getattr(employee, "role", None) == RoleEnum.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted. Admins cannot view other admin profiles."
+            )
+        return _sanitize_users_response(employee)
+
+    # Other roles: forbidden
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Operation not permitted. You can only view your own profile."
+    )
 
 
 # ✅ Admin: Check subscription status
