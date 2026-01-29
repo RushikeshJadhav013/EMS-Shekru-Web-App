@@ -17,6 +17,7 @@ class ChatMemberRoleEnum(str, Enum):
 class TaskStatus(str, Enum):
     PENDING = "Pending"
     IN_PROGRESS = "In Progress"
+    OVERDUE = "Overdue"
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
 

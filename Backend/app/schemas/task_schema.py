@@ -5,7 +5,7 @@ from typing import Optional, Literal
 class TaskBase(BaseModel):
     title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Task description (max 2000 characters)")
-    status: Optional[Literal['Pending', 'In Progress', 'Completed', 'On Hold', 'Cancelled']] = Field("Pending", description="Task status")
+    status: Optional[Literal['Pending', 'In Progress', 'Completed', 'Cancelled']] = Field("Pending", description="Task status")
     due_date: Optional[date] = Field(None, description="Task due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field("Medium", description="Task priority")
 
@@ -47,7 +47,7 @@ class TaskOut(BaseModel):
     task_id: int = Field(..., gt=0, description="Unique task ID")
     title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Task description (max 2000 characters)")
-    status: Optional[Literal['Pending', 'In Progress', 'Completed', 'On Hold', 'Cancelled']] = Field("Pending", description="Task status")
+    status: Optional[Literal['Pending', 'In Progress', 'Completed', 'Cancelled']] = Field("Pending", description="Task status")
     due_date: Optional[date] = Field(None, description="Task due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field("Medium", description="Task priority")
     assigned_to: int = Field(..., gt=0, description="Assigned to user ID")
