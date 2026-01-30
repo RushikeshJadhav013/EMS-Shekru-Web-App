@@ -4,7 +4,7 @@ Report Routes - Employee Performance and Department Metrics
 from fastapi import APIRouter, Depends, Query, HTTPException, status as http_status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, extract
+from sqlalchemy import func, extract, or_
 from datetime import datetime, timedelta
 from typing import Optional, List
 from app.utils.timezone import now_ist, get_date_bounds_ist
@@ -29,6 +29,7 @@ from app.enums import RoleEnum, TaskStatus, TaskAction
 from app.config.company_config import (
     COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
 )
+from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -136,6 +137,14 @@ def get_employee_performance(
         # Apply filters
         if department and department != 'all':
             query = query.filter(User.department == department)
+        else:
+            # If no department filter provided and requester is a Manager, restrict to their departments
+            if current_user.role == RoleEnum.MANAGER:
+                manager_depts = department_tokens_lower(current_user.department)
+                if manager_depts:
+                    patterns = [department_token_regex_pattern(d) for d in manager_depts]
+                    filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+                    query = query.filter(or_(*filters))
         
         if employee_id:
             query = query.filter(User.employee_id == employee_id)
@@ -1089,11 +1098,22 @@ async def export_task_management_report(
         
         # Apply filters
         if department and department != 'all':
-            # Get user IDs in the department
+            # Get user IDs in the department (explicit department filter)
             dept_user_ids = [u.user_id for u in db.query(User).filter(
                 User.department == department,
                 User.is_active == True
             ).all()]
+        else:
+            # If no department provided and requester is Manager, limit to manager's departments
+            if current_user.role == RoleEnum.MANAGER:
+                manager_depts = department_tokens_lower(current_user.department)
+                dept_user_ids = []
+                if manager_depts:
+                    patterns = [department_token_regex_pattern(d) for d in manager_depts]
+                    filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+                    dept_user_ids = [u.user_id for u in db.query(User).filter(or_(*filters), User.is_active == True).all()]
+                else:
+                    dept_user_ids = []
             if dept_user_ids:
                 query = query.filter(
                     (Task.assigned_to.in_(dept_user_ids)) |

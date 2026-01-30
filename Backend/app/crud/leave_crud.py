@@ -366,6 +366,7 @@ from app.db.models.notification import LeaveNotification
 from app.db.models.user import User
 from app.enums import RoleEnum
 from app.crud.leave_config_crud import get_leave_config_or_default
+from app.utils.department_utils import department_tokens_lower
 
 DEFAULT_LEAVE_ALLOWANCES = {
     "annual": 15,
@@ -682,9 +683,8 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
         if not requester_dept:
             return []
         
-        # Get Manager and HR from the EXACT same department only
-        # Use case-insensitive comparison to handle "Sales" vs "sales" vs "SALES"
-        # First get all potential recipients, then filter in Python for exact match (more reliable)
+        # Get Manager and HR from the same department tokens.
+        # A manager may have multiple comma-separated departments (e.g. "Engineering, Marketing").
         all_managers_hr = (
             db.query(User)
             .filter(
@@ -694,14 +694,14 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
             )
             .all()
         )
-        
-        # Filter by exact department match (case-insensitive, trimmed) and exclude the requester
-        recipients = [
-            user for user in all_managers_hr
-            if user.department 
-            and user.department.strip().lower() == requester_dept.lower()
-            and user.user_id != requester.user_id  # Exclude the requester themselves
-        ]
+
+        recipients = []
+        for user in all_managers_hr:
+            if not user.department:
+                continue
+            user_tokens = department_tokens_lower(user.department)
+            if requester_dept.lower() in user_tokens and user.user_id != requester.user_id:
+                recipients.append(user)
         return recipients
 
     # Manager or HR: notify Admin only (exclude the requester)

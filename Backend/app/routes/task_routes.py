@@ -24,6 +24,7 @@ from app.schemas.task_schema import TaskCreate, TaskHistoryOut, TaskNotification
 from app.enums import RoleEnum, TaskStatus
 from app.db.models.task import Task, TaskHistory
 from app.db.models.user import User
+from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 def _serialize_task_notification(notification: TaskNotificationOut | Task):
@@ -106,7 +107,10 @@ def _ensure_can_pass(current_user: User, new_assignee: User) -> None:
 
     if current_user.role != RoleEnum.ADMIN:
         if current_user.department and new_assignee.department:
-            if current_user.department != new_assignee.department:
+            curr_tokens = set(department_tokens_lower(current_user.department))
+            new_tokens = set(department_tokens_lower(new_assignee.department))
+            # If no intersection, not allowed
+            if not curr_tokens.intersection(new_tokens):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot pass tasks outside your department")
 
 

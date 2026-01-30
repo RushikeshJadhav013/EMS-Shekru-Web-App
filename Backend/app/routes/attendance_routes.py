@@ -24,6 +24,7 @@ from ..utils.geolocation import location_service
 from app.schemas.office_timing_schema import OfficeTimingOut, OfficeTimingCreate
 from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_ist
 from app.crud.attendance_grid_export import export_monthly_grid_pdf, export_monthly_grid_csv
+from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 
 
@@ -1740,10 +1741,16 @@ def get_all_attendance_history(
         if department:
             records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.MANAGER:
-        # Manager can only see their department
+        # Manager can only see their department(s) — support comma-separated manager.department
         if not user_department:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
-        records_query = records_query.filter(User.department == user_department)
+        manager_depts = department_tokens_lower(user_department)
+        if manager_depts:
+            patterns = [department_token_regex_pattern(d) for d in manager_depts]
+            filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+            records_query = records_query.filter(or_(*filters))
+        else:
+            records_query = records_query.filter(User.department == user_department)
     else:
         raise HTTPException(status_code=403, detail="Not authorized to view attendance")
 

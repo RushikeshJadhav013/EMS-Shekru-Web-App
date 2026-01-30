@@ -33,7 +33,7 @@ def department_tokens_lower(raw: Optional[str]) -> List[str]:
 def department_token_regex_pattern(term: str) -> str:
     """
     Regex pattern to match a token in a comma-separated list, case-insensitive.
-    Example: term 'Engineering' -> r'(^|,\s*)Engineering(\s*,|$)'
+    Example: term 'Engineering' -> r'(^|,\\s*)Engineering(\\s*,|$)'
     """
     esc = re.escape(term)
     return fr'(^|,\s*){esc}(\s*,|$)'
