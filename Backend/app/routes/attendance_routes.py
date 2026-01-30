@@ -1736,13 +1736,9 @@ def get_all_attendance_history(
         if department:
             records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.HR:
-        # HR can only see their department's attendance
-        if not user_department:
-            raise HTTPException(status_code=400, detail="HR must have a department assigned")
-        records_query = records_query.filter(User.department == user_department)
-        # Allow additional department filter if provided (for admin override scenarios)
-        if department and department != user_department:
-            raise HTTPException(status_code=403, detail="HR can only view their own department's attendance")
+        # HR can see attendance across all departments; optional department filter applies
+        if department:
+            records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.MANAGER:
         # Manager can only see their department
         if not user_department:
