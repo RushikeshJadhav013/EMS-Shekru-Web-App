@@ -15,6 +15,7 @@ from app.crud.department_crud import (
 )
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
+from app.utils.department_utils import normalize_department_string, department_tokens_lower
 
 
 router = APIRouter(prefix="/departments", tags=["Departments"])
@@ -147,31 +148,29 @@ def sync_departments_from_users(
     from app.db.models.department import Department
     from sqlalchemy import func
     
-    # Get all unique department names from users (excluding None/empty)
-    # First, get raw department data and clean it
+    # Get all user department strings and split into tokens, normalizing each token.
     raw_user_departments = (
-        db.query(User.department, func.count(User.user_id).label('count'))
+        db.query(User.department)
         .filter(User.department.isnot(None))
         .filter(User.department != '')
-        .group_by(User.department)
         .all()
     )
-    
-    # Consolidate departments with same cleaned names
+
+    # Count per individual department token (handles comma-separated multi-dept values)
     consolidated_departments = {}
-    for dept_name, user_count in raw_user_departments:
-        dept_name_clean = dept_name.strip()
-        dept_name_lower = dept_name_clean.lower()
-        
-        if dept_name_lower in consolidated_departments:
-            # Add to existing count
-            consolidated_departments[dept_name_lower]['count'] += user_count
-        else:
-            # New department
-            consolidated_departments[dept_name_lower] = {
-                'name': dept_name_clean,
-                'count': user_count
-            }
+    for (dept_val,) in raw_user_departments:
+        tokens = department_tokens_lower(dept_val)
+        for tok in tokens:
+            if not tok:
+                continue
+            if tok in consolidated_departments:
+                consolidated_departments[tok]['count'] += 1
+            else:
+                # store display name as normalized (First letter upper)
+                consolidated_departments[tok] = {
+                    'name': normalize_department_string(tok),
+                    'count': 1
+                }
     
     # Get existing departments
     existing_departments = {dept.name.lower(): dept for dept in db.query(Department).all()}
@@ -205,7 +204,7 @@ def sync_departments_from_users(
                 status="active",
                 employee_count=user_count,
                 manager_id=None,
-                budget=None,
+                # budget=None,
                 location=None
             )
             db.add(new_dept)

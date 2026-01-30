@@ -32,6 +32,7 @@ import re
 from pydantic import EmailStr
 from starlette.responses import Response
 from starlette.background import BackgroundTask
+from app.utils.department_utils import normalize_department_string, department_tokens_lower
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -166,11 +167,14 @@ def register_employee(
             detail="Invalid Aadhar card format. Expected format: 1234-5678-9012",
         )
 
+    # Normalize department to consistent format (First letter uppercase, rest lowercase)
+    department_normalized = normalize_department_string(department)
+
     user_in = UserCreate(
         name=name,
         email=email,
         employee_id=employee_id,
-        department=department,
+        department=department_normalized,
         designation=designation,
         phone=phone,
         address=address,
@@ -272,18 +276,20 @@ def get_all_employees_public(
         ]
     
     elif current_user.role == RoleEnum.MANAGER:
-        # Manager can view TeamLead and Employee of their assigned department
+        # Manager can view TeamLead and Employee of any of their assigned departments
         allowed_roles = {RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE}
+        manager_depts = department_tokens_lower(current_user.department)
         employees = [
-            emp for emp in employees 
-            if emp.role in allowed_roles and emp.department == current_user.department
+            emp for emp in employees
+            if emp.role in allowed_roles and any(d in department_tokens_lower(emp.department) for d in manager_depts)
         ]
     
     elif current_user.role == RoleEnum.TEAM_LEAD:
         # TeamLead can view Employees in their department.
+        teamlead_dept = department_tokens_lower(current_user.department)
         employees = [
             emp for emp in employees
-            if emp.role == RoleEnum.EMPLOYEE and emp.department == current_user.department
+            if emp.role == RoleEnum.EMPLOYEE and any(d in department_tokens_lower(emp.department) for d in teamlead_dept)
         ]
     
     else:
@@ -429,7 +435,7 @@ def update_employee(
     employee.name = name
     employee.email = email
     employee.employee_id = employee_id
-    employee.department = department
+    employee.department = normalize_department_string(department)
     employee.designation = designation
     # store normalized digits if provided
     employee.phone = digits if digits is not None else phone

@@ -66,7 +66,7 @@ def test_sync_function():
                     status="active",
                     employee_count=user_count,
                     manager_id=None,
-                    budget=None,
+                    # budget=None,
                     location=None
                 )
                 db.add(new_dept)

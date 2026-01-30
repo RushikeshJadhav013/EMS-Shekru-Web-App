@@ -17,6 +17,7 @@ from typing import Optional
 import io
 import csv
 import os
+from app.utils.department_utils import normalize_department_string
 try:
     from app.config.company_config import (
         COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE,
@@ -125,7 +126,7 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
         email=user.email,
         password_hash=None,
         role=user.role,
-        department=user.department,
+        department=normalize_department_string(user.department),
         designation=user.designation,
         resignation_date=user.resignation_date,
         phone=user.phone,
