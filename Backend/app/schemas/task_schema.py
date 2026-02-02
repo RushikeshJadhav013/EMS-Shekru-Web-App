@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, field_validator, constr
 from datetime import datetime, date, timedelta
 from typing import Optional, Literal
+from app.enums import RoleEnum
 
 class TaskBase(BaseModel):
     title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
@@ -34,14 +35,7 @@ class TaskBase(BaseModel):
 class TaskCreate(TaskBase):
     assigned_to: int = Field(..., gt=0, description="User ID to assign task to")
     assigned_by: int = Field(..., gt=0, description="User ID who is assigning the task")
-
-    @field_validator('assigned_to')
-    @classmethod
-    def validate_assigned_to(cls, v: int, info) -> int:
-        """Validate assigned_to is different from assigned_by"""
-        if 'assigned_by' in info.data and v == info.data['assigned_by']:
-            raise ValueError('Cannot assign task to yourself')
-        return v
+    # Note: self-assignment is allowed; role-based validation enforced in route handlers.
 
 class TaskOut(BaseModel):
     task_id: int = Field(..., gt=0, description="Unique task ID")
@@ -59,6 +53,8 @@ class TaskOut(BaseModel):
     last_passed_at: Optional[datetime] = Field(None, description="Timestamp of last pass")
     assigned_to_name: Optional[str] = Field(None, description="Name of the assignee")
     assigned_by_name: Optional[str] = Field(None, description="Name of the task creator")
+    assigned_by_role: Optional[RoleEnum] = Field(None, description="Role of the user who assigned the task")
+    assigned_to_role: Optional[RoleEnum] = Field(None, description="Role of the user who is assigned the task")
 
     model_config = {"from_attributes": True}
 

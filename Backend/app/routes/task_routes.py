@@ -51,7 +51,32 @@ def _serialize_task_notification(notification: TaskNotificationOut | Task):
 
 @router.post("/", response_model=TaskOut)
 def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(get_current_user)):
-    return create_task(
+    # Fetch assignee user
+    assignee = db.query(User).filter(User.user_id == task.assigned_to).first()
+    if not assignee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
+
+    # Allow self-assignment always
+    if task.assigned_to != user.user_id:
+        # Enforce role hierarchy: cannot assign to users with higher role
+        try:
+            assigner_index = ROLE_HIERARCHY.index(user.role)
+            assignee_index = ROLE_HIERARCHY.index(assignee.role)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
+
+        # Disallow assigning to users with the same or higher role (except self-assignment)
+        if assignee_index <= assigner_index:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign task to same or higher role")
+
+        # Manager-specific department restriction
+        if user.role == RoleEnum.MANAGER and user.department:
+            manager_tokens = set(department_tokens_lower(user.department))
+            assignee_tokens = set(department_tokens_lower(assignee.department))
+            if not manager_tokens.intersection(assignee_tokens):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
+
+    t = create_task(
         db,
         task.title,
         task.description or "",
@@ -59,6 +84,25 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         task.assigned_to,
         task.due_date,
         task.priority or "Medium",
+    )
+    return TaskOut(
+        task_id=t.task_id,
+        title=t.title,
+        description=t.description,
+        status=t.status,
+        due_date=t.due_date.date() if t.due_date else None,
+        priority=t.priority,
+        assigned_to=t.assigned_to,
+        assigned_by=t.assigned_by,
+        created_at=t.created_at,
+        last_passed_by=t.last_passed_by,
+        last_passed_to=t.last_passed_to,
+        last_pass_note=t.last_pass_note,
+        last_passed_at=t.last_passed_at,
+        assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+        assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+        assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
+        assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
     )
 
 @router.get("/", response_model=list[TaskOut])
@@ -82,6 +126,8 @@ def my_tasks(db: Session = Depends(get_db), user = Depends(get_current_user)):
             last_passed_at=t.last_passed_at,
             assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
             assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+            assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
+            assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
         )
         for t in tasks
     ]
@@ -116,10 +162,47 @@ def _ensure_can_pass(current_user: User, new_assignee: User) -> None:
 
 @router.put("/{task_id}/status", response_model=TaskOut)
 def update_status(task_id: int, status: TaskStatus, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # Fetch current task
+    existing_task = db.query(Task).filter(Task.task_id == task_id).first()
+    if not existing_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Permission checks: Admin, assignee, creator, or higher role than assignee
+    if user.role != RoleEnum.ADMIN and user.user_id not in (existing_task.assigned_to, existing_task.assigned_by):
+        assignee = db.query(User).filter(User.user_id == existing_task.assigned_to).first()
+        if not assignee:
+            raise HTTPException(status_code=404, detail="Assignee not found")
+        try:
+            current_index = ROLE_HIERARCHY.index(user.role)
+            assignee_index = ROLE_HIERARCHY.index(assignee.role)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
+
+        if current_index >= assignee_index:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to update this task's status")
+
     task = update_task_status(db, task_id, status, user.user_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    return TaskOut(
+        task_id=task.task_id,
+        title=task.title,
+        description=task.description,
+        status=task.status,
+        due_date=task.due_date.date() if task.due_date else None,
+        priority=task.priority,
+        assigned_to=task.assigned_to,
+        assigned_by=task.assigned_by,
+        created_at=task.created_at,
+        last_passed_by=task.last_passed_by,
+        last_passed_to=task.last_passed_to,
+        last_pass_note=task.last_pass_note,
+        last_passed_at=task.last_passed_at,
+        assigned_to_name=task.assigned_to_user.name if task.assigned_to_user else None,
+        assigned_by_name=task.assigned_by_user.name if task.assigned_by_user else None,
+        assigned_by_role=task.assigned_by_user.role if task.assigned_by_user else None,
+        assigned_to_role=task.assigned_to_user.role if task.assigned_to_user else None,
+    )
 
 
 @router.put("/{task_id}", response_model=TaskOut)
@@ -133,18 +216,70 @@ def edit_task(
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Allow edit if Admin, creator, or user with higher role than creator
     if user.role != RoleEnum.ADMIN and existing.assigned_by != user.user_id:
-        raise HTTPException(status_code=403, detail="Only the task creator can edit this task")
+        creator = db.query(User).filter(User.user_id == existing.assigned_by).first()
+        if not creator:
+            raise HTTPException(status_code=403, detail="Only the task creator or higher roles can edit this task")
+        try:
+            current_index = ROLE_HIERARCHY.index(user.role)
+            creator_index = ROLE_HIERARCHY.index(creator.role)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
+        if current_index >= creator_index:
+            raise HTTPException(status_code=403, detail="Only the task creator or higher roles can edit this task")
 
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
         return existing
+    # If the update includes changing the assignee, enforce role hierarchy rules
+    if "assigned_to" in updates:
+        new_assignee_id = updates["assigned_to"]
+        assignee = db.query(User).filter(User.user_id == new_assignee_id).first()
+        if not assignee:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
+
+        # Allow self-assignment always
+        if new_assignee_id != user.user_id:
+            try:
+                editor_index = ROLE_HIERARCHY.index(user.role)
+                assignee_index = ROLE_HIERARCHY.index(assignee.role)
+            except ValueError:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
+
+            # Disallow assigning to same or higher role
+            if assignee_index <= editor_index:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign task to same or higher role")
+
+            # Manager-specific department restriction
+            if user.role == RoleEnum.MANAGER and user.department:
+                manager_tokens = set(department_tokens_lower(user.department))
+                assignee_tokens = set(department_tokens_lower(assignee.department))
+                if not manager_tokens.intersection(assignee_tokens):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
 
     updated = update_task(db, task_id=task_id, updates=updates, updated_by=user.user_id)
     if not updated:
         raise HTTPException(status_code=400, detail="Task update failed")
-
-    return updated
+    return TaskOut(
+        task_id=updated.task_id,
+        title=updated.title,
+        description=updated.description,
+        status=updated.status,
+        due_date=updated.due_date.date() if updated.due_date else None,
+        priority=updated.priority,
+        assigned_to=updated.assigned_to,
+        assigned_by=updated.assigned_by,
+        created_at=updated.created_at,
+        last_passed_by=updated.last_passed_by,
+        last_passed_to=updated.last_passed_to,
+        last_pass_note=updated.last_pass_note,
+        last_passed_at=updated.last_passed_at,
+        assigned_to_name=updated.assigned_to_user.name if updated.assigned_to_user else None,
+        assigned_by_name=updated.assigned_by_user.name if updated.assigned_by_user else None,
+        assigned_by_role=updated.assigned_by_user.role if updated.assigned_by_user else None,
+        assigned_to_role=updated.assigned_to_user.role if updated.assigned_to_user else None,
+    )
 
 @router.delete("/{task_id}")
 def delete_my_task(task_id: int, db: Session = Depends(get_db), user = Depends(get_current_user)):
@@ -152,8 +287,18 @@ def delete_my_task(task_id: int, db: Session = Depends(get_db), user = Depends(g
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Allow delete if Admin, creator, or user with higher role than creator
     if user.role != RoleEnum.ADMIN and existing.assigned_by != user.user_id:
-        raise HTTPException(status_code=403, detail="Only the task creator can delete this task")
+        creator = db.query(User).filter(User.user_id == existing.assigned_by).first()
+        if not creator:
+            raise HTTPException(status_code=403, detail="Only the task creator or higher roles can delete this task")
+        try:
+            current_index = ROLE_HIERARCHY.index(user.role)
+            creator_index = ROLE_HIERARCHY.index(creator.role)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
+        if current_index >= creator_index:
+            raise HTTPException(status_code=403, detail="Only the task creator or higher roles can delete this task")
 
     task = delete_task(db, task_id)
     if not task:
@@ -223,7 +368,25 @@ def pass_task_route(
         pass_details=pass_details,
     )
 
-    return updated_task
+    return TaskOut(
+        task_id=updated_task.task_id,
+        title=updated_task.title,
+        description=updated_task.description,
+        status=updated_task.status,
+        due_date=updated_task.due_date.date() if updated_task.due_date else None,
+        priority=updated_task.priority,
+        assigned_to=updated_task.assigned_to,
+        assigned_by=updated_task.assigned_by,
+        created_at=updated_task.created_at,
+        last_passed_by=updated_task.last_passed_by,
+        last_passed_to=updated_task.last_passed_to,
+        last_pass_note=updated_task.last_pass_note,
+        last_passed_at=updated_task.last_passed_at,
+        assigned_to_name=updated_task.assigned_to_user.name if updated_task.assigned_to_user else None,
+        assigned_by_name=updated_task.assigned_by_user.name if updated_task.assigned_by_user else None,
+        assigned_by_role=updated_task.assigned_by_user.role if updated_task.assigned_by_user else None,
+        assigned_to_role=updated_task.assigned_to_user.role if updated_task.assigned_to_user else None,
+    )
 
 
 @router.get("/{task_id}/history", response_model=list[TaskHistoryOut])
