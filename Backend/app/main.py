@@ -105,7 +105,7 @@ except Exception as _e:
 
 # Initialize FastAPI
 app = FastAPI(
-    title="Testing Employee Management System",
+    title="Employee Management System",
     version="1.0"
 )
 
@@ -162,9 +162,9 @@ origins = [
     "http://127.0.0.1:8080",   # Common frontend port alternative
     # "http://localhost:4173",    # Vite preview server
     # "http://127.0.0.1:4173",   # Vite preview server alternative
-    # "https://stafflyhrms.netlify.app",  # Production deployment
+    "https://stafflyhrms.netlify.app",  # Production deployment
     "http://localhost:8080"
-    "https://testing.staffly.space"           # Allow all origins (for development)
+    # "https://testing.staffly.space"           # Allow all origins (for development)
 ]
 
 # Configure CORS middleware with detailed settings
@@ -274,7 +274,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 async def home():
-    return {"message": "Testing Employee Management System API is running"}
+    return {"message": "Employee Management System API is running"}
 
 @app.get("/test-cors", tags=["Test"])
 async def test_cors():
