@@ -310,7 +310,12 @@ def get_all_employees_public(
 
     # Apply department filter
     if department:
-        employees = [emp for emp in employees if emp.department == department]
+        # Support tokenized matching for comma-separated department strings.
+        dept_token = department.strip().lower()
+        employees = [
+            emp for emp in employees
+            if emp.department and dept_token in department_tokens_lower(emp.department)
+        ]
 
     # Apply role filter
     if role:

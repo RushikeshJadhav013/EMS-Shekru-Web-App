@@ -13,6 +13,7 @@ from app.db.models.wfh_request import WFHRequest, WFHStatus
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
 from app.utils.timezone import now_ist
+from app.utils.department_utils import department_tokens_lower
 
 from app.schemas.wfh_schema import (
     WFHRequestCreate,
@@ -37,6 +38,33 @@ from app.crud.wfh_crud import (
 
 router = APIRouter(prefix="/wfh", tags=["Work From Home"])
 
+def _can_approver_handle_target(approver: User, target: User) -> bool:
+    """
+    Determine whether `approver` is allowed to approve/reject `target`'s WFH request
+    according to the role-based hierarchy rules:
+      - Admins can approve HRs and Managers
+      - HRs can approve Managers, TeamLead, and Employees
+      - Managers can approve TeamLead and Employees, but only for departments they manage (supports multiple departments)
+    """
+    # Admin: can approve HRs and Managers
+    if approver.role == RoleEnum.ADMIN:
+        return target.role in (RoleEnum.HR, RoleEnum.MANAGER)
+
+    # HR: can approve Managers, TeamLead, Employees
+    if approver.role == RoleEnum.HR:
+        return target.role in (RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE)
+
+    # Manager: can approve TeamLead and Employee within overlapping departments
+    if approver.role == RoleEnum.MANAGER:
+        if target.role not in (RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE):
+            return False
+        approver_tokens = set(department_tokens_lower(approver.department))
+        target_tokens = set(department_tokens_lower(target.department))
+        return bool(approver_tokens.intersection(target_tokens))
+
+    # Default: no permission
+    return False
+
 
 # ============================================
 # Employee Endpoints (All authenticated users)
@@ -58,6 +86,13 @@ def submit_wfh_request(
     - No overlapping WFH requests
     """
     # Convert dates to datetime
+    # Prevent Admins from submitting WFH requests
+    if current_user.role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admins are not permitted to submit WFH requests"
+        )
+    
     start_dt = datetime.combine(payload.start_date, datetime.min.time())
     end_dt = datetime.combine(payload.end_date, datetime.max.time())
     
@@ -354,12 +389,12 @@ def get_request_detail(
             detail="User not found"
         )
     
-    # Manager can only see requests from their department
+    # Manager can only see requests from their department(s)
     if current_user.role == RoleEnum.MANAGER:
-        if current_user.department and user.department != current_user.department:
+        if not _can_approver_handle_target(current_user, user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only view requests from your department"
+                detail="You can only view requests from your department(s)"
             )
     
     # Get approver name if exists
@@ -425,13 +460,12 @@ def approve_or_reject_request(
             detail="Request user not found"
         )
     
-    # Manager can only approve/reject requests from their department
-    if current_user.role == RoleEnum.MANAGER:
-        if current_user.department and user.department != current_user.department:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only approve/reject requests from your department"
-            )
+    # Enforce role-hierarchy approval rules for all approvers (Admin/HR/Manager)
+    if not _can_approver_handle_target(current_user, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not permitted to approve/reject this user's WFH request according to role hierarchy"
+        )
     
     # Prevent self-approval
     if wfh_request.user_id == current_user.user_id:
