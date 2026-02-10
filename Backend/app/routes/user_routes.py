@@ -82,7 +82,8 @@ def register_employee(
     employee_type: Optional[str] = Form(None),
     manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
 
     email = email.strip().lower()
@@ -97,6 +98,20 @@ def register_employee(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
+        )
+
+    # Only Admin and HR can create new users via this endpoint
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Admin or HR users can create new employees"
+        )
+
+    # HRs are not permitted to create Admin users
+    if current_user.role == RoleEnum.HR and role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR users are not permitted to create Admin users"
         )
 
     # Check for duplicate email
@@ -190,10 +205,8 @@ def register_employee(
     )
 
     try:
-        # Note: This endpoint doesn't require authentication by default
-        # If you want to check subscription limits, make this endpoint require authentication
-        # and pass current_user.user_id as created_by
-        created_user = create_user(db, user_in, created_by=None)
+        # This endpoint now requires authentication; record creator for auditing/subscription checks
+        created_user = create_user(db, user_in, created_by=current_user.user_id)
     except ValueError as e:
         # Handle subscription limit errors
         raise HTTPException(
@@ -358,6 +371,31 @@ def update_employee(
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
+    # HRs are not permitted to update Admin profiles (except their own)
+    if current_user.role == RoleEnum.HR and employee.user_id != current_user.user_id and getattr(employee, "role", None) == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR users are not permitted to modify Admin profiles"
+        )
+
+    # Check for duplicate email (excluding current user)
+    if email and email.strip():
+        existing_user = get_user_by_email(db, email.strip().lower())
+        if existing_user and existing_user.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Employee already exists with this email address",
+            )
+
+    # Check for duplicate employee_id (excluding current user)
+    if employee_id and employee_id.strip():
+        existing_employee = get_user_by_employee_id(db, employee_id.strip())
+        if existing_employee and existing_employee.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Employee already exists with ID '{employee_id}'",
+            )
+
     # Validate phone format and check for duplicate phone number (excluding current employee)
     digits = None
     if phone and phone.strip():
@@ -496,28 +534,77 @@ def update_employee(
 def update_role_public(
     user_id: int,
     role_data: UpdateRoleSchema,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    employee = update_user_role(db, user_id, role_data.role)
+    """
+    Update a user's role.
+    - Admin: can update any user's role (including Admins and self)
+    - HR: can update roles except:
+       * cannot update Admin profiles
+       * cannot update other HR profiles
+       * cannot update their own role
+       * cannot assign the Admin role
+    - Others: forbidden
+    """
+    # Load target user
+    employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(employee)
+
+    # Admins may do anything
+    if current_user.role == RoleEnum.ADMIN:
+        pass
+    elif current_user.role == RoleEnum.HR:
+        # HR cannot modify Admins or other HRs, and cannot modify self
+        if employee.user_id == current_user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify their own role")
+        if getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify Admin or other HR profiles")
+        # HR cannot assign Admin role
+        if role_data.role == RoleEnum.ADMIN:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users are not permitted to assign the Admin role")
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can update roles")
+
+    updated = update_user_role(db, user_id, role_data.role, updated_by=current_user.user_id)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return _sanitize_users_response(updated)
 
 @router.put("/{user_id}/status", response_model=UserOut, summary="Activate/Deactivate Employee")
 def update_employee_status(
     user_id: int,
     status_data: UpdateStatusSchema,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Activate or deactivate an employee
     - **user_id**: The ID of the employee
     - **is_active**: True to activate, False to deactivate
     """
-    employee = update_user_status(db, user_id, status_data.is_active)
+    # Load target user for validation
+    employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(employee)
+
+    # Only Admin and HR can change status
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can change status")
+
+    # Prevent self status change
+    if employee.user_id == current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot change your own active status")
+
+    # HR restrictions: cannot change status of Admins or other HRs
+    if current_user.role == RoleEnum.HR and getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot change status of Admins or other HRs")
+
+    updated = update_user_status(db, user_id, status_data.is_active, updated_by=current_user.user_id)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return _sanitize_users_response(updated)
 
 @router.get("/export/pdf", summary="Download user details as PDF with optional filters")
 def download_users_pdf(
