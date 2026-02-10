@@ -4,7 +4,7 @@ API endpoints for WFH request management.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Optional
 
 from app.db.database import get_db
@@ -93,8 +93,9 @@ def submit_wfh_request(
             detail="Admins are not permitted to submit WFH requests"
         )
     
-    start_dt = datetime.combine(payload.start_date, datetime.min.time())
-    end_dt = datetime.combine(payload.end_date, datetime.max.time())
+    start_dt = datetime.combine(payload.start_date, time.min)
+    # Use 23:59:59 with no microseconds to avoid DB rounding into next day (00:00:00)
+    end_dt = datetime.combine(payload.end_date, time(23, 59, 59))
     
     # Validation: 24 hours advance notice for future dates
     now = now_ist()
@@ -241,8 +242,9 @@ def update_my_wfh_request(
         )
     
     # Convert dates if provided
-    start_dt = datetime.combine(payload.start_date, datetime.min.time()) if payload.start_date else None
-    end_dt = datetime.combine(payload.end_date, datetime.max.time()) if payload.end_date else None
+    start_dt = datetime.combine(payload.start_date, time.min) if payload.start_date else None
+    # Use 23:59:59 with no microseconds to avoid DB rounding into next day (00:00:00)
+    end_dt = datetime.combine(payload.end_date, time(23, 59, 59)) if payload.end_date else None
     
     # Check for overlapping requests if dates are being updated
     if start_dt or end_dt:
