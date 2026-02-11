@@ -1695,11 +1695,13 @@ def get_today_status(
     db: Session = Depends(get_db)
 ):
     """
-    Get today's attendance status for all employees
-    - ADMIN: See all employees
-    - HR: See only their department employees
-    - MANAGER: See only their department employees
-    - Others: Not allowed
+    Get today's attendance status for employees who have checked in today.
+    Visibility rules:
+    - ADMIN: See all employees (as-is).
+    - HR: See all employees except Admins, other HRs, and self.
+    - MANAGER: See employees in their department(s) (supports comma-separated values),
+      excluding Admins, HRs, other Managers, and self.
+    - Others: Not allowed.
     """
     user_role = current_user.role
     user_department = current_user.department
@@ -1707,18 +1709,44 @@ def get_today_status(
     if user_role == RoleEnum.ADMIN:
         # Admin can see all employees
         return get_today_attendance_status(db)
-    elif user_role == RoleEnum.HR:
-        # HR can see only their department
-        if not user_department:
-            raise HTTPException(status_code=400, detail="HR must have a department assigned")
-        return get_today_attendance_status(db, department=user_department)
-    elif user_role == RoleEnum.MANAGER:
-        # Manager can see only their department
-        if not user_department:
+
+    records = get_today_attendance_status(db)
+
+    if user_role == RoleEnum.HR:
+        # HR can see all employees, excluding Admins, HRs, and themselves.
+        allowed_ids = {
+            u.user_id
+            for u in db.query(User.user_id)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        }
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    if user_role == RoleEnum.MANAGER:
+        # Manager can see only employees in their own department(s),
+        # excluding Admins, HRs, other Managers, and themselves.
+        manager_depts = set(department_tokens_lower(user_department))
+        if not manager_depts:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
-        return get_today_attendance_status(db, department=user_department)
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized to view attendance")
+
+        candidates = (
+            db.query(User.user_id, User.department)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        )
+        allowed_ids = set()
+        for uid, dept in candidates:
+            user_depts = set(department_tokens_lower(dept))
+            if manager_depts & user_depts:
+                allowed_ids.add(uid)
+
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    raise HTTPException(status_code=403, detail="Not authorized to view attendance")
 
 # Get All Attendance History (for Admin/HR/Manager)
 @router.get("/all")
