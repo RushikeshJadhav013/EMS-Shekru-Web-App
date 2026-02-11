@@ -9,7 +9,7 @@ from app.db.models.user import User
 from app.db.models.office_timing import OfficeTiming
 from app.schemas.attendance_schema import AttendanceOut, LocationData
 from fastapi.responses import StreamingResponse, JSONResponse
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
 from typing import Optional, List, Dict, Any, Union, Tuple, Literal
 from decimal import Decimal
@@ -668,7 +668,10 @@ class ReverseGeocodePayload(BaseModel):
 
 
 @router.post("/reverse-geocode")
-def reverse_geocode(payload: ReverseGeocodePayload):
+def reverse_geocode(
+    payload: ReverseGeocodePayload,
+    current_user: User = Depends(get_current_user),
+):
     """Return human-readable location details for the given coordinates via server-side geocoding."""
     try:
         details = location_service.get_location_details(payload.lat, payload.lon)
@@ -943,7 +946,8 @@ async def employee_check_in_route(
     selfie: Optional[UploadFile] = File(None),
     location_data: Optional[str] = Form(None),
     work_location: Optional[str] = Form('office'),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         # Parse location data
@@ -1056,7 +1060,8 @@ async def employee_check_in_route(
 async def employee_check_in_json(
     request: Request,
     payload: AttendanceJSONPayload, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
@@ -1169,7 +1174,8 @@ async def employee_check_out_route(
     work_summary: Optional[str] = Form(None, description="Summary of today's work"),
     work_report: Optional[UploadFile] = File(None),
     task_deadline_reason: Optional[str] = Form(None, description="Reason for incomplete tasks on deadline"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         # Validate user exists and is active
@@ -1313,7 +1319,8 @@ async def employee_check_out_route(
 async def employee_check_out_json(
     request: Request,
     payload: AttendanceJSONPayload, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
@@ -1463,7 +1470,11 @@ async def employee_check_out_json(
 
 # Employee Self-Attendance (Last 6 Months)
 @router.get("/my-attendance/{user_id}", response_model=list[AttendanceOut])
-def get_self_attendance(user_id: int, db: Session = Depends(get_db)):
+def get_self_attendance(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     six_months_ago = now_ist() - timedelta(days=180)
     records = (
         db.query(Attendance)
@@ -1476,7 +1487,10 @@ def get_self_attendance(user_id: int, db: Session = Depends(get_db)):
 
 # Today's Attendance Summary
 @router.get("/summary")
-def attendance_summary(db: Session = Depends(get_db)):
+def attendance_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Get attendance summary with statistics including late/early counts"""
     return get_attendance_summary(db)
 
@@ -1485,6 +1499,7 @@ def attendance_summary(db: Session = Depends(get_db)):
 def get_today_attendance(
     date: Optional[str] = Query(None, description="Date (YYYY-MM-DD) for which to fetch records"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Get attendance records for the specified date (defaults to today)."""
     target_date: Optional[date] = None
@@ -1505,9 +1520,10 @@ def download_attendance_csv(
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     department: Optional[str] = Query(None, description="Filter by department"),
     date_range: Optional[str] = Query(None, description="Optional date range: 'last_6_months' or 'last_1_year'"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
-    """Download attendance data as a CSV file with optional filters."""
+    """Download attendance data as a CSV file with optional filters. Only accessible by Admin and HR."""
     from app.crud.attendance_crud import export_attendance_csv
     
     # Parse dates if provided
@@ -1570,10 +1586,10 @@ def download_attendance_pdf(
     quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
     year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     department: Optional[str] = Query(None, description="Filter by department"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     db: Session = Depends(get_db)
 ):
-    """Download attendance data as a PDF file with optional filters."""
+    """Download attendance data as a PDF file with optional filters. Only accessible by Admin and HR."""
     from app.crud.attendance_crud import export_attendance_pdf
     
     # Determine date range: support monthly/quarterly/custom without changing existing logic.
@@ -2248,7 +2264,8 @@ def attendance_monthly_grid_report(
     month: int = Query(..., ge=1, le=12),
     year: int = Query(...),
     department: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_crud import build_monthly_attendance_grid
     return build_monthly_attendance_grid(db, month, year, department)
@@ -2262,7 +2279,8 @@ def download_monthly_grid_pdf(
     date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
 
@@ -2294,7 +2312,8 @@ def download_monthly_detailed_grid_pdf(
     date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_grid_export import export_monthly_detailed_pdf
 
@@ -2326,7 +2345,8 @@ def download_monthly_grid_csv(
     date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_csv
 

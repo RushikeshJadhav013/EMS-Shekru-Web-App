@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Literal
 from pathlib import Path
 from app.utils.timezone import now_ist
 from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema
@@ -254,7 +254,8 @@ def get_all_employees_public(
     current_user: User = Depends(get_current_user),
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
-    role: Optional[RoleEnum] = Query(None, description="Filter by role")
+    role: Optional[RoleEnum] = Query(None, description="Filter by role"),
+    is_active: Literal["true", "false", "all"] = Query("true", description="Filter by active status: 'true' (default), 'false', or 'all'")
 ):
     """
     Get all employees with role-based access control.
@@ -333,6 +334,11 @@ def get_all_employees_public(
     # Apply role filter
     if role:
         employees = [emp for emp in employees if emp.role == role]
+
+    # Apply is_active filter (default: True, or 'all' for all employees)
+    if is_active != "all":
+        is_active_bool = is_active == "true"
+        employees = [emp for emp in employees if getattr(emp, "is_active", True) == is_active_bool]
 
     return _sanitize_users_response(employees)
 
@@ -613,7 +619,7 @@ def download_users_pdf(
     designation: Optional[str] = Query(None, description="Filter by designation"),
     status: Optional[bool] = Query(None, description="Filter by active status (true/false)"),
     db: Session = Depends(get_db),
-    # _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR])) # Example for role-based access
+    current_user: User = Depends(get_current_user)
 ):
     """
     Export employee directory as PDF with optional filters.
@@ -667,7 +673,7 @@ def download_users_csv(
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[str] = Query(None, description="Filter by role"),
     db: Session = Depends(get_db),
-    # _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR])) # Example for role-based access
+    current_user: User = Depends(get_current_user)
 ):
     csv_buffer = export_users_csv(db, department=department, role=role)
     
@@ -773,7 +779,8 @@ def get_subscription_status(
 def validate_phone_availability(
     phone: str, 
     exclude_user_id: int = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Check if phone number is available (not already taken)"""
     if not phone or not phone.strip():
@@ -807,7 +814,8 @@ def validate_phone_availability(
 def validate_pan_availability(
     pan_card: str, 
     exclude_user_id: int = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Check if PAN card is available (not already taken)"""
     if not pan_card or not pan_card.strip():
@@ -827,7 +835,8 @@ def validate_pan_availability(
 def validate_aadhar_availability(
     aadhar_card: str, 
     exclude_user_id: int = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Check if Aadhar card is available (not already taken)"""
     if not aadhar_card or not aadhar_card.strip():

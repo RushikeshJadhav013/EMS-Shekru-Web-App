@@ -10,7 +10,7 @@ from app.db.models.leave import Leave
 from app.db.models.task import Task
 from app.db.models.office_timing import OfficeTiming
 from app.enums import RoleEnum, TaskStatus
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_roles
 from app.utils.timezone import now_ist, get_today_bounds_ist
 
 
@@ -23,7 +23,10 @@ def _today_bounds():
 
 
 @router.get("/admin")
-def admin_dashboard(db: Session = Depends(get_db)):
+def admin_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+):
     today_start, today_end = _today_bounds()
 
     total_employees = db.query(func.count(User.user_id)).scalar() or 0
@@ -202,7 +205,10 @@ def admin_dashboard(db: Session = Depends(get_db)):
 
 
 @router.get("/hr")
-def hr_dashboard(db: Session = Depends(get_db)):
+def hr_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.HR, RoleEnum.ADMIN))
+):
     today_start, today_end = _today_bounds()
 
     total_employees = db.query(func.count(User.user_id)).scalar() or 0
