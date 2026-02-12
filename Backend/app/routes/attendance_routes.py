@@ -1475,6 +1475,13 @@ def get_self_attendance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Strictly "my attendance": users can only view their own records
+    if current_user.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view your own attendance records",
+        )
+
     six_months_ago = now_ist() - timedelta(days=180)
     records = (
         db.query(Attendance)
@@ -1501,7 +1508,16 @@ def get_today_attendance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get attendance records for the specified date (defaults to today)."""
+    """
+    Get attendance records for the specified date (defaults to today).
+
+    Visibility rules:
+    - ADMIN: See all users' attendance except Admins and self.
+    - HR: See all users' attendance except Admins, other HRs, and self.
+    - MANAGER: See users in their department(s) (supports comma-separated departments),
+      excluding Admins, HRs, other Managers, and self.
+    - TEAM_LEAD and EMPLOYEE: Cannot view this data (403).
+    """
     target_date: Optional[date] = None
     if date:
         try:
@@ -1511,7 +1527,58 @@ def get_today_attendance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid date format. Use YYYY-MM-DD",
             )
-    return get_today_attendance_records(db, target_date)
+    records = get_today_attendance_records(db, target_date)
+
+    user_role = current_user.role
+
+    # Admin: all users except admins and self
+    if user_role == RoleEnum.ADMIN:
+        allowed_ids = {
+            u.user_id
+            for u in db.query(User.user_id)
+            .filter(User.is_active.is_(True))
+            .filter(User.role != RoleEnum.ADMIN)
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        }
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    # HR: all users except admins, HRs, and self
+    if user_role == RoleEnum.HR:
+        allowed_ids = {
+            u.user_id
+            for u in db.query(User.user_id)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        }
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    # Manager: employees in own department(s), excluding admins/HRs/managers/self
+    if user_role == RoleEnum.MANAGER:
+        manager_depts = set(department_tokens_lower(current_user.department))
+        if not manager_depts:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manager must have a department assigned")
+
+        candidates = (
+            db.query(User.user_id, User.department)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        )
+
+        allowed_ids = set()
+        for uid, dept in candidates:
+            user_depts = set(department_tokens_lower(dept))
+            if manager_depts & user_depts:
+                allowed_ids.add(uid)
+
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    # TeamLead / Employee (and any other roles): forbidden
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view attendance records")
 @router.get("/download/csv")
 def download_attendance_csv(
     user_id: Optional[int] = Query(None, description="Filter by user ID"),
@@ -1757,9 +1824,10 @@ def get_all_attendance_history(
 ):
     """
     Get all attendance history
-    - ADMIN: See all employees (or filter by department)
-    - HR: See only their department employees (department filter is automatic)
-    - MANAGER: See only their department employees (department filter is automatic)
+    - ADMIN: See all users except Admins.
+    - HR: See all users except Admins, HRs, and self.
+    - MANAGER: See users in their department(s) (supports comma-separated),
+      excluding Admins, HRs, other Managers, and self.
     - Others: Not allowed
     """
     user_role = current_user.role
@@ -1777,18 +1845,29 @@ def get_all_attendance_history(
     )
 
     if user_role == RoleEnum.ADMIN:
-        # Admin can see all or filter by department
+        # Admin can see all non-admin users (optionally filter by department)
+        records_query = records_query.filter(User.role != RoleEnum.ADMIN)
         if department:
             records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.HR:
-        # HR can see attendance across all departments; optional department filter applies
+        # HR can see all non-admin/non-HR users except self; optional department filter applies
+        records_query = records_query.filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            User.user_id != current_user.user_id,
+        )
         if department:
             records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.MANAGER:
-        # Manager can only see their department(s) — support comma-separated manager.department
+        # Manager can only see their department(s) — support comma-separated manager.department,
+        # excluding Admins, HRs, other Managers, and self.
         if not user_department:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
         manager_depts = department_tokens_lower(user_department)
+        # Exclude disallowed roles and self first
+        records_query = records_query.filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
+            User.user_id != current_user.user_id,
+        )
         if manager_depts:
             patterns = [department_token_regex_pattern(d) for d in manager_depts]
             filters = [User.department.op("RLIKE")(pat) for pat in patterns]
@@ -1846,8 +1925,12 @@ def list_office_timings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role not in {RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view office timings")
+    # Only Admins can view office hours
+    if current_user.role != RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can view office timings",
+        )
 
     records = (
         db.query(OfficeTiming)

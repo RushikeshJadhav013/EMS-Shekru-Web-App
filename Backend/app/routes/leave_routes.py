@@ -422,24 +422,44 @@ def approvals_history(
 ):
     """
     Return decided (non-pending) leave decisions visible to the current user:
-    - Admin/HR: all decided leaves
-    - Manager: decided leaves for users in the manager's department
-    - Employee/TeamLead: their own decided leaves
+    - ADMIN: all users except Admins and self.
+    - HR: all users except Admins, HRs, and self.
+    - MANAGER: users in their department(s), excluding Admins, HRs, other Managers, and self.
+    - EMPLOYEE/TEAM_LEAD: their own decided leaves.
     """
     role_value = getattr(user.role, "value", str(user.role))
 
     # Base query for decided leaves
     base_query = db.query(Leave).options(joinedload(Leave.user)).filter(Leave.status != "Pending")
 
-    if role_value in (RoleEnum.ADMIN.value, RoleEnum.HR.value):
-        decided = base_query.order_by(Leave.end_date.desc()).all()
-    elif role_value == RoleEnum.MANAGER.value:
-        # Managers see decided leaves for their department only
-        if not user.department:
-            return []
+    if role_value == RoleEnum.ADMIN.value:
+        # Admin: all users except Admins and self
         decided = (
             base_query.join(User, Leave.user_id == User.user_id)
-            .filter(User.department == user.department)
+            .filter(User.role != RoleEnum.ADMIN)
+            .filter(User.user_id != user.user_id)
+            .order_by(Leave.end_date.desc())
+            .all()
+        )
+    elif role_value == RoleEnum.HR.value:
+        # HR: all users except Admins, HRs, and self
+        decided = (
+            base_query.join(User, Leave.user_id == User.user_id)
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .filter(User.user_id != user.user_id)
+            .order_by(Leave.end_date.desc())
+            .all()
+        )
+    elif role_value == RoleEnum.MANAGER.value:
+        # Manager: users in own department(s), excluding Admins, HRs, other Managers, and self.
+        if not user.department:
+            return []
+        manager_dept = user.department
+        decided = (
+            base_query.join(User, Leave.user_id == User.user_id)
+            .filter(User.department == manager_dept)
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
+            .filter(User.user_id != user.user_id)
             .order_by(Leave.end_date.desc())
             .all()
         )
