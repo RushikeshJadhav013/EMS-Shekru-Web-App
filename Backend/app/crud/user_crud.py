@@ -293,7 +293,9 @@ def export_users_pdf(
     department: Optional[str] = None,
     role: Optional[str] = None,
     designation: Optional[str] = None,
-    status: Optional[bool] = None
+    status: Optional[bool] = None,
+    exclude_user_ids: Optional[list[int]] = None,
+    exclude_roles: Optional[list[RoleEnum]] = None
 ):
     """Generate a professional PDF matching Task Management report format with optional filters"""
     buffer = io.BytesIO()
@@ -457,6 +459,13 @@ def export_users_pdf(
 
     if status is not None:
         query = query.filter(User.is_active == status)
+    
+    # Apply exclusion filters
+    if exclude_user_ids:
+        query = query.filter(~User.user_id.in_(exclude_user_ids))
+    
+    if exclude_roles:
+        query = query.filter(~User.role.in_(exclude_roles))
 
     users = query.all()
     
@@ -568,7 +577,10 @@ def export_users_pdf(
 def export_users_csv(
     db: Session,
     department: Optional[str] = None,
-    role: Optional[str] = None
+    role: Optional[str] = None,
+    status: Optional[bool] = None,
+    exclude_user_ids: Optional[list[int]] = None,
+    exclude_roles: Optional[list[RoleEnum]] = None
 ):
     output = io.StringIO()
     writer = csv.writer(output)
@@ -593,6 +605,16 @@ def export_users_csv(
         else:
             # If invalid role is provided, return no results
             query = query.filter(User.role == None)
+    
+    if status is not None:
+        query = query.filter(User.is_active == status)
+    
+    # Apply exclusion filters
+    if exclude_user_ids:
+        query = query.filter(~User.user_id.in_(exclude_user_ids))
+    
+    if exclude_roles:
+        query = query.filter(~User.role.in_(exclude_roles))
 
     users = query.all()
 

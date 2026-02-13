@@ -639,28 +639,70 @@ def download_users_pdf(
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[str] = Query(None, description="Filter by role (e.g., ADMIN, HR, MANAGER, EMPLOYEE)"),
     designation: Optional[str] = Query(None, description="Filter by designation"),
-    status: Optional[bool] = Query(None, description="Filter by active status (true/false)"),
+    active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
     """
     Export employee directory as PDF with optional filters.
+    Only Admin and HR can access this endpoint.
+    
+    Role-based restrictions:
+    - Admin: Cannot see self and other admins. Cannot filter by ADMIN role.
+    - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
     
     Filters:
     - department: Filter by department name
-    - role: Filter by role (ADMIN, HR, MANAGER, TEAM_LEAD, EMPLOYEE)
+    - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
     - designation: Filter by designation
     - status: Filter by active status (true for active, false for inactive)
     
     When no filters are provided, returns the full employee directory.
     """
+    # Validate role filter based on user's role
+    if role:
+        # Normalize role string to match RoleEnum
+        normalized_role = role.strip().upper()
+        role_enum = None
+        for r in RoleEnum:
+            if r.value.upper() == normalized_role or r.name.upper() == normalized_role:
+                role_enum = r
+                break
+        
+        if role_enum:
+            # Admin cannot filter by ADMIN role
+            if current_user.role == RoleEnum.ADMIN and role_enum == RoleEnum.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin role filter is not allowed for Admin users"
+                )
+            # HR cannot filter by ADMIN or HR roles
+            elif current_user.role == RoleEnum.HR and role_enum in {RoleEnum.ADMIN, RoleEnum.HR}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin and HR role filters are not allowed for HR users"
+                )
+    
+    # Apply role-based exclusions
+    exclude_user_ids = [current_user.user_id]
+    exclude_roles = []
+    
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin cannot see self and other admins
+        exclude_roles.append(RoleEnum.ADMIN)
+    elif current_user.role == RoleEnum.HR:
+        # HR cannot see admins, self, and other HRs
+        exclude_roles.extend([RoleEnum.ADMIN, RoleEnum.HR])
+    
     try:
         pdf_buffer = export_users_pdf(
             db=db,
             department=department,
             role=role,
             designation=designation,
-            status=status
+            status=active_status,
+            exclude_user_ids=exclude_user_ids,
+            exclude_roles=exclude_roles
         )
         
         # Build filename based on filters
@@ -671,8 +713,8 @@ def download_users_pdf(
             filename_parts.append(f"role_{role}")
         if designation:
             filename_parts.append(f"desig_{designation}")
-        if status is not None:
-            filename_parts.append(f"status_{'active' if status else 'inactive'}")
+        if active_status is not None:
+            filename_parts.append(f"status_{'active' if active_status else 'inactive'}")
         
         filename = "_".join(filename_parts) + ".pdf"
         
@@ -694,10 +736,66 @@ def download_users_pdf(
 def download_users_csv(
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[str] = Query(None, description="Filter by role"),
+    active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
-    csv_buffer = export_users_csv(db, department=department, role=role)
+    """
+    Export employee directory as CSV with optional filters.
+    Only Admin and HR can access this endpoint.
+    
+    Role-based restrictions:
+    - Admin: Cannot see self and other admins. Cannot filter by ADMIN role.
+    - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
+    
+    Filters:
+    - department: Filter by department name
+    - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
+    - status: Filter by active status (true for active, false for inactive)
+    """
+    # Validate role filter based on user's role
+    if role:
+        # Normalize role string to match RoleEnum
+        normalized_role = role.strip().upper()
+        role_enum = None
+        for r in RoleEnum:
+            if r.value.upper() == normalized_role or r.name.upper() == normalized_role:
+                role_enum = r
+                break
+        
+        if role_enum:
+            # Admin cannot filter by ADMIN role
+            if current_user.role == RoleEnum.ADMIN and role_enum == RoleEnum.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin role filter is not allowed for Admin users"
+                )
+            # HR cannot filter by ADMIN or HR roles
+            elif current_user.role == RoleEnum.HR and role_enum in {RoleEnum.ADMIN, RoleEnum.HR}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin and HR role filters are not allowed for HR users"
+                )
+    
+    # Apply role-based exclusions
+    exclude_user_ids = [current_user.user_id]
+    exclude_roles = []
+    
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin cannot see self and other admins
+        exclude_roles.append(RoleEnum.ADMIN)
+    elif current_user.role == RoleEnum.HR:
+        # HR cannot see admins, self, and other HRs
+        exclude_roles.extend([RoleEnum.ADMIN, RoleEnum.HR])
+    
+    csv_buffer = export_users_csv(
+        db=db,
+        department=department,
+        role=role,
+        status=active_status,
+        exclude_user_ids=exclude_user_ids,
+        exclude_roles=exclude_roles
+    )
     
     # Build filename based on filters
     filename_parts = ["users_report"]
@@ -705,6 +803,8 @@ def download_users_csv(
         filename_parts.append(f"dept_{department}")
     if role:
         filename_parts.append(f"role_{role}")
+    if active_status is not None:
+        filename_parts.append(f"status_{'active' if active_status else 'inactive'}")
     
     filename = "_".join(filename_parts) + ".csv"
 
