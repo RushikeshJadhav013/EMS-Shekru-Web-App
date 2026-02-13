@@ -4,8 +4,8 @@ API endpoints for WFH request management.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta, time
-from typing import Optional
+from datetime import datetime, timedelta, time, date
+from typing import Optional, Literal
 
 from app.db.database import get_db
 from app.db.models.user import User
@@ -145,13 +145,90 @@ def submit_wfh_request(
 @router.get("/my-requests", response_model=list[WFHRequestOut])
 def get_my_wfh_requests(
     status_filter: Optional[str] = Query(None, description="Filter by status: Pending, Approved, Rejected"),
+    date_range: Optional[Literal["current_month", "last_month", "last_3_months", "last_6_months", "last_1_year", "custom"]] = Query(None, description="Filter by date range"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Get all WFH requests submitted by the current user.
+    Supports filtering by status and date range.
     """
     requests = get_user_wfh_requests(db, current_user.user_id, status_filter)
+    
+    # Apply date range filter if provided
+    if date_range:
+        now = now_ist()
+        date_start = None
+        date_end = None
+        
+        if date_range == "current_month":
+            # First day of current month to end of current month
+            date_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if now.month == 12:
+                date_end = now.replace(year=now.year + 1, month=1, day=1, hour=23, minute=59, second=59, microsecond=999999) - timedelta(days=1)
+            else:
+                date_end = (now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif date_range == "last_month":
+            # First day of last month to last day of last month
+            if now.month == 1:
+                date_start = now.replace(year=now.year - 1, month=12, day=1, hour=0, minute=0, second=0, microsecond=0)
+                date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            else:
+                date_start = now.replace(month=now.month - 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                date_end = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif date_range == "last_3_months":
+            # 3 months ago from start of current month
+            date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            # Calculate 3 months back
+            months_back = 3
+            year = now.year
+            month = now.month
+            for _ in range(months_back):
+                month -= 1
+                if month == 0:
+                    month = 12
+                    year -= 1
+            date_start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "last_6_months":
+            # 6 months ago from start of current month
+            date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            # Calculate 6 months back
+            months_back = 6
+            year = now.year
+            month = now.month
+            for _ in range(months_back):
+                month -= 1
+                if month == 0:
+                    month = 12
+                    year -= 1
+            date_start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "last_1_year":
+            # 1 year ago from start of current month
+            date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            date_start = now.replace(year=now.year - 1, month=now.month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "custom":
+            if not start_date or not end_date:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="start_date and end_date are required when date_range is 'custom'"
+                )
+            try:
+                date_start = datetime.strptime(start_date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date format. Use YYYY-MM-DD"
+                )
+        
+        # Filter requests by date range (using start_date of the WFH request)
+        if date_start and date_end:
+            requests = [
+                req for req in requests
+                if req.start_date and date_start <= req.start_date <= date_end
+            ]
     
     return [
         WFHRequestOut(
@@ -337,16 +414,22 @@ def delete_my_wfh_request(
 def get_all_requests(
     status_filter: Optional[str] = Query(None, description="Filter by status: Pending, Approved, Rejected"),
     department: Optional[str] = Query(None, description="Filter by department"),
+    date_range: Optional[Literal["current_month", "last_month", "last_3_months", "last_6_months", "last_1_year", "custom"]] = Query(None, description="Filter by date range"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
+    role_filter: Optional[Literal["ADMIN", "HR", "MANAGER", "TEAM_LEAD", "EMPLOYEE"]] = Query(None, description="Filter by requester role"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
 ):
     """
     Get all WFH requests (for Manager/HR/Admin).
     
-    - Manager: Can see requests from their department only
-    - HR/Admin: Can see all requests
+    Role-based hierarchy validation:
+    - Admin: Can see all requests except Admins and self
+    - HR: Can see all requests except Admins, HRs, and self
+    - Manager: Can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
     
-    Supports filtering by status and department.
+    Supports filtering by status, department, date range, and role.
     """
     requests, pending_count = get_all_wfh_requests(
         db=db,
@@ -354,6 +437,115 @@ def get_all_requests(
         department_filter=department,
         requester_user=current_user
     )
+    
+    # Apply date range filter if provided
+    if date_range:
+        now = now_ist()
+        date_start = None
+        date_end = None
+        
+        if date_range == "current_month":
+            # First day of current month to end of current month
+            date_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if now.month == 12:
+                date_end = now.replace(year=now.year + 1, month=1, day=1, hour=23, minute=59, second=59, microsecond=999999) - timedelta(days=1)
+            else:
+                date_end = (now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif date_range == "last_month":
+            # First day of last month to last day of last month
+            if now.month == 1:
+                date_start = now.replace(year=now.year - 1, month=12, day=1, hour=0, minute=0, second=0, microsecond=0)
+                date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            else:
+                date_start = now.replace(month=now.month - 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                date_end = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif date_range == "last_3_months":
+            # 3 months ago from start of current month to end of last month
+            date_end = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+            # Calculate 3 months back
+            months_back = 3
+            year = now.year
+            month = now.month
+            for _ in range(months_back):
+                month -= 1
+                if month == 0:
+                    month = 12
+                    year -= 1
+            date_start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "last_6_months":
+            # 6 months ago from start of current month to end of last month
+            date_end = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+            # Calculate 6 months back
+            months_back = 6
+            year = now.year
+            month = now.month
+            for _ in range(months_back):
+                month -= 1
+                if month == 0:
+                    month = 12
+                    year -= 1
+            date_start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "last_1_year":
+            # 1 year ago from start of current month to end of last month
+            date_end = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+            date_start = now.replace(year=now.year - 1, month=now.month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "custom":
+            if not start_date or not end_date:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="start_date and end_date are required when date_range is 'custom'"
+                )
+            try:
+                date_start = datetime.strptime(start_date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date format. Use YYYY-MM-DD"
+                )
+        
+        # Filter requests by date range (using start_date of the WFH request)
+        if date_start and date_end:
+            filtered_requests = []
+            for req in requests:
+                if req.get("start_date"):
+                    # req["start_date"] is already a date object, convert to datetime for comparison
+                    req_start_dt = datetime.combine(req["start_date"], time.min)
+                    if date_start <= req_start_dt <= date_end:
+                        filtered_requests.append(req)
+            requests = filtered_requests
+    
+    # Apply role filter if provided
+    if role_filter:
+        # Map filter values to actual RoleEnum values (case-sensitive)
+        role_filter_map = {
+            "ADMIN": "Admin",
+            "HR": "HR",
+            "MANAGER": "Manager",
+            "TEAM_LEAD": "TeamLead",
+            "EMPLOYEE": "Employee"
+        }
+        actual_role_value = role_filter_map.get(role_filter)
+        if actual_role_value:
+            # If the requested role isn't visible under the current user's hierarchy,
+            # return a clear 403 instead of an empty list.
+            if current_user.role == RoleEnum.ADMIN and actual_role_value == RoleEnum.ADMIN.value:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admins cannot view Admin WFH requests via this endpoint",
+                )
+            if current_user.role == RoleEnum.HR and actual_role_value in {RoleEnum.ADMIN.value, RoleEnum.HR.value}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="HR cannot view Admin/HR WFH requests via this endpoint",
+                )
+            if current_user.role == RoleEnum.MANAGER and actual_role_value in {RoleEnum.ADMIN.value, RoleEnum.HR.value, RoleEnum.MANAGER.value}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Managers cannot view Admin/HR/Manager WFH requests via this endpoint",
+                )
+
+            requests = [req for req in requests if req.get("role") == actual_role_value]
     
     return WFHRequestListResponse(
         total=len(requests),
@@ -390,9 +582,39 @@ def get_request_detail(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
+
+    # Role-based hierarchy validation (match /wfh/requests list rules)
+    # - Admin: cannot view Admin requests or self
+    # - HR: cannot view Admin/HR requests or self
+    # - Manager: cannot view Admin/HR/Manager requests or self; must be within managed department(s)
+    if current_user.user_id == user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot view your own WFH request via this endpoint",
+        )
+
+    if current_user.role == RoleEnum.ADMIN:
+        if user.role == RoleEnum.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admins cannot view Admin WFH requests via this endpoint",
+            )
+
+    elif current_user.role == RoleEnum.HR:
+        if user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="HR cannot view Admin/HR WFH requests via this endpoint",
+            )
     
     # Manager can only see requests from their department(s)
     if current_user.role == RoleEnum.MANAGER:
+        # Managers cannot view Admin/HR/Manager requests (defensive check)
+        if user.role in (RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers cannot view Admin/HR/Manager WFH requests via this endpoint",
+            )
         if not _can_approver_handle_target(current_user, user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

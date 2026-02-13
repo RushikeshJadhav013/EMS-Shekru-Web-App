@@ -331,8 +331,30 @@ def get_all_employees_public(
             if emp.department and dept_token in department_tokens_lower(emp.department)
         ]
 
-    # Apply role filter
+    # Apply role filter with hierarchy validation
     if role:
+        # Enforce hierarchy rules for explicit role filters so invalid requests get a clear 403
+        if current_user.role == RoleEnum.ADMIN and role == RoleEnum.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admins cannot view other Admin employees via this endpoint",
+            )
+        if current_user.role == RoleEnum.HR and role in {RoleEnum.ADMIN, RoleEnum.HR}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="HR cannot view Admin/HR employees via this endpoint",
+            )
+        if current_user.role == RoleEnum.MANAGER and role in {RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers cannot view Admin/HR/Manager employees via this endpoint",
+            )
+        if current_user.role == RoleEnum.TEAM_LEAD and role != RoleEnum.EMPLOYEE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TeamLeads can only view Employee role users via this endpoint",
+            )
+
         employees = [emp for emp in employees if emp.role == role]
 
     # Apply is_active filter (default: True, or 'all' for all employees)
