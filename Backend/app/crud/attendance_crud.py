@@ -474,6 +474,12 @@ def export_attendance_csv(
         query = query.filter(Attendance.check_in <= end_date_inclusive)
 
     for a, name, department, emp_id in query.order_by(Attendance.check_in.desc()).all():
+        # Convert total_hours from decimal to H:MM format for export
+        total_hours_val = float(a.total_hours or 0)
+        hours = int(total_hours_val)
+        minutes = int(round((total_hours_val - hours) * 60))
+        total_hours_str = f"{hours}:{minutes:02d}"
+
         writer.writerow([
             a.attendance_id,
             emp_id or a.user_id,  # Use employee_id if available, fallback to user_id
@@ -481,7 +487,7 @@ def export_attendance_csv(
             department or "",
             a.check_in.strftime("%Y-%m-%d %H:%M:%S") if a.check_in else "",
             a.check_out.strftime("%Y-%m-%d %H:%M:%S") if a.check_out else "",
-            round(a.total_hours or 0, 2),
+            total_hours_str,
             a.gps_location or "",
             a.selfie or "",
             (a.work_summary or "").replace("\n", " ").strip(),
@@ -696,6 +702,11 @@ def export_attendance_pdf(
     num_cols = len(headers)
     data_rows = []
     for a, name, dept, emp_id in query.order_by(Attendance.check_in.desc()).all():
+        total_hours_val = float(a.total_hours or 0)
+        hours = int(total_hours_val)
+        minutes = int(round((total_hours_val - hours) * 60))
+        total_hours_str = f"{hours}:{minutes:02d}"
+
         data_rows.append([
             str(a.attendance_id),
             emp_id or str(a.user_id),
@@ -703,7 +714,7 @@ def export_attendance_pdf(
             dept or "",
             a.check_in.strftime("%Y-%m-%d %H:%M:%S") if a.check_in else "",
             a.check_out.strftime("%Y-%m-%d %H:%M:%S") if a.check_out else "",
-            str(round(a.total_hours or 0, 2)),
+            total_hours_str,
             (a.work_summary or "").strip(),
             a.work_report or "",
         ])

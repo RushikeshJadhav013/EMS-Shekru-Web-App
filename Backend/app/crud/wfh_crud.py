@@ -92,11 +92,54 @@ def get_all_wfh_requests(
     # Role-based filtering with hierarchy validation
     if requester_user:
         if requester_user.role == RoleEnum.ADMIN:
-            # Admin can see all requests except Admins and self
-            query = query.filter(
-                User.role != RoleEnum.ADMIN,
-                User.user_id != requester_user.user_id
-            )
+            # Admin visibility rules:
+            # - For HR and Manager users: only Pending requests
+            # - For all other users (non-admin): Approved and Rejected requests
+            #   (Admins and self are always excluded)
+            base = query.filter(User.user_id != requester_user.user_id)
+
+            if status_filter:
+                # Normalize status filter
+                normalized_status = status_filter.strip().lower()
+                # Map to WFHStatus values if possible
+                pending_val = WFHStatus.PENDING.value.lower()
+                approved_val = WFHStatus.APPROVED.value.lower()
+                rejected_val = WFHStatus.REJECTED.value.lower()
+
+                if normalized_status == pending_val:
+                    query = base.filter(
+                        User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+                        WFHRequest.status == WFHStatus.PENDING.value,
+                    )
+                elif normalized_status in {approved_val, rejected_val}:
+                    # Approved/Rejected for all non-admin users
+                    allowed_status = (
+                        WFHStatus.APPROVED.value if normalized_status == approved_val
+                        else WFHStatus.REJECTED.value
+                    )
+                    query = base.filter(
+                        User.role != RoleEnum.ADMIN,
+                        WFHRequest.status == allowed_status,
+                    )
+                else:
+                    # Fallback to original behavior for any unexpected status
+                    query = base.filter(WFHRequest.status == status_filter)
+            else:
+                # No explicit status filter: combine the two rules
+                query = base.filter(
+                    or_(
+                        # Pending requests for HR and Manager
+                        and_(
+                            User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+                            WFHRequest.status == WFHStatus.PENDING.value,
+                        ),
+                        # Approved/Rejected requests for all non-admin users
+                        and_(
+                            User.role != RoleEnum.ADMIN,
+                            WFHRequest.status.in_([WFHStatus.APPROVED.value, WFHStatus.REJECTED.value]),
+                        ),
+                    )
+                )
         elif requester_user.role == RoleEnum.HR:
             # HR can see all requests except Admins, HRs, and self
             query = query.filter(
@@ -115,8 +158,8 @@ def get_all_wfh_requests(
                 User.user_id != requester_user.user_id
             )
     
-    # Status filter
-    if status_filter:
+    # Status filter (for non-Admin callers, or when Admin fallback above used status_filter directly)
+    if status_filter and (not requester_user or requester_user.role != RoleEnum.ADMIN):
         query = query.filter(WFHRequest.status == status_filter)
     
     # Department filter (additional filter for HR/Admin)

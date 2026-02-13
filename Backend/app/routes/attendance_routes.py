@@ -1469,7 +1469,7 @@ async def employee_check_out_json(
         raise HTTPException(status_code=500, detail=f"Error in JSON check-out: {str(e)}")
 
 # Employee Self-Attendance (Last 6 Months)
-@router.get("/my-attendance/{user_id}", response_model=list[AttendanceOut])
+@router.get("/my-attendance/{user_id}")
 def get_self_attendance(
     user_id: int,
     db: Session = Depends(get_db),
@@ -1490,7 +1490,27 @@ def get_self_attendance(
         .all()
     )
 
-    return [_prepare_attendance_payload(record) for record in records]
+    # Enrich with basic user details (employee_id, name, department) like /attendance/today
+    user_row = (
+        db.query(User.employee_id, User.name, User.department)
+        .filter(User.user_id == user_id, User.is_active.is_(True))
+        .first()
+    )
+
+    response: list[dict] = []
+    for record in records:
+        payload = _prepare_attendance_payload(record)
+        if user_row:
+            payload.update(
+                {
+                    "employee_id": user_row.employee_id,
+                    "name": user_row.name or "Unknown",
+                    "department": user_row.department or "N/A",
+                }
+            )
+        response.append(payload)
+
+    return response
 
 # Today's Attendance Summary
 @router.get("/summary")
