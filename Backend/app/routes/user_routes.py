@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Literal
 from pathlib import Path
 from app.utils.timezone import now_ist
 from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema
@@ -82,7 +82,8 @@ def register_employee(
     employee_type: Optional[str] = Form(None),
     manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
 
     email = email.strip().lower()
@@ -97,6 +98,20 @@ def register_employee(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
+        )
+
+    # Only Admin and HR can create new users via this endpoint
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Admin or HR users can create new employees"
+        )
+
+    # HRs are not permitted to create Admin users
+    if current_user.role == RoleEnum.HR and role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR users are not permitted to create Admin users"
         )
 
     # Check for duplicate email
@@ -190,10 +205,8 @@ def register_employee(
     )
 
     try:
-        # Note: This endpoint doesn't require authentication by default
-        # If you want to check subscription limits, make this endpoint require authentication
-        # and pass current_user.user_id as created_by
-        created_user = create_user(db, user_in, created_by=None)
+        # This endpoint now requires authentication; record creator for auditing/subscription checks
+        created_user = create_user(db, user_in, created_by=current_user.user_id)
     except ValueError as e:
         # Handle subscription limit errors
         raise HTTPException(
@@ -241,7 +254,8 @@ def get_all_employees_public(
     current_user: User = Depends(get_current_user),
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
-    role: Optional[RoleEnum] = Query(None, description="Filter by role")
+    role: Optional[RoleEnum] = Query(None, description="Filter by role"),
+    is_active: Literal["true", "false", "all"] = Query("true", description="Filter by active status: 'true' (default), 'false', or 'all'")
 ):
     """
     Get all employees with role-based access control.
@@ -310,11 +324,43 @@ def get_all_employees_public(
 
     # Apply department filter
     if department:
-        employees = [emp for emp in employees if emp.department == department]
+        # Support tokenized matching for comma-separated department strings.
+        dept_token = department.strip().lower()
+        employees = [
+            emp for emp in employees
+            if emp.department and dept_token in department_tokens_lower(emp.department)
+        ]
 
-    # Apply role filter
+    # Apply role filter with hierarchy validation
     if role:
+        # Enforce hierarchy rules for explicit role filters so invalid requests get a clear 403
+        if current_user.role == RoleEnum.ADMIN and role == RoleEnum.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admins cannot view other Admin employees via this endpoint",
+            )
+        if current_user.role == RoleEnum.HR and role in {RoleEnum.ADMIN, RoleEnum.HR}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="HR cannot view Admin/HR employees via this endpoint",
+            )
+        if current_user.role == RoleEnum.MANAGER and role in {RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers cannot view Admin/HR/Manager employees via this endpoint",
+            )
+        if current_user.role == RoleEnum.TEAM_LEAD and role != RoleEnum.EMPLOYEE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TeamLeads can only view Employee role users via this endpoint",
+            )
+
         employees = [emp for emp in employees if emp.role == role]
+
+    # Apply is_active filter (default: True, or 'all' for all employees)
+    if is_active != "all":
+        is_active_bool = is_active == "true"
+        employees = [emp for emp in employees if getattr(emp, "is_active", True) == is_active_bool]
 
     return _sanitize_users_response(employees)
 
@@ -352,6 +398,31 @@ def update_employee(
     employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    # HRs are not permitted to update Admin profiles (except their own)
+    if current_user.role == RoleEnum.HR and employee.user_id != current_user.user_id and getattr(employee, "role", None) == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR users are not permitted to modify Admin profiles"
+        )
+
+    # Check for duplicate email (excluding current user)
+    if email and email.strip():
+        existing_user = get_user_by_email(db, email.strip().lower())
+        if existing_user and existing_user.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Employee already exists with this email address",
+            )
+
+    # Check for duplicate employee_id (excluding current user)
+    if employee_id and employee_id.strip():
+        existing_employee = get_user_by_employee_id(db, employee_id.strip())
+        if existing_employee and existing_employee.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Employee already exists with ID '{employee_id}'",
+            )
 
     # Validate phone format and check for duplicate phone number (excluding current employee)
     digits = None
@@ -491,56 +562,147 @@ def update_employee(
 def update_role_public(
     user_id: int,
     role_data: UpdateRoleSchema,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    employee = update_user_role(db, user_id, role_data.role)
+    """
+    Update a user's role.
+    - Admin: can update any user's role (including Admins and self)
+    - HR: can update roles except:
+       * cannot update Admin profiles
+       * cannot update other HR profiles
+       * cannot update their own role
+       * cannot assign the Admin role
+    - Others: forbidden
+    """
+    # Load target user
+    employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(employee)
+
+    # Admins may do anything
+    if current_user.role == RoleEnum.ADMIN:
+        pass
+    elif current_user.role == RoleEnum.HR:
+        # HR cannot modify Admins or other HRs, and cannot modify self
+        if employee.user_id == current_user.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify their own role")
+        if getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify Admin or other HR profiles")
+        # HR cannot assign Admin role
+        if role_data.role == RoleEnum.ADMIN:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users are not permitted to assign the Admin role")
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can update roles")
+
+    updated = update_user_role(db, user_id, role_data.role, updated_by=current_user.user_id)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return _sanitize_users_response(updated)
 
 @router.put("/{user_id}/status", response_model=UserOut, summary="Activate/Deactivate Employee")
 def update_employee_status(
     user_id: int,
     status_data: UpdateStatusSchema,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Activate or deactivate an employee
     - **user_id**: The ID of the employee
     - **is_active**: True to activate, False to deactivate
     """
-    employee = update_user_status(db, user_id, status_data.is_active)
+    # Load target user for validation
+    employee = get_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(employee)
+
+    # Only Admin and HR can change status
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can change status")
+
+    # Prevent self status change
+    if employee.user_id == current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot change your own active status")
+
+    # HR restrictions: cannot change status of Admins or other HRs
+    if current_user.role == RoleEnum.HR and getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot change status of Admins or other HRs")
+
+    updated = update_user_status(db, user_id, status_data.is_active, updated_by=current_user.user_id)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return _sanitize_users_response(updated)
 
 @router.get("/export/pdf", summary="Download user details as PDF with optional filters")
 def download_users_pdf(
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[str] = Query(None, description="Filter by role (e.g., ADMIN, HR, MANAGER, EMPLOYEE)"),
     designation: Optional[str] = Query(None, description="Filter by designation"),
-    status: Optional[bool] = Query(None, description="Filter by active status (true/false)"),
+    active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    # _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR])) # Example for role-based access
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
     """
     Export employee directory as PDF with optional filters.
+    Only Admin and HR can access this endpoint.
+    
+    Role-based restrictions:
+    - Admin: Cannot see self and other admins. Cannot filter by ADMIN role.
+    - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
     
     Filters:
     - department: Filter by department name
-    - role: Filter by role (ADMIN, HR, MANAGER, TEAM_LEAD, EMPLOYEE)
+    - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
     - designation: Filter by designation
     - status: Filter by active status (true for active, false for inactive)
     
     When no filters are provided, returns the full employee directory.
     """
+    # Validate role filter based on user's role
+    if role:
+        # Normalize role string to match RoleEnum
+        normalized_role = role.strip().upper()
+        role_enum = None
+        for r in RoleEnum:
+            if r.value.upper() == normalized_role or r.name.upper() == normalized_role:
+                role_enum = r
+                break
+        
+        if role_enum:
+            # Admin cannot filter by ADMIN role
+            if current_user.role == RoleEnum.ADMIN and role_enum == RoleEnum.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin role filter is not allowed for Admin users"
+                )
+            # HR cannot filter by ADMIN or HR roles
+            elif current_user.role == RoleEnum.HR and role_enum in {RoleEnum.ADMIN, RoleEnum.HR}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin and HR role filters are not allowed for HR users"
+                )
+    
+    # Apply role-based exclusions
+    exclude_user_ids = [current_user.user_id]
+    exclude_roles = []
+    
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin cannot see self and other admins
+        exclude_roles.append(RoleEnum.ADMIN)
+    elif current_user.role == RoleEnum.HR:
+        # HR cannot see admins, self, and other HRs
+        exclude_roles.extend([RoleEnum.ADMIN, RoleEnum.HR])
+    
     try:
         pdf_buffer = export_users_pdf(
             db=db,
             department=department,
             role=role,
             designation=designation,
-            status=status
+            status=active_status,
+            exclude_user_ids=exclude_user_ids,
+            exclude_roles=exclude_roles
         )
         
         # Build filename based on filters
@@ -551,8 +713,8 @@ def download_users_pdf(
             filename_parts.append(f"role_{role}")
         if designation:
             filename_parts.append(f"desig_{designation}")
-        if status is not None:
-            filename_parts.append(f"status_{'active' if status else 'inactive'}")
+        if active_status is not None:
+            filename_parts.append(f"status_{'active' if active_status else 'inactive'}")
         
         filename = "_".join(filename_parts) + ".pdf"
         
@@ -574,10 +736,66 @@ def download_users_pdf(
 def download_users_csv(
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[str] = Query(None, description="Filter by role"),
+    active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    # _: RoleEnum = Depends(require_roles([RoleEnum.ADMIN, RoleEnum.HR])) # Example for role-based access
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
-    csv_buffer = export_users_csv(db, department=department, role=role)
+    """
+    Export employee directory as CSV with optional filters.
+    Only Admin and HR can access this endpoint.
+    
+    Role-based restrictions:
+    - Admin: Cannot see self and other admins. Cannot filter by ADMIN role.
+    - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
+    
+    Filters:
+    - department: Filter by department name
+    - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
+    - status: Filter by active status (true for active, false for inactive)
+    """
+    # Validate role filter based on user's role
+    if role:
+        # Normalize role string to match RoleEnum
+        normalized_role = role.strip().upper()
+        role_enum = None
+        for r in RoleEnum:
+            if r.value.upper() == normalized_role or r.name.upper() == normalized_role:
+                role_enum = r
+                break
+        
+        if role_enum:
+            # Admin cannot filter by ADMIN role
+            if current_user.role == RoleEnum.ADMIN and role_enum == RoleEnum.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin role filter is not allowed for Admin users"
+                )
+            # HR cannot filter by ADMIN or HR roles
+            elif current_user.role == RoleEnum.HR and role_enum in {RoleEnum.ADMIN, RoleEnum.HR}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin and HR role filters are not allowed for HR users"
+                )
+    
+    # Apply role-based exclusions
+    exclude_user_ids = [current_user.user_id]
+    exclude_roles = []
+    
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin cannot see self and other admins
+        exclude_roles.append(RoleEnum.ADMIN)
+    elif current_user.role == RoleEnum.HR:
+        # HR cannot see admins, self, and other HRs
+        exclude_roles.extend([RoleEnum.ADMIN, RoleEnum.HR])
+    
+    csv_buffer = export_users_csv(
+        db=db,
+        department=department,
+        role=role,
+        status=active_status,
+        exclude_user_ids=exclude_user_ids,
+        exclude_roles=exclude_roles
+    )
     
     # Build filename based on filters
     filename_parts = ["users_report"]
@@ -585,6 +803,8 @@ def download_users_csv(
         filename_parts.append(f"dept_{department}")
     if role:
         filename_parts.append(f"role_{role}")
+    if active_status is not None:
+        filename_parts.append(f"status_{'active' if active_status else 'inactive'}")
     
     filename = "_".join(filename_parts) + ".csv"
 
@@ -681,7 +901,8 @@ def get_subscription_status(
 def validate_phone_availability(
     phone: str, 
     exclude_user_id: int = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Check if phone number is available (not already taken)"""
     if not phone or not phone.strip():
@@ -715,7 +936,8 @@ def validate_phone_availability(
 def validate_pan_availability(
     pan_card: str, 
     exclude_user_id: int = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Check if PAN card is available (not already taken)"""
     if not pan_card or not pan_card.strip():
@@ -735,7 +957,8 @@ def validate_pan_availability(
 def validate_aadhar_availability(
     aadhar_card: str, 
     exclude_user_id: int = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Check if Aadhar card is available (not already taken)"""
     if not aadhar_card or not aadhar_card.strip():

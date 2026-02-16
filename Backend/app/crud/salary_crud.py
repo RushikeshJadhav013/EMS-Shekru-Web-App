@@ -370,8 +370,13 @@ def create_salary_increment(
                 f"New CTC: ₹{new_ctc:,.2f}")
     
     # 3. Update employee's CTC (this recalculates all salary components)
+    #    Optionally, override variable pay configuration if provided in the increment request.
     from app.schemas.salary_schema import EmployeeSalaryCTCUpdate
-    ctc_update = EmployeeSalaryCTCUpdate(package_ctc_annual=new_ctc)
+    ctc_update = EmployeeSalaryCTCUpdate(
+        package_ctc_annual=new_ctc,
+        variable_pay_type=increment_data.variable_pay_type,
+        variable_pay_value=increment_data.variable_pay_value,
+    )
     updated_salary = update_employee_salary_from_ctc(db, increment_data.user_id, ctc_update)
     
     if not updated_salary:

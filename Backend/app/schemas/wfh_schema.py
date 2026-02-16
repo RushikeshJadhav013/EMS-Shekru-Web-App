@@ -2,7 +2,7 @@
 Work From Home (WFH) Request Schemas
 Pydantic models for request validation and response serialization.
 """
-from pydantic import BaseModel, Field, field_validator, constr
+from pydantic import BaseModel, Field, field_validator, model_validator, constr
 from datetime import date, datetime, timedelta
 from typing import Optional, Literal
 
@@ -90,17 +90,25 @@ class WFHRequestApprove(BaseModel):
     rejection_reason: Optional[constr(min_length=10, max_length=500, strip_whitespace=True)] = Field(
         None, description="Reason for rejection (required if rejecting)"
     )
-
-    @field_validator('rejection_reason')
+    @model_validator(mode='after')
     @classmethod
-    def validate_rejection_reason(cls, v: Optional[str], info) -> Optional[str]:
-        """Validate rejection reason is provided when rejecting"""
-        if 'approved' in info.data and not info.data['approved']:
-            if not v or not v.strip():
+    def validate_rejection_reason(cls, model) -> object:
+        """Enforce rejection_reason when approved is False (runs even if field omitted).
+        Receives the model instance in 'after' mode, so access attributes directly."""
+        approved = getattr(model, "approved", None)
+        rejection_reason = getattr(model, "rejection_reason", None)
+
+        if approved is False:
+            if not rejection_reason or not str(rejection_reason).strip():
                 raise ValueError('Rejection reason is required when rejecting a request')
-            if len(v.strip()) < 10:
+            if len(str(rejection_reason).strip()) < 10:
                 raise ValueError('Rejection reason must be at least 10 characters')
-        return v.strip() if v else None
+            model.rejection_reason = str(rejection_reason).strip()
+        else:
+            if rejection_reason:
+                model.rejection_reason = str(rejection_reason).strip()
+
+        return model
 
 
 class WFHRequestUpdate(BaseModel):

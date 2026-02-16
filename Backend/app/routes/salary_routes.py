@@ -48,6 +48,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/salary", tags=["Salary Management"])
 
 
+# Helper to attach variable pay info from the current salary record
+def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncrementOut:
+    """
+    Build SalaryIncrementOut and map variable_pay_value from the employee's current salary.
+    Note: variable_pay_type is left as None because it is not stored per-increment.
+    """
+    salary = get_employee_salary(db, increment.user_id)
+    variable_pay_value = getattr(salary, "variable_pay", None) if salary is not None else None
+
+    return SalaryIncrementOut(
+        id=increment.id,
+        user_id=increment.user_id,
+        # variable_pay_type is intentionally omitted from response mapping
+        variable_pay_value=variable_pay_value,
+        previous_salary=float(increment.previous_salary),
+        increment_amount=float(increment.increment_amount),
+        new_salary=float(increment.new_salary),
+        previous_ctc_annual=increment.previous_ctc_annual,
+        increment_ctc_annual=increment.increment_ctc_annual,
+        new_ctc_annual=increment.new_ctc_annual,
+        increment_percentage=increment.increment_percentage,
+        effective_date=increment.effective_date,
+        reason=increment.reason,
+        approved_by=increment.approved_by,
+        letter_sent=increment.letter_sent,
+        letter_sent_at=increment.letter_sent_at,
+        created_at=increment.created_at,
+    )
+
+
 # ==================== CTC-BASED PAYROLL ENDPOINTS ====================
 
 @router.post("/calculate-preview", response_model=SalaryCalculationPreview)
@@ -323,7 +353,7 @@ def create_increment(
                     f"New CTC: ₹{increment.new_ctc_annual:,.2f}"
         )
         
-        return increment
+        return _increment_to_out(increment, db)
     except ValueError as e:
         # Handle validation errors (e.g., no salary record found)
         logger.error(f"Validation error creating increment: {str(e)}")
@@ -362,7 +392,7 @@ def get_increment(
             detail="You can only view your own increment records"
         )
     
-    return increment
+    return _increment_to_out(increment, db)
 
 
 @router.get("/increments/{user_id}", response_model=List[SalaryIncrementOut])
@@ -381,7 +411,8 @@ def get_user_increment_history(
             detail="You can only view your own increment history"
         )
     
-    return get_user_increments(db, user_id)
+    increments = get_user_increments(db, user_id)
+    return [_increment_to_out(inc, db) for inc in increments]
 
 
 # ==================== PDF GENERATION ENDPOINTS ====================

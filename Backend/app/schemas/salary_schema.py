@@ -266,6 +266,19 @@ class SalaryIncrementCreate(BaseModel):
     effective_date: datetime
     reason: Optional[str] = None
     
+    # Optional: override variable pay configuration when applying increment
+    # If not provided, existing variable pay settings on the salary record are reused.
+    variable_pay_type: Optional[VariablePayType] = Field(
+        default=None,
+        description="Variable pay type to apply along with increment (none/percentage/fixed). "
+                    "If omitted, existing variable pay configuration is kept."
+    )
+    variable_pay_value: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Variable pay percentage (0-100) or fixed amount, depending on variable_pay_type."
+    )
+    
     @validator('increment_percentage')
     def validate_increment_input(cls, v, values):
         """Ensure either increment_ctc_annual OR increment_percentage is provided"""
@@ -281,6 +294,10 @@ class SalaryIncrementOut(BaseModel):
     """Schema for increment output"""
     id: int
     user_id: int
+    
+    # Variable pay configuration that was applied (if any)
+    # variable_pay_type: Optional[VariablePayType] = None  # commented out as per requirement
+    variable_pay_value: Optional[float] = None
     
     # Legacy monthly salary fields (for backward compatibility)
     previous_salary: float

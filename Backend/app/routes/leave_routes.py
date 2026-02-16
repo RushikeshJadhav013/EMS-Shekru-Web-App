@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from typing import Optional
+from typing import Optional, Literal
 from sqlalchemy.orm import Session, joinedload
-from datetime import datetime
+from datetime import datetime, timedelta, time
 from app.db.database import get_db
 from app.utils.timezone import now_ist
 from app.crud.leave_crud import (
@@ -417,29 +417,60 @@ def approvals_inbox(
 # Approver's decision history
 @router.get("/approvals/history", response_model=list[LeaveHistoryOut])
 def approvals_history(
+    date_range: Optional[Literal["current_month", "last_month", "last_3_months", "last_6_months", "last_1_year", "custom"]] = Query(None, description="Filter by date range"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
     """
     Return decided (non-pending) leave decisions visible to the current user:
-    - Admin/HR: all decided leaves
-    - Manager: decided leaves for users in the manager's department
-    - Employee/TeamLead: their own decided leaves
+    - ADMIN: all users except Admins and self.
+    - HR: all users except Admins, HRs, and self.
+    - MANAGER: users in their department(s), excluding Admins, HRs, other Managers, and self.
+    - EMPLOYEE/TEAM_LEAD: their own decided leaves.
+    
+    Supports filtering by date range:
+    - current_month: First day of current month to end of current month
+    - last_month: First day of last month to last day of last month
+    - last_3_months: 3 months ago from start of current month
+    - last_6_months: 6 months ago from start of current month
+    - last_1_year: 1 year ago from start of current month
+    - custom: Requires start_date and end_date parameters
     """
     role_value = getattr(user.role, "value", str(user.role))
 
     # Base query for decided leaves
     base_query = db.query(Leave).options(joinedload(Leave.user)).filter(Leave.status != "Pending")
 
-    if role_value in (RoleEnum.ADMIN.value, RoleEnum.HR.value):
-        decided = base_query.order_by(Leave.end_date.desc()).all()
-    elif role_value == RoleEnum.MANAGER.value:
-        # Managers see decided leaves for their department only
-        if not user.department:
-            return []
+    if role_value == RoleEnum.ADMIN.value:
+        # Admin: all users except Admins and self
         decided = (
             base_query.join(User, Leave.user_id == User.user_id)
-            .filter(User.department == user.department)
+            .filter(User.role != RoleEnum.ADMIN)
+            .filter(User.user_id != user.user_id)
+            .order_by(Leave.end_date.desc())
+            .all()
+        )
+    elif role_value == RoleEnum.HR.value:
+        # HR: all users except Admins, HRs, and self
+        decided = (
+            base_query.join(User, Leave.user_id == User.user_id)
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .filter(User.user_id != user.user_id)
+            .order_by(Leave.end_date.desc())
+            .all()
+        )
+    elif role_value == RoleEnum.MANAGER.value:
+        # Manager: users in own department(s), excluding Admins, HRs, other Managers, and self.
+        if not user.department:
+            return []
+        manager_dept = user.department
+        decided = (
+            base_query.join(User, Leave.user_id == User.user_id)
+            .filter(User.department == manager_dept)
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
+            .filter(User.user_id != user.user_id)
             .order_by(Leave.end_date.desc())
             .all()
         )
@@ -467,6 +498,80 @@ def approvals_history(
             "department": u.department if u else None,
             "role": getattr(u.role, "value", str(u.role)) if u and u.role else None,
         })
+    
+    # Apply date range filter if provided
+    if date_range:
+        now = now_ist()
+        date_start = None
+        date_end = None
+        
+        if date_range == "current_month":
+            # First day of current month to end of current month
+            date_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if now.month == 12:
+                date_end = now.replace(year=now.year + 1, month=1, day=1, hour=23, minute=59, second=59, microsecond=999999) - timedelta(days=1)
+            else:
+                date_end = (now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif date_range == "last_month":
+            # First day of last month to last day of last month
+            if now.month == 1:
+                date_start = now.replace(year=now.year - 1, month=12, day=1, hour=0, minute=0, second=0, microsecond=0)
+                date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            else:
+                date_start = now.replace(month=now.month - 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                date_end = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        elif date_range == "last_3_months":
+            # 3 months ago from start of current month
+            date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            # Calculate 3 months back
+            months_back = 3
+            year = now.year
+            month = now.month
+            for _ in range(months_back):
+                month -= 1
+                if month == 0:
+                    month = 12
+                    year -= 1
+            date_start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "last_6_months":
+            # 6 months ago from start of current month
+            date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            # Calculate 6 months back
+            months_back = 6
+            year = now.year
+            month = now.month
+            for _ in range(months_back):
+                month -= 1
+                if month == 0:
+                    month = 12
+                    year -= 1
+            date_start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "last_1_year":
+            # 1 year ago from start of current month
+            date_end = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            date_start = now.replace(year=now.year - 1, month=now.month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif date_range == "custom":
+            if not start_date or not end_date:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="start_date and end_date are required when date_range is 'custom'"
+                )
+            try:
+                date_start = datetime.strptime(start_date, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date format. Use YYYY-MM-DD"
+                )
+        
+        # Filter results by date range (using start_date of the leave)
+        if date_start and date_end:
+            results = [
+                result for result in results
+                if result.get("start_date") and date_start.date() <= result["start_date"] <= date_end.date()
+            ]
+    
     return results
 
 

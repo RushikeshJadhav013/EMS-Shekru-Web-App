@@ -9,7 +9,7 @@ from app.db.models.user import User
 from app.db.models.office_timing import OfficeTiming
 from app.schemas.attendance_schema import AttendanceOut, LocationData
 from fastapi.responses import StreamingResponse, JSONResponse
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
 from typing import Optional, List, Dict, Any, Union, Tuple, Literal
 from decimal import Decimal
@@ -668,7 +668,10 @@ class ReverseGeocodePayload(BaseModel):
 
 
 @router.post("/reverse-geocode")
-def reverse_geocode(payload: ReverseGeocodePayload):
+def reverse_geocode(
+    payload: ReverseGeocodePayload,
+    current_user: User = Depends(get_current_user),
+):
     """Return human-readable location details for the given coordinates via server-side geocoding."""
     try:
         details = location_service.get_location_details(payload.lat, payload.lon)
@@ -943,7 +946,8 @@ async def employee_check_in_route(
     selfie: Optional[UploadFile] = File(None),
     location_data: Optional[str] = Form(None),
     work_location: Optional[str] = Form('office'),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         # Parse location data
@@ -1056,7 +1060,8 @@ async def employee_check_in_route(
 async def employee_check_in_json(
     request: Request,
     payload: AttendanceJSONPayload, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
@@ -1169,7 +1174,8 @@ async def employee_check_out_route(
     work_summary: Optional[str] = Form(None, description="Summary of today's work"),
     work_report: Optional[UploadFile] = File(None),
     task_deadline_reason: Optional[str] = Form(None, description="Reason for incomplete tasks on deadline"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         # Validate user exists and is active
@@ -1313,7 +1319,8 @@ async def employee_check_out_route(
 async def employee_check_out_json(
     request: Request,
     payload: AttendanceJSONPayload, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
@@ -1462,8 +1469,19 @@ async def employee_check_out_json(
         raise HTTPException(status_code=500, detail=f"Error in JSON check-out: {str(e)}")
 
 # Employee Self-Attendance (Last 6 Months)
-@router.get("/my-attendance/{user_id}", response_model=list[AttendanceOut])
-def get_self_attendance(user_id: int, db: Session = Depends(get_db)):
+@router.get("/my-attendance/{user_id}")
+def get_self_attendance(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Strictly "my attendance": users can only view their own records
+    if current_user.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view your own attendance records",
+        )
+
     six_months_ago = now_ist() - timedelta(days=180)
     records = (
         db.query(Attendance)
@@ -1472,11 +1490,34 @@ def get_self_attendance(user_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    return [_prepare_attendance_payload(record) for record in records]
+    # Enrich with basic user details (employee_id, name, department) like /attendance/today
+    user_row = (
+        db.query(User.employee_id, User.name, User.department)
+        .filter(User.user_id == user_id, User.is_active.is_(True))
+        .first()
+    )
+
+    response: list[dict] = []
+    for record in records:
+        payload = _prepare_attendance_payload(record)
+        if user_row:
+            payload.update(
+                {
+                    "employee_id": user_row.employee_id,
+                    "name": user_row.name or "Unknown",
+                    "department": user_row.department or "N/A",
+                }
+            )
+        response.append(payload)
+
+    return response
 
 # Today's Attendance Summary
 @router.get("/summary")
-def attendance_summary(db: Session = Depends(get_db)):
+def attendance_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Get attendance summary with statistics including late/early counts"""
     return get_attendance_summary(db)
 
@@ -1485,8 +1526,18 @@ def attendance_summary(db: Session = Depends(get_db)):
 def get_today_attendance(
     date: Optional[str] = Query(None, description="Date (YYYY-MM-DD) for which to fetch records"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Get attendance records for the specified date (defaults to today)."""
+    """
+    Get attendance records for the specified date (defaults to today).
+
+    Visibility rules:
+    - ADMIN: See all users' attendance except Admins and self.
+    - HR: See all users' attendance except Admins, other HRs, and self.
+    - MANAGER: See users in their department(s) (supports comma-separated departments),
+      excluding Admins, HRs, other Managers, and self.
+    - TEAM_LEAD and EMPLOYEE: Cannot view this data (403).
+    """
     target_date: Optional[date] = None
     if date:
         try:
@@ -1496,7 +1547,58 @@ def get_today_attendance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid date format. Use YYYY-MM-DD",
             )
-    return get_today_attendance_records(db, target_date)
+    records = get_today_attendance_records(db, target_date)
+
+    user_role = current_user.role
+
+    # Admin: all users except admins and self
+    if user_role == RoleEnum.ADMIN:
+        allowed_ids = {
+            u.user_id
+            for u in db.query(User.user_id)
+            .filter(User.is_active.is_(True))
+            .filter(User.role != RoleEnum.ADMIN)
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        }
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    # HR: all users except admins, HRs, and self
+    if user_role == RoleEnum.HR:
+        allowed_ids = {
+            u.user_id
+            for u in db.query(User.user_id)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        }
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    # Manager: employees in own department(s), excluding admins/HRs/managers/self
+    if user_role == RoleEnum.MANAGER:
+        manager_depts = set(department_tokens_lower(current_user.department))
+        if not manager_depts:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manager must have a department assigned")
+
+        candidates = (
+            db.query(User.user_id, User.department)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        )
+
+        allowed_ids = set()
+        for uid, dept in candidates:
+            user_depts = set(department_tokens_lower(dept))
+            if manager_depts & user_depts:
+                allowed_ids.add(uid)
+
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    # TeamLead / Employee (and any other roles): forbidden
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view attendance records")
 @router.get("/download/csv")
 def download_attendance_csv(
     user_id: Optional[int] = Query(None, description="Filter by user ID"),
@@ -1505,9 +1607,10 @@ def download_attendance_csv(
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     department: Optional[str] = Query(None, description="Filter by department"),
     date_range: Optional[str] = Query(None, description="Optional date range: 'last_6_months' or 'last_1_year'"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
-    """Download attendance data as a CSV file with optional filters."""
+    """Download attendance data as a CSV file with optional filters. Only accessible by Admin and HR."""
     from app.crud.attendance_crud import export_attendance_csv
     
     # Parse dates if provided
@@ -1570,10 +1673,10 @@ def download_attendance_pdf(
     quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
     year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     department: Optional[str] = Query(None, description="Filter by department"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     db: Session = Depends(get_db)
 ):
-    """Download attendance data as a PDF file with optional filters."""
+    """Download attendance data as a PDF file with optional filters. Only accessible by Admin and HR."""
     from app.crud.attendance_crud import export_attendance_pdf
     
     # Determine date range: support monthly/quarterly/custom without changing existing logic.
@@ -1679,11 +1782,13 @@ def get_today_status(
     db: Session = Depends(get_db)
 ):
     """
-    Get today's attendance status for all employees
-    - ADMIN: See all employees
-    - HR: See only their department employees
-    - MANAGER: See only their department employees
-    - Others: Not allowed
+    Get today's attendance status for employees who have checked in today.
+    Visibility rules:
+    - ADMIN: See all employees (as-is).
+    - HR: See all employees except Admins, other HRs, and self.
+    - MANAGER: See employees in their department(s) (supports comma-separated values),
+      excluding Admins, HRs, other Managers, and self.
+    - Others: Not allowed.
     """
     user_role = current_user.role
     user_department = current_user.department
@@ -1691,18 +1796,44 @@ def get_today_status(
     if user_role == RoleEnum.ADMIN:
         # Admin can see all employees
         return get_today_attendance_status(db)
-    elif user_role == RoleEnum.HR:
-        # HR can see only their department
-        if not user_department:
-            raise HTTPException(status_code=400, detail="HR must have a department assigned")
-        return get_today_attendance_status(db, department=user_department)
-    elif user_role == RoleEnum.MANAGER:
-        # Manager can see only their department
-        if not user_department:
+
+    records = get_today_attendance_status(db)
+
+    if user_role == RoleEnum.HR:
+        # HR can see all employees, excluding Admins, HRs, and themselves.
+        allowed_ids = {
+            u.user_id
+            for u in db.query(User.user_id)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        }
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    if user_role == RoleEnum.MANAGER:
+        # Manager can see only employees in their own department(s),
+        # excluding Admins, HRs, other Managers, and themselves.
+        manager_depts = set(department_tokens_lower(user_department))
+        if not manager_depts:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
-        return get_today_attendance_status(db, department=user_department)
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized to view attendance")
+
+        candidates = (
+            db.query(User.user_id, User.department)
+            .filter(User.is_active.is_(True))
+            .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
+            .filter(User.user_id != current_user.user_id)
+            .all()
+        )
+        allowed_ids = set()
+        for uid, dept in candidates:
+            user_depts = set(department_tokens_lower(dept))
+            if manager_depts & user_depts:
+                allowed_ids.add(uid)
+
+        return [r for r in records if r.get("user_id") in allowed_ids]
+
+    raise HTTPException(status_code=403, detail="Not authorized to view attendance")
 
 # Get All Attendance History (for Admin/HR/Manager)
 @router.get("/all")
@@ -1713,9 +1844,10 @@ def get_all_attendance_history(
 ):
     """
     Get all attendance history
-    - ADMIN: See all employees (or filter by department)
-    - HR: See only their department employees (department filter is automatic)
-    - MANAGER: See only their department employees (department filter is automatic)
+    - ADMIN: See all users except Admins.
+    - HR: See all users except Admins, HRs, and self.
+    - MANAGER: See users in their department(s) (supports comma-separated),
+      excluding Admins, HRs, other Managers, and self.
     - Others: Not allowed
     """
     user_role = current_user.role
@@ -1733,18 +1865,29 @@ def get_all_attendance_history(
     )
 
     if user_role == RoleEnum.ADMIN:
-        # Admin can see all or filter by department
+        # Admin can see all non-admin users (optionally filter by department)
+        records_query = records_query.filter(User.role != RoleEnum.ADMIN)
         if department:
             records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.HR:
-        # HR can see attendance across all departments; optional department filter applies
+        # HR can see all non-admin/non-HR users except self; optional department filter applies
+        records_query = records_query.filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            User.user_id != current_user.user_id,
+        )
         if department:
             records_query = records_query.filter(User.department == department)
     elif user_role == RoleEnum.MANAGER:
-        # Manager can only see their department(s) — support comma-separated manager.department
+        # Manager can only see their department(s) — support comma-separated manager.department,
+        # excluding Admins, HRs, other Managers, and self.
         if not user_department:
             raise HTTPException(status_code=400, detail="Manager must have a department assigned")
         manager_depts = department_tokens_lower(user_department)
+        # Exclude disallowed roles and self first
+        records_query = records_query.filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
+            User.user_id != current_user.user_id,
+        )
         if manager_depts:
             patterns = [department_token_regex_pattern(d) for d in manager_depts]
             filters = [User.department.op("RLIKE")(pat) for pat in patterns]
@@ -1802,8 +1945,12 @@ def list_office_timings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role not in {RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view office timings")
+    # Only Admins can view office hours
+    if current_user.role != RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can view office timings",
+        )
 
     records = (
         db.query(OfficeTiming)
@@ -2248,7 +2395,8 @@ def attendance_monthly_grid_report(
     month: int = Query(..., ge=1, le=12),
     year: int = Query(...),
     department: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_crud import build_monthly_attendance_grid
     return build_monthly_attendance_grid(db, month, year, department)
@@ -2262,7 +2410,8 @@ def download_monthly_grid_pdf(
     date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
 
@@ -2294,7 +2443,8 @@ def download_monthly_detailed_grid_pdf(
     date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_grid_export import export_monthly_detailed_pdf
 
@@ -2326,7 +2476,8 @@ def download_monthly_grid_csv(
     date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_csv
 

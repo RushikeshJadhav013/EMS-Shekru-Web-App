@@ -11,6 +11,7 @@ from app.db.models.wfh_request import WFHRequest, WFHStatus
 from app.db.models.user import User
 from app.utils.timezone import now_ist
 from app.enums import RoleEnum
+from app.utils.department_utils import department_tokens_lower
 
 
 def create_wfh_request(
@@ -70,8 +71,10 @@ def get_all_wfh_requests(
 ) -> Tuple[List[dict], int]:
     """
     Get all WFH requests with user details.
-    For Manager: show requests from their department
-    For HR/Admin: show all requests
+    Role-based hierarchy validation:
+    - Admin: Can see all requests except Admins and self
+    - HR: Can see all requests except Admins, HRs, and self
+    - Manager: Can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
     
     Returns: (list of requests with user details, pending count)
     """
@@ -86,21 +89,86 @@ def get_all_wfh_requests(
         .join(User, WFHRequest.user_id == User.user_id)
     )
     
-    # Role-based filtering
+    # Role-based filtering with hierarchy validation
     if requester_user:
-        if requester_user.role == RoleEnum.MANAGER:
-            # Managers can only see requests from their department
+        if requester_user.role == RoleEnum.ADMIN:
+            # Admin visibility rules:
+            # - For HR and Manager users: only Pending requests
+            # - For all other users (non-admin): Approved and Rejected requests
+            #   (Admins and self are always excluded)
+            base = query.filter(User.user_id != requester_user.user_id)
+
+            if status_filter:
+                # Normalize status filter
+                normalized_status = status_filter.strip().lower()
+                # Map to WFHStatus values if possible
+                pending_val = WFHStatus.PENDING.value.lower()
+                approved_val = WFHStatus.APPROVED.value.lower()
+                rejected_val = WFHStatus.REJECTED.value.lower()
+
+                if normalized_status == pending_val:
+                    query = base.filter(
+                        User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+                        WFHRequest.status == WFHStatus.PENDING.value,
+                    )
+                elif normalized_status in {approved_val, rejected_val}:
+                    # Approved/Rejected for all non-admin users
+                    allowed_status = (
+                        WFHStatus.APPROVED.value if normalized_status == approved_val
+                        else WFHStatus.REJECTED.value
+                    )
+                    query = base.filter(
+                        User.role != RoleEnum.ADMIN,
+                        WFHRequest.status == allowed_status,
+                    )
+                else:
+                    # Fallback to original behavior for any unexpected status
+                    query = base.filter(WFHRequest.status == status_filter)
+            else:
+                # No explicit status filter: combine the two rules
+                query = base.filter(
+                    or_(
+                        # Pending requests for HR and Manager
+                        and_(
+                            User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+                            WFHRequest.status == WFHStatus.PENDING.value,
+                        ),
+                        # Approved/Rejected requests for all non-admin users
+                        and_(
+                            User.role != RoleEnum.ADMIN,
+                            WFHRequest.status.in_([WFHStatus.APPROVED.value, WFHStatus.REJECTED.value]),
+                        ),
+                    )
+                )
+        elif requester_user.role == RoleEnum.HR:
+            # HR can see all requests except Admins, HRs, and self
+            query = query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+                User.user_id != requester_user.user_id
+            )
+        elif requester_user.role == RoleEnum.MANAGER:
+            # Manager can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
             if requester_user.department:
-                query = query.filter(User.department == requester_user.department)
-        # HR and Admin can see all requests (no additional filter)
+                manager_tokens = department_tokens_lower(requester_user.department)
+                if manager_tokens:
+                    token_filters = [func.lower(User.department).like(f'%{t}%') for t in manager_tokens]
+                    query = query.filter(or_(*token_filters))
+            query = query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
+                User.user_id != requester_user.user_id
+            )
     
-    # Status filter
-    if status_filter:
+    # Status filter (for non-Admin callers, or when Admin fallback above used status_filter directly)
+    if status_filter and (not requester_user or requester_user.role != RoleEnum.ADMIN):
         query = query.filter(WFHRequest.status == status_filter)
     
     # Department filter (additional filter for HR/Admin)
     if department_filter:
-        query = query.filter(User.department == department_filter)
+        # department_filter used by HR/Admin - allow matching comma-separated department values
+        dept_tokens = department_tokens_lower(department_filter)
+        if dept_tokens:
+            token_filters = [func.lower(User.department).like(f'%{t}%') for t in dept_tokens]
+            query = query.filter(or_(*token_filters))
     
     results = query.order_by(WFHRequest.created_at.desc()).all()
     
@@ -108,13 +176,40 @@ def get_all_wfh_requests(
     pending_query = db.query(func.count(WFHRequest.wfh_id)).filter(
         WFHRequest.status == WFHStatus.PENDING.value
     )
-    if requester_user and requester_user.role == RoleEnum.MANAGER:
-        if requester_user.department:
-            pending_query = pending_query.join(
-                User, WFHRequest.user_id == User.user_id
-            ).filter(
-                User.department == requester_user.department
+
+    # We'll join `users` at most once for the pending query to avoid duplicate table aliases.
+    pending_joined = False
+
+    # Apply role-based hierarchy restrictions for pending count
+    if requester_user:
+        if not pending_joined:
+            pending_query = pending_query.join(User, WFHRequest.user_id == User.user_id)
+            pending_joined = True
+        
+        if requester_user.role == RoleEnum.ADMIN:
+            # Admin can see all pending requests except Admins and self
+            pending_query = pending_query.filter(
+                User.role != RoleEnum.ADMIN,
+                User.user_id != requester_user.user_id
             )
+        elif requester_user.role == RoleEnum.HR:
+            # HR can see all pending requests except Admins, HRs, and self
+            pending_query = pending_query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+                User.user_id != requester_user.user_id
+            )
+        elif requester_user.role == RoleEnum.MANAGER:
+            # Manager can see pending requests from their department(s) only, excluding Admins, HRs, Managers, and self
+            if requester_user.department:
+                manager_tokens = department_tokens_lower(requester_user.department)
+                if manager_tokens:
+                    token_filters = [func.lower(User.department).like(f'%{t}%') for t in manager_tokens]
+                    pending_query = pending_query.filter(or_(*token_filters))
+            pending_query = pending_query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
+                User.user_id != requester_user.user_id
+            )
+
     pending_count = pending_query.scalar() or 0
     
     # Format results
@@ -269,9 +364,14 @@ def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
     
     if requester_user.role == RoleEnum.MANAGER:
         if requester_user.department:
-            query = query.join(
-                User, WFHRequest.user_id == User.user_id
-            ).filter(User.department == requester_user.department)
+            manager_tokens = department_tokens_lower(requester_user.department)
+            if manager_tokens:
+                token_filters = [func.lower(User.department).like(f'%{t}%') for t in manager_tokens]
+                query = query.join(
+                    User, WFHRequest.user_id == User.user_id
+                ).filter(
+                    or_(*token_filters)
+                )
     
     return query.scalar() or 0
 
