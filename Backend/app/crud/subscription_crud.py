@@ -297,20 +297,25 @@ def check_admin_subscription_limit(
     """
     Check if admin can create more users based on subscription limit.
     Returns: (can_create, current_count, max_allowed)
+    If no active subscription exists, allows unlimited user creation.
     """
     subscription = get_admin_subscription(db, admin_id)
     
+    # If no subscription or inactive, allow unlimited user creation
     if not subscription or not subscription.is_active:
-        return (False, 0, 0)
+        current_count = get_admin_user_count(db, admin_id)
+        return (True, current_count, float('inf'))
     
     # Check if subscription has expired
     if subscription.end_date and subscription.end_date < datetime.now():
-        return (False, 0, 0)
+        current_count = get_admin_user_count(db, admin_id)
+        return (True, current_count, float('inf'))
     
     # Get the plan
     plan = subscription.plan
     if not plan or not plan.is_active:
-        return (False, 0, 0)
+        current_count = get_admin_user_count(db, admin_id)
+        return (True, current_count, float('inf'))
     
     # Count users created by this admin
     current_count = get_admin_user_count(db, admin_id)
@@ -336,18 +341,19 @@ def get_admin_subscription_info(
         # Accept small drift (<= 31 days) as trial
         return duration.days <= 31
 
+    # Use check_admin_subscription_limit to get accurate limits (handles no subscription case)
+    can_create, current_count, max_allowed = check_admin_subscription_limit(db, admin_id)
+    
     if not subscription:
         return {
             "has_subscription": False,
-            "current_count": 0,
-            "max_allowed": 0,
-            "can_create": False,
+            "current_count": current_count,
+            "max_allowed": max_allowed if max_allowed != float('inf') else None,  # Show None for unlimited
+            "can_create": can_create,
             "subscription": None,
             "is_trial": False,
             "trial_ends_on": None,
         }
-    
-    can_create, current_count, max_allowed = check_admin_subscription_limit(db, admin_id)
     
     return {
         "has_subscription": True,
