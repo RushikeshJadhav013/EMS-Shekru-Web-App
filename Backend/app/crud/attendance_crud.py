@@ -735,8 +735,8 @@ def export_attendance_pdf(
     side_gap = 20  # pts
     table_width = max(total_width - (2 * side_gap), 0)
 
-    # --- Manual column widths configuration (edit these values as needed) ---
-    # Keys must match header names exactly. Values are in points (pt).
+    # --- Column width proportions (relative); scaled to fit table_width so table never overflows page ---
+    # Keys must match header names exactly. Values are relative (points); final widths scaled to fit.
     manual_widths = {
         'Attendance ID': 80,
         'Employee ID': 75,
@@ -749,27 +749,14 @@ def export_attendance_pdf(
         'Work Report': 150,
     }
 
-    # Build column widths using manual widths where provided; remaining columns share leftover space.
-    fixed_sum = 0
-    flexible_count = 0
-    for idx in visible_cols:
-        col_name = headers[idx]
-        if col_name in manual_widths:
-            fixed_sum += manual_widths[col_name]
-        else:
-            flexible_count += 1
-
-    # Minimum width for flexible columns
-    min_flexible = 40
-    remaining_width = max(table_width - fixed_sum, flexible_count * min_flexible)
-
+    # Build column widths from proportions; scale down so total never exceeds table_width.
+    raw_sum = sum(manual_widths.get(headers[idx], 80) for idx in visible_cols)
+    scale = min(1.0, table_width / raw_sum) if raw_sum > 0 else 1.0
     col_widths = []
     for idx in visible_cols:
         col_name = headers[idx]
-        if col_name in manual_widths:
-            col_widths.append(manual_widths[col_name])
-        else:
-            col_widths.append(remaining_width / flexible_count if flexible_count > 0 else remaining_width)
+        w = manual_widths.get(col_name, 80)
+        col_widths.append(round(w * scale, 1))
     from reportlab.lib.styles import ParagraphStyle
     styles_tbl = getSampleStyleSheet()
     header_style = ParagraphStyle(
