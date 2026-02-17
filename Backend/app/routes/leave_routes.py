@@ -71,11 +71,11 @@ def request_leave(
     if getattr(user, "role", None) == RoleEnum.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin users cannot apply for leave")
     
-    # Validation 1: Sick leave minimum duration check
-    if leave.leave_type.lower() == 'sick' and leave_days < 3:
+    # Validation 1: Sick leave minimum duration (1 day)
+    if leave.leave_type.lower() == 'sick' and leave_days < 1:
         raise HTTPException(
             status_code=400,
-            detail="Sick leave can only be applied for 3 or more days. For shorter periods (1-2 days), please use Casual Leave instead."
+            detail="Sick leave must be for at least 1 day."
         )
     
     # Validation 2: Advance notice requirements
@@ -84,11 +84,21 @@ def request_leave(
     hours_difference = time_difference.total_seconds() / 3600
     
     if leave.leave_type.lower() == 'sick':
-        # Sick leave requires minimum 2 hours advance notice
+        # Sick leave: cannot be for past dates; cannot be for future dates beyond 24 hrs; reject if within 2 hrs of start
+        if hours_difference < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave cannot be applied for past dates."
+            )
+        if hours_difference > 24:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave cannot be applied for future dates. It must be applied only within 24 hours of the start date."
+            )
         if hours_difference < 2:
             raise HTTPException(
                 status_code=400,
-                detail="Sick leave must be applied at least 2 hours before the start date."
+                detail="Sick leave cannot be applied within 2 hours of the start date."
             )
     else:
         # Other leaves require 24 hours advance notice
@@ -207,7 +217,7 @@ def approve_leave_request(
 # View logged-in user's leave requests
 @router.get("/", response_model=list[LeaveDisplayOut])
 def view_my_leave(
-    period: str = Query(default="current_month", description="Time period: current_month, last_3_months, last_6_months, last_1_year"),
+    period: str = Query(default="all", description="Time period: current_month, last_3_months, last_6_months, last_1_year, custom (with from_date/to_date)"),
     from_date: Optional[str] = Query(None, description="Custom start date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, description="Custom end date (YYYY-MM-DD)"),
     db: Session = Depends(get_db),
@@ -215,9 +225,13 @@ def view_my_leave(
 ):
     """
     Get user's leave history filtered by time period.
-    Default: current_month
-    Options: current_month, last_3_months, last_6_months, last_1_year
+    Default: all leaves (when period omitted or blank).
+    Options: current_month, last_3_months, last_6_months, last_1_year, custom (with from_date/to_date)
     """
+    # Treat blank/empty period as "all"
+    if not period or not period.strip():
+        period = "all"
+
     # Parse custom dates if provided
     custom_start = None
     custom_end = None
@@ -242,8 +256,8 @@ def view_my_leave(
     if period in ["current_month", "last_3_months", "last_6_months", "last_1_year", "custom"]:
         return list_leave_by_period(db, user.user_id, period, custom_start_date=custom_start, custom_end_date=custom_end)
     else:
-        # Default to current month if invalid period
-        return list_leave_by_period(db, user.user_id, "current_month")
+        # Default (all) when period omitted, blank, or invalid
+        return list_leave_by_period(db, user.user_id, "all")
 
 
 @router.get("/balance", response_model=LeaveBalanceResponse)
@@ -287,11 +301,11 @@ def update_leave_request(
     # Calculate leave duration for validation
     leave_days = (final_end_date - final_start_date).days + 1
 
-    # Validation 1: Sick leave minimum duration check
-    if final_leave_type == 'sick' and leave_days < 3:
+    # Validation 1: Sick leave minimum duration (1 day)
+    if final_leave_type == 'sick' and leave_days < 1:
         raise HTTPException(
             status_code=400,
-            detail="Sick leave can only be applied for 3 or more days. For shorter periods (1-2 days), please use Casual Leave instead."
+            detail="Sick leave must be for at least 1 day."
         )
 
     # Validation 2: Advance notice requirements
@@ -300,11 +314,21 @@ def update_leave_request(
     hours_difference = time_difference.total_seconds() / 3600
 
     if final_leave_type == 'sick':
-        # Sick leave requires minimum 2 hours advance notice
+        # Sick leave: cannot be for past dates; cannot be for future dates beyond 24 hrs; reject if within 2 hrs of start
+        if hours_difference < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave cannot be applied for past dates."
+            )
+        if hours_difference > 24:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave cannot be applied for future dates. It must be applied only within 24 hours of the start date."
+            )
         if hours_difference < 2:
             raise HTTPException(
                 status_code=400,
-                detail="Sick leave must be applied at least 2 hours before the start date."
+                detail="Sick leave cannot be applied within 2 hours of the start date."
             )
     else:
         # Other leaves require 24 hours advance notice

@@ -545,6 +545,9 @@ def list_leave_by_period(
     """
     now = now_ist()
     
+    if period == "all":
+        return db.query(Leave).filter(Leave.user_id == user_id).order_by(Leave.start_date.desc()).all()
+
     if period == "custom":
         start_date = custom_start_date if custom_start_date else datetime(now.year, now.month, 1) # Default to start of current month
         end_date = custom_end_date if custom_end_date else now + timedelta(days=365) # Default to 1 year in future to catch everything? Or just now? Let's say far future to be safe or end of current month. 
@@ -584,15 +587,9 @@ def list_leave_by_period(
         start_date = now - timedelta(days=365)
     
     else:
-        # Default to current month
-        month_start = datetime(now.year, now.month, 1)
-        if now.month == 12:
-            month_end = datetime(now.year + 1, 1, 1)
-        else:
-            month_end = datetime(now.year, now.month + 1, 1)
-        start_date = month_start
-        end_date = month_end
-    
+        # Default (all) when period omitted, blank, or invalid
+        return db.query(Leave).filter(Leave.user_id == user_id).order_by(Leave.start_date.desc()).all()
+
     # Get ALL leaves for the user where start_date or end_date falls within the period
     # This includes leaves that overlap with the period (pending, approved, rejected)
     # We check both start_date and end_date to catch all relevant leaves

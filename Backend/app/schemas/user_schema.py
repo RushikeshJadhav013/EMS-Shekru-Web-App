@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, constr, validator, field_validator, Field
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from datetime import datetime
 import re
 from app.enums import RoleEnum, GenderEnum
@@ -275,6 +275,11 @@ class UpdateRoleSchema(BaseModel):
     role: RoleEnum = Field(..., description="New role for the user")
 
 class UpdateStatusSchema(BaseModel):
+    is_active: bool = Field(..., description="Active status (true/false)")
+
+
+class BulkUpdateStatusSchema(BaseModel):
+    user_ids: List[int] = Field(..., min_length=1, description="List of user IDs to update")
     is_active: bool = Field(..., description="Active status (true/false)")
 
 

@@ -13,7 +13,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.pdfgen import canvas
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import io
 import csv
 import os
@@ -177,6 +177,18 @@ def update_user_status(db: Session, user_id: int, is_active: bool, updated_by: i
         db.commit()
         db.refresh(user)
     return user
+
+
+def update_users_status_bulk(db: Session, user_ids: List[int], is_active: bool, updated_by: int = None) -> List[User]:
+    """Update active/inactive status for multiple users. Returns list of updated users."""
+    if not user_ids:
+        return []
+    db.query(User).filter(User.user_id.in_(user_ids)).update(
+        {User.is_active: is_active}, synchronize_session=False
+    )
+    db.commit()
+    return db.query(User).filter(User.user_id.in_(user_ids)).all()
+
 
 def delete_user(db: Session, user_id: int):
     user = db.query(User).filter(User.user_id == user_id).first()

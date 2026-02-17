@@ -153,18 +153,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Allowed origins for CORS
 origins = [
-    "http://localhost:3000",    # React dev server
-    "http://127.0.0.1:3000",   # React dev server alternative
-    "http://localhost:5173",    # Vite dev server
-    # "http://127.0.0.1:5173",   # Vite dev server alternative
     # "https://staffly.space",    # Direct backend access
-    "http://localhost:8080",    # Common frontend port
-    "http://127.0.0.1:8080",   # Common frontend port alternative
-    # "http://localhost:4173",    # Vite preview server
-    # "http://127.0.0.1:4173",   # Vite preview server alternative
     # "https://stafflyhrms.netlify.app",  # Production deployment
-    "http://localhost:8080"
-    "https://testing.staffly.space"           # Allow all origins (for development)
+    # "http://localhost:8080",
+    "https://testing.staffly.space",           # Allow all origins (for development)
     "https://stafflytesting.netlify.app"       # Testing deployment
 ]
 

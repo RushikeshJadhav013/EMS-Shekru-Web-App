@@ -4,12 +4,13 @@ from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Literal
 from pathlib import Path
 from app.utils.timezone import now_ist
-from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema
+from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema, BulkUpdateStatusSchema
 from app.crud.user_crud import (
     create_user,
     list_users,
     update_user_role,
     update_user_status,
+    update_users_status_bulk,
     delete_user,
     get_user_by_email,
     get_user_by_employee_id,
@@ -365,6 +366,47 @@ def get_all_employees_public(
     return _sanitize_users_response(employees)
 
 
+# ✅ Bulk status update - must be defined before /{user_id} so PUT /employees/status matches here
+@router.put("/status", response_model=List[UserOut], summary="Bulk Activate/Deactivate Employees (Admin only)")
+def bulk_update_employee_status(
+    status_data: BulkUpdateStatusSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+):
+    """
+    Activate or deactivate multiple employees at once.
+    Admin only. Cannot change own status or other Admins' status.
+    """
+    # Reject if self is in the list
+    if current_user.user_id in status_data.user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change your own status. Remove your user ID ({current_user.user_id}) from the request."
+        )
+    # Reject if any Admin user IDs are in the list
+    target_users = db.query(User).filter(User.user_id.in_(status_data.user_ids)).all()
+    admin_users = [u for u in target_users if getattr(u, "role", None) == RoleEnum.ADMIN]
+    if admin_users:
+        admin_ids = [u.user_id for u in admin_users]
+        admin_names = ", ".join(u.name or f"ID {u.user_id}" for u in admin_users)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change status of Admin users. Invalid user IDs: {admin_ids}. Users: {admin_names}"
+        )
+    # Validate all user_ids exist
+    found_ids = {u.user_id for u in target_users}
+    not_found = [uid for uid in status_data.user_ids if uid not in found_ids]
+    if not_found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User(s) not found: {not_found}"
+        )
+    updated = update_users_status_bulk(
+        db, list(status_data.user_ids), status_data.is_active, updated_by=current_user.user_id
+    )
+    return _sanitize_users_response(updated)
+
+
 # ✅ Update employee details (Users can update their own profile, Admin/HR can update anyone)
 @router.put("/{user_id}", response_model=UserOut)
 def update_employee(
@@ -600,6 +642,7 @@ def update_role_public(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return _sanitize_users_response(updated)
 
+
 @router.put("/{user_id}/status", response_model=UserOut, summary="Activate/Deactivate Employee")
 def update_employee_status(
     user_id: int,
@@ -623,11 +666,24 @@ def update_employee_status(
 
     # Prevent self status change
     if employee.user_id == current_user.user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot change your own active status")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change your own status. User ID {user_id} is your account."
+        )
+
+    # Admin cannot change other Admins' status
+    if current_user.role == RoleEnum.ADMIN and getattr(employee, "role", None) == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change status of Admin users. User ID {user_id} ({employee.name or 'Admin'}) is an Admin."
+        )
 
     # HR restrictions: cannot change status of Admins or other HRs
     if current_user.role == RoleEnum.HR and getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot change status of Admins or other HRs")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"HR users cannot change status of Admin or HR users. User ID {user_id} has role {getattr(employee, 'role', 'unknown')}."
+        )
 
     updated = update_user_status(db, user_id, status_data.is_active, updated_by=current_user.user_id)
     if not updated:
