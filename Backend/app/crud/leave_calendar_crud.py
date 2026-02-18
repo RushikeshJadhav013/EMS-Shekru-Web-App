@@ -92,9 +92,11 @@ def get_leave_allocation(db: Session) -> LeaveAllocationConfig:
 
 def update_leave_allocation(db: Session, total: int, sick: int, casual: int, other: int, updated_by: Optional[int]) -> LeaveAllocationConfig:
     cfg = db.query(LeaveAllocationConfig).order_by(LeaveAllocationConfig.id.desc()).first()
+    # Enforce: annual bucket = sick + casual (ignore provided total)
+    derived_total = (sick or 0) + (casual or 0)
     if not cfg:
         cfg = LeaveAllocationConfig(
-            total_annual_leave=total,
+            total_annual_leave=derived_total,
             sick_leave_allocation=sick,
             casual_leave_allocation=casual,
             other_leave_allocation=other,
@@ -102,7 +104,7 @@ def update_leave_allocation(db: Session, total: int, sick: int, casual: int, oth
         )
         db.add(cfg)
     else:
-        cfg.total_annual_leave = total
+        cfg.total_annual_leave = derived_total
         cfg.sick_leave_allocation = sick
         cfg.casual_leave_allocation = casual
         cfg.other_leave_allocation = other

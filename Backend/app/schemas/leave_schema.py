@@ -7,7 +7,11 @@ class LeaveBase(BaseModel):
     end_date: date = Field(..., description="Leave end date")
     reason: Optional[constr(min_length=10, max_length=500, strip_whitespace=True)] = Field(None, description="Leave reason (10-500 characters)")
     # status: Optional[Literal['Pending', 'Approved', 'Rejected']] = Field("Pending", description="Leave status")
-    leave_type: Literal['annual', 'sick', 'casual', 'maternity', 'paternity', 'unpaid'] = Field("annual", description="Type of leave")
+    # Note: Annual bucket is calculated from sick + casual, so user-selectable types
+    # exclude 'annual' to avoid confusion in validation messages.
+    leave_type: Literal['sick', 'casual', 'maternity', 'paternity', 'unpaid'] = Field(
+        'sick', description="Type of leave"
+    )
 
     @field_validator('end_date')
     @classmethod
@@ -100,7 +104,9 @@ class LeaveUpdate(BaseModel):
     start_date: Optional[date] = Field(None, description="New start date")
     end_date: Optional[date] = Field(None, description="New end date")
     reason: Optional[constr(min_length=10, max_length=500, strip_whitespace=True)] = Field(None, description="Updated reason")
-    leave_type: Optional[Literal['annual', 'sick', 'casual', 'maternity', 'paternity', 'unpaid']] = Field(None, description="Updated leave type")
+    leave_type: Optional[Literal['sick', 'casual', 'maternity', 'paternity', 'unpaid']] = Field(
+        None, description="Updated leave type"
+    )
 
     @field_validator('end_date')
     @classmethod

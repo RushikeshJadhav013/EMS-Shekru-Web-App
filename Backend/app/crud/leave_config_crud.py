@@ -12,20 +12,24 @@ def get_leave_config_or_default(db: Session) -> dict:
     """
     Get active leave configuration or return default values.
     Returns a dict with leave allocations.
+    Annual leave is calculated as sick + casual (not stored separately).
     """
     config = get_active_leave_config(db)
     
     if config:
+        # Calculate annual as sick + casual
+        annual_calculated = config.sick_leave_allocation + config.casual_leave_allocation
         return {
-            "annual": config.total_annual_leave,
+            "annual": annual_calculated,
             "sick": config.sick_leave_allocation,
             "casual": config.casual_leave_allocation,
             "other": config.other_leave_allocation,
         }
     
     # Default values if no configuration exists
+    # Annual = sick (10) + casual (5) = 15
     return {
-        "annual": 15,
+        "annual": 15,  # Calculated as sick (10) + casual (5)
         "sick": 10,
         "casual": 5,
         "other": 0,
@@ -42,13 +46,16 @@ def create_leave_config(
     """
     Create a new leave allocation configuration.
     Deactivates all previous configurations.
+    Note: total_annual_leave is stored but annual bucket = sick + casual in calculations.
     """
     # Deactivate all existing configurations
     db.query(LeaveAllocationConfig).update({"is_active": False})
     
     # Create new configuration
+    # Enforce: annual bucket = sick + casual (total_annual_leave is derived)
+    derived_total = (sick_leave_allocation or 0) + (casual_leave_allocation or 0)
     config = LeaveAllocationConfig(
-        total_annual_leave=total_annual_leave,
+        total_annual_leave=derived_total,
         sick_leave_allocation=sick_leave_allocation,
         casual_leave_allocation=casual_leave_allocation,
         other_leave_allocation=other_leave_allocation,
@@ -79,8 +86,6 @@ def update_leave_config(
     if not config:
         return None
     
-    if total_annual_leave is not None:
-        config.total_annual_leave = total_annual_leave
     if sick_leave_allocation is not None:
         config.sick_leave_allocation = sick_leave_allocation
     if casual_leave_allocation is not None:
@@ -89,6 +94,9 @@ def update_leave_config(
         config.other_leave_allocation = other_leave_allocation
     if updated_by is not None:
         config.updated_by = updated_by
+
+    # Enforce: annual bucket = sick + casual (ignore any provided total_annual_leave)
+    config.total_annual_leave = (config.sick_leave_allocation or 0) + (config.casual_leave_allocation or 0)
     
     db.commit()
     db.refresh(config)

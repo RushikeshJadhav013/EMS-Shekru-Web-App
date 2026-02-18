@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import datetime
 
 class LeaveAllocationConfigBase(BaseModel):
-    total_annual_leave: int = Field(..., ge=1, le=365, description="Total annual leave days (1-365)")
+    total_annual_leave: int = Field(..., ge=1, le=365, description="Total annual leave days (1-365). Note: In calculations, annual leave bucket = sick + casual")
     sick_leave_allocation: int = Field(..., ge=0, le=365, description="Sick leave allocation (0-365)")
     casual_leave_allocation: int = Field(..., ge=0, le=365, description="Casual leave allocation (0-365)")
     other_leave_allocation: int = Field(..., ge=0, le=365, description="Other leave allocation (0-365)")
@@ -29,7 +29,7 @@ class LeaveAllocationConfigCreate(LeaveAllocationConfigBase):
             casual = info.data.get('casual_leave_allocation', 0)
             other = info.data.get('other_leave_allocation', 0)
             
-            # Note: We allow the sum to exceed total_annual_leave as they are separate buckets
+            # Note: Annual leave bucket = sick + casual in calculations
             # The validation is just to ensure reasonable values
             if sick + casual + other > total * 2:  # Allow up to 2x for flexibility
                 raise ValueError(f'Total leave allocation ({sick + casual + other}) seems unreasonably high compared to annual leave ({total})')

@@ -20,6 +20,7 @@ from app.crud.leave_crud import (
     list_pending_by_department_and_roles,
     list_decided_by_approver,
     create_leave_request_notifications,
+    update_leave_request_notifications,
     create_leave_decision_notification,
     create_leave_deletion_notification,
     list_leave_notifications,
@@ -382,6 +383,8 @@ def update_leave_request(
     if updated_leave == "not_pending":
         raise HTTPException(status_code=400, detail="Only pending leave requests can be updated")
 
+    # Update existing approver notifications for this leave_id (same recipients)
+    update_leave_request_notifications(db, updated_leave, user)
     return updated_leave
 
 
@@ -716,21 +719,24 @@ def get_current_leave_allocation(
     """
     Get the current leave allocation values (for all users).
     Returns default values if no configuration exists.
+    Note: annual_leave = sick_leave_allocation + casual_leave_allocation
     """
     config = get_active_leave_config(db)
     
     if config:
+        # Calculate annual as sick + casual
+        annual_calculated = config.sick_leave_allocation + config.casual_leave_allocation
         return {
-            "total_annual_leave": config.total_annual_leave,
+            "total_annual_leave": annual_calculated,  # Calculated as sick + casual
             "sick_leave_allocation": config.sick_leave_allocation,
             "casual_leave_allocation": config.casual_leave_allocation,
             "other_leave_allocation": config.other_leave_allocation,
             "is_configured": True
         }
     
-    # Return defaults
+    # Return defaults (annual = sick + casual = 10 + 5 = 15)
     return {
-        "total_annual_leave": 15,
+        "total_annual_leave": 15,  # Calculated as sick (10) + casual (5)
         "sick_leave_allocation": 10,
         "casual_leave_allocation": 5,
         "other_leave_allocation": 0,

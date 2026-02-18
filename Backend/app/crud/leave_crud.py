@@ -506,7 +506,12 @@ def get_leave_balance(db: Session, user_id: int):
     )
 
     for leave in approved_leaves:
-        leave_type = (leave.leave_type or "annual").lower()
+        raw_type = (leave.leave_type or "annual").lower()
+        # Map maternity, paternity, unpaid and explicit "other" into the 'other' bucket
+        if raw_type in ("maternity", "paternity", "unpaid", "other"):
+            leave_type = "other"
+        else:
+            leave_type = raw_type
         start_date = leave.start_date.date() if isinstance(leave.start_date, datetime) else leave.start_date
         end_date = leave.end_date.date() if isinstance(leave.end_date, datetime) else leave.end_date
         days = (end_date - start_date).days + 1
@@ -756,6 +761,50 @@ def create_leave_request_notifications(db: Session, leave: Leave, requester: Use
         db.refresh(notification)
 
     return notifications
+
+
+def update_leave_request_notifications(db: Session, leave: Leave, requester: User) -> int:
+    """
+    Update existing leave request notifications for the same leave_id.
+
+    This is used when a requester edits a Pending leave (PUT /leave/{leave_id}).
+    We update the title/message, mark as unread again, and bump created_at so
+    the notification appears at the top in GET /leave/notifications.
+    """
+    existing = (
+        db.query(LeaveNotification)
+        .filter(
+            LeaveNotification.leave_id == leave.leave_id,
+            LeaveNotification.notification_type == "Leave Request",
+        )
+        .all()
+    )
+    if not existing:
+        return 0
+
+    start_str = leave.start_date.strftime("%d %b %Y")
+    end_str = leave.end_date.strftime("%d %b %Y")
+    day_count = (leave.end_date.date() - leave.start_date.date()).days + 1
+    day_label = "day" if day_count == 1 else "days"
+    leave_type = (leave.leave_type or "").strip().lower()
+
+    title = "Leave Request Updated"
+    message = (
+        f"{requester.name} ({requester.employee_id or 'N/A'}) from {requester.department or 'N/A'} department "
+        f"has updated their leave request to {start_str} to {end_str} ({day_count} {day_label})"
+        + (f" [{leave_type}]" if leave_type else "")
+        + "."
+    )
+
+    bumped_at = now_ist()
+    for n in existing:
+        n.title = title
+        n.message = message
+        n.is_read = False
+        n.created_at = bumped_at
+
+    db.commit()
+    return len(existing)
 
 
 def create_leave_decision_notification(

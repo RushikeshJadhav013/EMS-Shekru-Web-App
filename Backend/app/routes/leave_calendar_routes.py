@@ -92,8 +92,10 @@ def get_allocation(db: Session = Depends(get_db), current_user: User = Depends(g
     cfg = get_leave_allocation(db)
     if not cfg:
         return {}
+    # Calculate annual as sick + casual
+    annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
     return {
-        "total_annual_leave": cfg.total_annual_leave,
+        "total_annual_leave": annual_calculated,  # Calculated as sick + casual
         "sick_leave_allocation": cfg.sick_leave_allocation,
         "casual_leave_allocation": cfg.casual_leave_allocation,
         "other_leave_allocation": cfg.other_leave_allocation,
@@ -104,8 +106,10 @@ def get_allocation(db: Session = Depends(get_db), current_user: User = Depends(g
 @router.put("/allocation")
 def update_allocation(payload: LeaveAllocationUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN))):
     cfg = update_leave_allocation(db, total=payload.total_annual_leave, sick=payload.sick_leave_allocation, casual=payload.casual_leave_allocation, other=payload.other_leave_allocation, updated_by=current_user.user_id)
+    # Calculate annual as sick + casual
+    annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
     return {
-        "total_annual_leave": cfg.total_annual_leave,
+        "total_annual_leave": annual_calculated,  # Calculated as sick + casual
         "sick_leave_allocation": cfg.sick_leave_allocation,
         "casual_leave_allocation": cfg.casual_leave_allocation,
         "other_leave_allocation": cfg.other_leave_allocation,
