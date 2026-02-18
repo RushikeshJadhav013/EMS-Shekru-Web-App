@@ -256,7 +256,7 @@ def get_all_employees_public(
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[RoleEnum] = Query(None, description="Filter by role"),
-    is_active: Literal["true", "false", "all"] = Query("true", description="Filter by active status: 'true' (default), 'false', or 'all'")
+    is_active: Literal["true", "false", "all"] = Query("all", description="Filter by active status: 'true', 'false', or 'all' (default)")
 ):
     """
     Get all employees with role-based access control.

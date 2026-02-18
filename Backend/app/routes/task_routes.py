@@ -20,7 +20,16 @@ from app.crud.task_crud import (
 from app.dependencies import get_current_user
 from app.utils.timezone import now_ist
 
-from app.schemas.task_schema import TaskCreate, TaskHistoryOut, TaskNotificationOut, TaskOut, TaskPassRequest, TaskUpdate
+from app.schemas.task_schema import (
+    TaskBulkCreate,
+    BulkTaskUpdate,
+    TaskCreate,
+    TaskHistoryOut,
+    TaskNotificationOut,
+    TaskOut,
+    TaskPassRequest,
+    TaskUpdate,
+)
 from app.enums import RoleEnum, TaskStatus
 from app.db.models.task import Task, TaskHistory
 from app.db.models.user import User
@@ -104,6 +113,105 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
         assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
     )
+
+
+@router.post("/bulk", response_model=list[TaskOut])
+def assign_tasks_bulk(
+    payload: TaskBulkCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Assign the same task to multiple users.
+
+    This reuses the existing single-task `create_task` logic for each assignee.
+    Role hierarchy and department rules are applied per assignee, just like
+    in the single `assign_task` endpoint.
+    """
+    # Remove duplicates and ensure at least one ID (schema already enforces this)
+    assignee_ids = list({uid for uid in payload.assigned_to_ids if uid is not None})
+
+    # Pre-load all assignees and validate existence
+    assignees = db.query(User).filter(User.user_id.in_(assignee_ids)).all()
+    found_ids = {u.user_id for u in assignees}
+    missing = [uid for uid in assignee_ids if uid not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Assignee(s) not found for user_id(s): {missing}",
+        )
+
+    # Apply the same role/department checks as in `assign_task` for each assignee
+    validated_assignees: list[User] = []
+    for assignee in assignees:
+        if assignee.user_id == user.user_id:
+            # Self-assignment always allowed
+            validated_assignees.append(assignee)
+            continue
+
+        try:
+            assigner_index = ROLE_HIERARCHY.index(user.role)
+            assignee_index = ROLE_HIERARCHY.index(assignee.role)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid role configuration",
+            )
+
+        if assignee_index <= assigner_index:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Cannot assign task to same or higher role (assignee_id={assignee.user_id})",
+            )
+
+        if user.role == RoleEnum.MANAGER and user.department:
+            manager_tokens = set(department_tokens_lower(user.department))
+            assignee_tokens = set(department_tokens_lower(assignee.department))
+            if not manager_tokens.intersection(assignee_tokens):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Managers can assign tasks only to users in their departments (assignee_id={assignee.user_id})",
+                )
+
+        validated_assignees.append(assignee)
+
+    # All validations passed; create tasks
+    created_tasks: list[Task] = []
+    for assignee in validated_assignees:
+        t = create_task(
+            db,
+            payload.title,
+            payload.description or "",
+            user.user_id,
+            assignee.user_id,
+            payload.due_date,
+            payload.priority or "Medium",
+        )
+        created_tasks.append(t)
+
+    # Return list of TaskOut
+    return [
+        TaskOut(
+            task_id=t.task_id,
+            title=t.title,
+            description=t.description,
+            status=t.status,
+            due_date=t.due_date.date() if t.due_date else None,
+            priority=t.priority,
+            assigned_to=t.assigned_to,
+            assigned_by=t.assigned_by,
+            created_at=t.created_at,
+            last_passed_by=t.last_passed_by,
+            last_passed_to=t.last_passed_to,
+            last_pass_note=t.last_pass_note,
+            last_passed_at=t.last_passed_at,
+            assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+            assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+            assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
+            assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
+        )
+        for t in created_tasks
+    ]
 
 @router.get("/", response_model=list[TaskOut])
 def my_tasks(db: Session = Depends(get_db), user = Depends(get_current_user)):
@@ -203,6 +311,151 @@ def update_status(task_id: int, status: TaskStatus, db: Session = Depends(get_db
         assigned_by_role=task.assigned_by_user.role if task.assigned_by_user else None,
         assigned_to_role=task.assigned_to_user.role if task.assigned_to_user else None,
     )
+
+
+@router.put("/bulk", response_model=list[TaskOut])
+def update_tasks_bulk(
+    payload: BulkTaskUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Bulk update multiple tasks. Assigned users are preserved; use add_assigned_to_ids
+    to create new tasks for additional assignees with the same content.
+    """
+    updates = payload.updates.model_dump(exclude_unset=True)
+    if not updates and not payload.add_assigned_to_ids:
+        # Nothing to update; return current tasks
+        tasks = db.query(Task).filter(Task.task_id.in_(payload.task_ids)).all()
+        return [
+            TaskOut(
+                task_id=t.task_id,
+                title=t.title,
+                description=t.description,
+                status=t.status,
+                due_date=t.due_date.date() if t.due_date else None,
+                priority=t.priority,
+                assigned_to=t.assigned_to,
+                assigned_by=t.assigned_by,
+                created_at=t.created_at,
+                last_passed_by=t.last_passed_by,
+                last_passed_to=t.last_passed_to,
+                last_pass_note=t.last_pass_note,
+                last_passed_at=t.last_passed_at,
+                assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+                assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+                assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
+                assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
+            )
+            for t in tasks
+        ]
+
+    updated_tasks: list[Task] = []
+    for task_id in payload.task_ids:
+        existing: Task | None = db.query(Task).filter(Task.task_id == task_id).first()
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Task not found (task_id={task_id})")
+
+        # Reuse permission logic from `edit_task`
+        if user.role != RoleEnum.ADMIN and existing.assigned_by != user.user_id:
+            creator = db.query(User).filter(User.user_id == existing.assigned_by).first()
+            if not creator:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Only the task creator or higher roles can edit this task (task_id={task_id})",
+                )
+            try:
+                current_index = ROLE_HIERARCHY.index(user.role)
+                creator_index = ROLE_HIERARCHY.index(creator.role)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid role configuration",
+                )
+            if current_index >= creator_index:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Only the task creator or higher roles can edit this task (task_id={task_id})",
+                )
+
+        updated = update_task(db, task_id=task_id, updates=updates, updated_by=user.user_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Task not found (task_id={task_id})")
+        updated_tasks.append(updated)
+
+    # Add new tasks for add_assigned_to_ids (keeps old assignees in updated_tasks)
+    if payload.add_assigned_to_ids:
+        add_ids = list({uid for uid in payload.add_assigned_to_ids if uid is not None})
+        add_ids = [uid for uid in add_ids if uid > 0]
+        if add_ids:
+            add_assignees = db.query(User).filter(User.user_id.in_(add_ids)).all()
+            found_ids = {u.user_id for u in add_assignees}
+            missing = [uid for uid in add_ids if uid not in found_ids]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Assignee(s) not found for user_id(s): {missing}",
+                )
+            for assignee in add_assignees:
+                if assignee.user_id != user.user_id:
+                    try:
+                        editor_index = ROLE_HIERARCHY.index(user.role)
+                        assignee_index = ROLE_HIERARCHY.index(assignee.role)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid role configuration",
+                        )
+                    if assignee_index <= editor_index:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"Cannot assign task to same or higher role (assignee_id={assignee.user_id})",
+                        )
+                    if user.role == RoleEnum.MANAGER and user.department:
+                        manager_tokens = set(department_tokens_lower(user.department))
+                        assignee_tokens = set(department_tokens_lower(assignee.department))
+                        if not manager_tokens.intersection(assignee_tokens):
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"Managers can assign tasks only to users in their departments (assignee_id={assignee.user_id})",
+                            )
+            # Use first task as template (already updated with merged values)
+            tpl = updated_tasks[0]
+            due_date_val = tpl.due_date.date() if tpl.due_date else None
+            for assignee in add_assignees:
+                t = create_task(
+                    db,
+                    tpl.title,
+                    tpl.description or "",
+                    user.user_id,
+                    assignee.user_id,
+                    due_date_val,
+                    tpl.priority or "Medium",
+                )
+                updated_tasks.append(t)
+
+    return [
+        TaskOut(
+            task_id=t.task_id,
+            title=t.title,
+            description=t.description,
+            status=t.status,
+            due_date=t.due_date.date() if t.due_date else None,
+            priority=t.priority,
+            assigned_to=t.assigned_to,
+            assigned_by=t.assigned_by,
+            created_at=t.created_at,
+            last_passed_by=t.last_passed_by,
+            last_passed_to=t.last_passed_to,
+            last_pass_note=t.last_pass_note,
+            last_passed_at=t.last_passed_at,
+            assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+            assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+            assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
+            assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
+        )
+        for t in updated_tasks
+    ]
 
 
 @router.put("/{task_id}", response_model=TaskOut)

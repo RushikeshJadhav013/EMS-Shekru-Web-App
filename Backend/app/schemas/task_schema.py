@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator, constr
 from datetime import datetime, date, timedelta
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from app.enums import RoleEnum
 
 class TaskBase(BaseModel):
@@ -36,6 +36,12 @@ class TaskCreate(TaskBase):
     assigned_to: int = Field(..., gt=0, description="User ID to assign task to")
     assigned_by: int = Field(..., gt=0, description="User ID who is assigning the task")
     # Note: self-assignment is allowed; role-based validation enforced in route handlers.
+
+
+class TaskBulkCreate(TaskBase):
+    assigned_to_ids: List[int] = Field(
+        ..., min_length=1, description="List of user IDs to assign the task to"
+    )
 
 class TaskOut(BaseModel):
     task_id: int = Field(..., gt=0, description="Unique task ID")
@@ -101,6 +107,45 @@ class TaskUpdate(BaseModel):
                 raise ValueError('Due date cannot be more than 10 years in the future')
         return v
 
+
+class TaskBulkUpdateFields(BaseModel):
+    """Update fields for PUT /tasks/bulk. assigned_to is not allowed; use add_assigned_to_ids instead."""
+    title: Optional[constr(min_length=3, max_length=255, strip_whitespace=True)] = Field(None, description="Updated title")
+    description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Updated description")
+    # assigned_to: excluded from bulk update - use add_assigned_to_ids to add new assignees
+    due_date: Optional[date] = Field(None, description="Updated due date")
+    priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field(None, description="Updated task priority")
+
+    @field_validator('title')
+    @classmethod
+    def validate_title(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            if not v.strip():
+                raise ValueError('Task title cannot be empty')
+            if len(v.strip()) < 3:
+                raise ValueError('Task title must be at least 3 characters')
+        return v.strip() if v else v
+
+    @field_validator('due_date')
+    @classmethod
+    def validate_due_date(cls, v: Optional[date]) -> Optional[date]:
+        if v is not None:
+            today = date.today()
+            if v < today:
+                raise ValueError('Due date cannot be in the past. Please select today or a future date.')
+            if v > today + timedelta(days=3650):
+                raise ValueError('Due date cannot be more than 10 years in the future')
+        return v
+
+
+class BulkTaskUpdate(BaseModel):
+    task_ids: List[int] = Field(
+        ..., min_length=1, description="List of task IDs to update"
+    )
+    updates: TaskBulkUpdateFields = Field(..., description="Fields to update for each task")
+    add_assigned_to_ids: Optional[List[int]] = Field(
+        None, description="Optional list of user IDs to add as new assignees. Creates new tasks for each, keeping same title/description/due_date/priority as updated tasks."
+    )
 
 class TaskPassRequest(BaseModel):
     new_assignee_id: int = Field(..., gt=0, description="User ID to pass task to")
