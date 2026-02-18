@@ -30,6 +30,7 @@ def create_salary_tables():
         pf_annual FLOAT DEFAULT 0.0,
         pan_number VARCHAR(20),
         uan_number VARCHAR(20),
+        pf_no VARCHAR(30) NULL UNIQUE,
         bank_name VARCHAR(100),
         bank_account VARCHAR(50),
         ifsc_code VARCHAR(20),

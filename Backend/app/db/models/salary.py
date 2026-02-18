@@ -61,6 +61,8 @@ class EmployeeSalary(Base):
     pan_number = Column(String(20), nullable=True)
     # UAN must be unique per salary record (12 digits). Add index and unique constraint.
     uan_number = Column(String(20), nullable=True, unique=True, index=True)
+    # PF No (EPF Member ID): 22-char format XX/XXX/XXXXXXX/XXX/XXXXXXX; unique per record
+    pf_no = Column(String(30), nullable=True, unique=True, index=True)
     bank_name = Column(String(100), nullable=True)
     bank_account = Column(String(50), nullable=True)
     ifsc_code = Column(String(20), nullable=True)

@@ -1167,6 +1167,7 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "pf_annual": salary.pf_annual,
         "pan_number": salary.pan_number,
         "uan_number": salary.uan_number,
+        "pf_no": salary.pf_no,
         "bank_name": salary.bank_name,
         "bank_account": salary.bank_account,
         "ifsc_code": salary.ifsc_code,
@@ -1229,8 +1230,8 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
     pf_display = "NA"
     if employer_pf_monthly > 0:
         pf_display = f"{employer_pf_monthly:,.2f}"
-    
-        return generate_salary_slip_pdf(
+
+    return generate_salary_slip_pdf(
         employee_name=user.name,
         employee_id=user.employee_id or str(user.user_id),
         designation=user.designation or "Employee",
@@ -1251,8 +1252,10 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
         other_allowance=other_monthly,
         professional_tax=pt_monthly,
         other_deduction=other_ded_monthly,
-        pf_no=pf_no or "",
-        payment_mode=salary.payment_mode
+        pf_no=(pf_no or getattr(salary, "pf_no", None) or ""),
+        payment_mode=salary.payment_mode,
+        bank_name=salary.bank_name or "",
+        bank_account=salary.bank_account or "",
     )
 
 

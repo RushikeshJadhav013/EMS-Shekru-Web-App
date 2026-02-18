@@ -44,6 +44,7 @@ def create_employee_salary_from_ctc(
         variable_pay_value=salary_data.variable_pay_value,
         employer_pf_percentage=salary_data.employer_pf_percentage / 100.0,  # Convert percentage to decimal
         uan_number=salary_data.uan_number,
+        pf_no=salary_data.pf_no,
         bank_name=salary_data.bank_name,
         bank_account=salary_data.bank_account,
         ifsc_code=salary_data.ifsc_code,
@@ -60,6 +61,16 @@ def create_employee_salary_from_ctc(
         ).first()
         if existing_uan:
             raise ValueError(f"UAN '{uan_digits}' is already associated with another salary record")
+
+    # Validate PF No uniqueness if provided (no duplication)
+    if salary_data.pf_no:
+        pf_normalized = str(salary_data.pf_no).strip().upper()
+        existing_pf = db.query(EmployeeSalary).filter(
+            EmployeeSalary.pf_no == pf_normalized,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_pf:
+            raise ValueError(f"PF No '{pf_normalized}' is already associated with another salary record")
 
     # Add user_id to calculated data
     calculated_data["user_id"] = salary_data.user_id
@@ -99,6 +110,16 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
         if existing_uan:
             raise ValueError(f"UAN '{uan_digits}' is already associated with another salary record")
 
+    # Validate PF No uniqueness if provided (no duplication)
+    if salary_data.pf_no:
+        pf_normalized = str(salary_data.pf_no).strip().upper()
+        existing_pf = db.query(EmployeeSalary).filter(
+            EmployeeSalary.pf_no == pf_normalized,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_pf:
+            raise ValueError(f"PF No '{pf_normalized}' is already associated with another salary record")
+
     # Normalize IFSC code to uppercase without surrounding whitespace (if present)
     create_payload = salary_data.model_dump()
     if create_payload.get("ifsc_code") is not None:
@@ -126,6 +147,7 @@ def update_employee_salary_from_ctc(
     # Preserve existing non-calculated fields
     existing_data = {
         "uan_number": salary.uan_number,
+        "pf_no": salary.pf_no,
         "bank_name": salary.bank_name,
         "bank_account": salary.bank_account,
         "ifsc_code": salary.ifsc_code,
@@ -217,6 +239,17 @@ def update_employee_salary(
             logger.error(f"Error recalculating variable pay: {e}")
     
     # Update other allowed fields
+    # If PF No is being updated, ensure uniqueness (exclude current user's salary record)
+    if 'pf_no' in update_data and update_data.get('pf_no') is not None:
+        pf_normalized = str(update_data.get('pf_no')).strip().upper()
+        existing_pf = db.query(EmployeeSalary).filter(
+            EmployeeSalary.pf_no == pf_normalized,
+            EmployeeSalary.user_id != user_id,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_pf:
+            raise ValueError(f"PF No '{pf_normalized}' is already associated with another salary record")
+
     # If UAN is being updated, ensure uniqueness (exclude current user's salary record)
     if 'uan_number' in update_data and update_data.get('uan_number') is not None:
         uan_digits = re.sub(r'[^0-9]', '', str(update_data.get('uan_number')))

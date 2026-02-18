@@ -4,6 +4,7 @@ Matches the exact format from provided samples using ReportLab
 """
 import io
 from datetime import datetime
+from xml.sax.saxutils import escape as _xml_escape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, letter, landscape
 from reportlab.lib.units import inch, mm
@@ -94,7 +95,9 @@ def generate_salary_slip_pdf(
     professional_tax: float,
     other_deduction: float,
     pf_no: str = "",
-    payment_mode: str = "Bank Transfer"
+    payment_mode: str = "Bank Transfer",
+    bank_name: str = "",
+    bank_account: str = ""
 ) -> io.BytesIO:
     """
     Generate Salary Slip PDF matching the exact sample format
@@ -224,28 +227,71 @@ def generate_salary_slip_pdf(
     
     # ===== EMPLOYEE DETAILS SECTION =====
     col_width = page_width / 2
+    wrap_value_style = ParagraphStyle(
+        "WrapValue",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=11,
+        leading=12,
+        wordWrap="CJK",  # allows breaking long tokens (no spaces)
+    )
+    
+    # Build details_data conditionally - only show UAN and PF No if they exist
     details_data = [
         [
             Table([["Employee Id", ":", employee_id]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-            Table([["Location", ":", location]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
+            Table([["Location", ":", location]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
         ],
         [
             Table([["Designation", ":", designation]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-            Table([["Working Days", ":", str(working_days)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
-        ],
-        [
-            Table([["DOJ", ":", doj]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-            Table([["PF No.", ":", pf_no]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
-        ],
-        [
-            Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
-        ],
-        [
-            Table([["UAN", ":", uan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-            ""
+            Table([["Working Days", ":", str(working_days)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
         ],
     ]
+    
+    # Add DOJ row - pair with UAN if exists, else Variable Pay (move Variable Pay up when UAN hidden)
+    has_uan = bool(uan and uan.strip() and uan.upper() not in ("NA", "N/A", ""))
+    if has_uan:
+        details_data.append([
+            Table([["DOJ", ":", doj]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["UAN", ":", uan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+        ])
+    else:
+        details_data.append([
+            Table([["DOJ", ":", doj]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+        ])
+    
+    # Add PAN row - pair with PF No only if PF No exists
+    pf_no_wrapped = None
+    if pf_no and pf_no.strip() and pf_no.upper() not in ("NA", "N/A", ""):
+        pf_no_wrapped = Paragraph(_xml_escape(str(pf_no)), wrap_value_style)
+        details_data.append([
+            Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["PF No.", ":", pf_no_wrapped]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+        ])
+    else:
+        details_data.append([
+            Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            "",
+        ])
+    
+    # Bank Name row - show Variable Pay on right only when UAN is visible (else already shown next to DOJ)
+    if has_uan:
+        details_data.append([
+            Table([["Bank Name", ":", bank_name or "N/A"]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+        ])
+    else:
+        details_data.append([
+            Table([["Bank Name", ":", bank_name or "N/A"]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            "",
+        ])
+    
+    # Always add Bank A/C No row
+    details_data.append([
+        Table([["Bank A/C No.", ":", bank_account or "N/A"]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+        "",
+    ])
     
     # Style for inner tables
     inner_style = TableStyle([

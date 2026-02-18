@@ -9,6 +9,27 @@ from enum import Enum
 import re
 
 
+def _validate_pf_no(v: Optional[str]) -> Optional[str]:
+    """
+    Validate Indian EPF PF number format: XX/XXX/XXXXXXX/XXX/XXXXXXX
+    - 1st 2 chars: letters (Region)
+    - 2nd 3 chars: letters (Office)
+    - Rest all digits: XXXXXXX + XXX + XXXXXXX (7+3+7)
+    """
+    if v is None:
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    # XX/XXX/XXXXXXX/XXX/XXXXXXX - 2 letters, 3 letters, 7 digits, 3 digits, 7 digits
+    if not re.fullmatch(r"[A-Z]{2}/[A-Z]{3}/[0-9]{7}/[0-9]{3}/[0-9]{7}", s, re.IGNORECASE):
+        raise ValueError(
+            "PF No must be XX/XXX/XXXXXXX/XXX/XXXXXXX (e.g. MH/BAN/0000064/000/0000123): "
+            "2 letters, 3 letters, 7 digits, 3 digits, 7 digits"
+        )
+    return s.upper()
+
+
 class VariablePayType(str, Enum):
     """Variable pay configuration options"""
     NONE = "none"
@@ -31,6 +52,7 @@ class EmployeeSalaryCTCCreate(BaseModel):
     
     # Optional fields
     uan_number: Optional[str] = None
+    pf_no: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
     ifsc_code: Optional[str] = None
@@ -53,6 +75,10 @@ class EmployeeSalaryCTCCreate(BaseModel):
         if len(digits) != 12:
             raise ValueError("UAN must be exactly 12 digits")
         return digits
+
+    @validator("pf_no", pre=True, always=False)
+    def validate_pf_no_ctc_create(cls, v):
+        return _validate_pf_no(v)
 
     @validator("ifsc_code", pre=True, always=False)
     def validate_ifsc_ctc_create(cls, v):
@@ -86,6 +112,7 @@ class EmployeeSalaryCreate(BaseModel):
     
     # Additional info
     uan_number: Optional[str] = None
+    pf_no: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
     ifsc_code: Optional[str] = None
@@ -101,6 +128,10 @@ class EmployeeSalaryCreate(BaseModel):
         if len(digits) != 12:
             raise ValueError("UAN must be exactly 12 digits")
         return digits
+
+    @validator("pf_no", pre=True, always=False)
+    def validate_pf_no_create(cls, v):
+        return _validate_pf_no(v)
 
     @validator("ifsc_code", pre=True, always=False)
     def validate_ifsc_create(cls, v):
@@ -118,6 +149,7 @@ class EmployeeSalaryUpdate(BaseModel):
     """Schema for updating employee salary record - only non-fixed components"""
     # Only allow updating non-calculated fields
     uan_number: Optional[str] = None
+    pf_no: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
     ifsc_code: Optional[str] = None
@@ -140,6 +172,10 @@ class EmployeeSalaryUpdate(BaseModel):
         if len(digits) != 12:
             raise ValueError("UAN must be exactly 12 digits")
         return digits
+
+    @validator("pf_no", pre=True, always=False)
+    def validate_pf_no_update(cls, v):
+        return _validate_pf_no(v)
 
     @validator("ifsc_code", pre=True, always=False)
     def validate_ifsc_update(cls, v):
@@ -192,6 +228,7 @@ class EmployeeSalaryOut(BaseModel):
     pf_annual: float
     pan_number: Optional[str]
     uan_number: Optional[str]
+    pf_no: Optional[str]
     bank_name: Optional[str]
     bank_account: Optional[str]
     ifsc_code: Optional[str]
