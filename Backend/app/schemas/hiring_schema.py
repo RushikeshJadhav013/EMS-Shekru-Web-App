@@ -155,7 +155,6 @@ class CandidateOut(CandidateBase):
 
 # Social Media Posting Schema
 class SocialMediaPost(BaseModel):
-    vacancy_id: int = Field(..., gt=0, description="Vacancy ID")
     platforms: List[Literal['linkedin', 'naukri', 'indeed', 'other']] = Field(..., min_length=1, description="Platforms to post on")
     links: Optional[dict] = Field(None, description="Platform-specific links")
 

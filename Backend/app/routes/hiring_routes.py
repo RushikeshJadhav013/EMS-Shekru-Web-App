@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
@@ -224,14 +225,49 @@ def post_to_social_media(
 
 @router.post("/candidates", response_model=CandidateOut, status_code=status.HTTP_201_CREATED)
 def create_candidate(
-    candidate: CandidateCreate,
+    vacancy_id: int = Form(..., description="Vacancy ID"),
+    name: str = Form(..., description="Candidate name"),
+    email: str = Form(..., description="Candidate email"),
+    phone: Optional[str] = Form(None, description="Phone number"),
+    cover_letter: Optional[str] = Form(None, description="Cover letter"),
+    experience_years: Optional[int] = Form(None, description="Years of experience"),
+    current_company: Optional[str] = Form(None, description="Current company"),
+    current_position: Optional[str] = Form(None, description="Current position"),
+    expected_salary: Optional[str] = Form(None, description="Expected salary"),
+    notice_period: Optional[str] = Form(None, description="Notice period"),
+    source: Optional[str] = Form(None, description="Application source"),
+    resume_url: Optional[str] = Form(None, description="Resume URL (if already hosted)"),
     resume: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new candidate application."""
+    # Build data dict and validate using CandidateCreate to reuse all schema rules
+    candidate_data = {
+        "vacancy_id": vacancy_id,
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "cover_letter": cover_letter,
+        "experience_years": experience_years,
+        "current_company": current_company,
+        "current_position": current_position,
+        "expected_salary": expected_salary,
+        "notice_period": notice_period,
+        "source": source,
+        "resume_url": resume_url,
+    }
+
+    try:
+        candidate_obj = CandidateCreate(**candidate_data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid candidate data: {str(e)}"
+        )
+    
     # Verify vacancy exists
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate_obj.vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -241,20 +277,20 @@ def create_candidate(
             raise HTTPException(status_code=403, detail="Access denied")
     
     # Handle resume upload
-    resume_url = candidate.resume_url
+    final_resume_url = candidate_obj.resume_url
     if resume:
         # Save resume file (simplified - in production, use proper file storage)
         upload_dir = "uploads/resumes"
         os.makedirs(upload_dir, exist_ok=True)
-        file_path = f"{upload_dir}/{candidate.vacancy_id}_{candidate.email}_{resume.filename}"
+        file_path = f"{upload_dir}/{candidate_obj.vacancy_id}_{candidate_obj.email}_{resume.filename}"
         with open(file_path, "wb") as buffer:
             content = resume.file.read()
             buffer.write(content)
-        resume_url = f"/{file_path}"
+        final_resume_url = f"/{file_path}"
     
     db_candidate = Candidate(
-        **candidate.model_dump(exclude={"resume_url"}),
-        resume_url=resume_url,
+        **candidate_obj.model_dump(exclude={"resume_url"}),
+        resume_url=final_resume_url,
         status="applied"
     )
     db.add(db_candidate)
@@ -324,6 +360,90 @@ def get_candidate(
             raise HTTPException(status_code=403, detail="Access denied")
     
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    result = CandidateOut.model_validate(candidate)
+    if vacancy:
+        result.vacancy_title = vacancy.title
+        result.vacancy_department = vacancy.department
+    return result
+
+
+@router.get("/candidates/{candidate_id}/resume")
+def get_candidate_resume(
+    candidate_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Download/view the resume file for a specific candidate."""
+    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # Check permissions for HR
+    if current_user.role == RoleEnum.HR:
+        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+        if vacancy and vacancy.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    if not candidate.resume_url:
+        raise HTTPException(status_code=404, detail="Resume not available for this candidate")
+
+    # If resume_url is an external URL, just return it
+    if candidate.resume_url.startswith("http://") or candidate.resume_url.startswith("https://"):
+        return {"resume_url": candidate.resume_url}
+
+    # Otherwise treat it as a local file path (as saved by create_candidate)
+    relative_path = candidate.resume_url.lstrip("/")  # stored like "/uploads/resumes/..."
+    file_path = os.path.join(os.getcwd(), relative_path)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Resume file not found on server")
+
+    return FileResponse(path=file_path, media_type="application/pdf", filename=os.path.basename(file_path))
+
+
+@router.put("/candidates/{candidate_id}/resume", response_model=CandidateOut)
+def update_candidate_resume(
+    candidate_id: int,
+    resume: Optional[UploadFile] = File(None),
+    resume_url: Optional[str] = Form(None, description="External resume URL"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a candidate's resume, either via file upload or external URL."""
+    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # Check permissions for HR
+    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    if current_user.role == RoleEnum.HR:
+        if vacancy and vacancy.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Ensure exactly one of resume or resume_url is provided
+    if (resume is None and not resume_url) or (resume is not None and resume_url):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide exactly one of 'resume' file or 'resume_url'"
+        )
+
+    final_resume_url = resume_url
+
+    # Handle resume file upload if provided
+    if resume is not None:
+        upload_dir = "uploads/resumes"
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = f"{upload_dir}/{candidate.vacancy_id}_{candidate.email}_{resume.filename}"
+        with open(file_path, "wb") as buffer:
+            content = resume.file.read()
+            buffer.write(content)
+        final_resume_url = f"/{file_path}"
+
+    candidate.resume_url = final_resume_url
+    candidate.updated_at = datetime.now()
+    db.commit()
+    db.refresh(candidate)
+
     result = CandidateOut.model_validate(candidate)
     if vacancy:
         result.vacancy_title = vacancy.title
