@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, constr
 from typing import Optional, List, Literal
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import re
 
 # Vacancy Schemas
@@ -136,22 +136,126 @@ class CandidateUpdate(BaseModel):
     expected_salary: Optional[constr(max_length=100, strip_whitespace=True)] = None
     notice_period: Optional[constr(max_length=100, strip_whitespace=True)] = None
     status: Optional[Literal['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn']] = None
-    interview_date: Optional[datetime] = None
-    interview_notes: Optional[constr(max_length=2000, strip_whitespace=True)] = None
     source: Optional[Literal['linkedin', 'naukri', 'indeed', 'referral', 'website', 'other']] = None
 
-class CandidateOut(CandidateBase):
+class CandidateOutNoInterview(CandidateBase):
     candidate_id: int = Field(..., gt=0)
     resume_url: Optional[str] = None
     status: Literal['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn']
-    interview_date: Optional[datetime] = None
-    interview_notes: Optional[str] = None
     applied_at: datetime
     updated_at: Optional[datetime] = None
     vacancy_title: Optional[str] = None
     vacancy_department: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+
+class CandidateOut(CandidateOutNoInterview):
+    """Extended candidate response that includes interview_date when needed (e.g., shortlist APIs)."""
+    interview_date: Optional[datetime] = None  # Denormalized: next upcoming interview date from interviews table
+
+class CandidateShortlist(BaseModel):
+    interview_date: datetime = Field(..., description="Scheduled interview date and time in IST (Asia/Kolkata, UTC+05:30). Accepts timezone-aware (converted to IST) or naive datetime (assumed IST)")
+    interview_notes: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Optional notes about the interview")
+
+    @field_validator('interview_date')
+    @classmethod
+    def validate_interview_date(cls, v: datetime) -> datetime:
+        """Convert datetime to IST timezone-aware and validate it's in the future"""
+        try:
+            from zoneinfo import ZoneInfo
+            ist_tz = ZoneInfo("Asia/Kolkata")
+            use_pytz = False
+        except ImportError:
+            # Fallback for Python < 3.9
+            try:
+                import pytz
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                use_pytz = True
+            except ImportError:
+                raise ValueError('Timezone support requires zoneinfo (Python 3.9+) or pytz library')
+        
+        # Convert to IST timezone-aware datetime
+        if v.tzinfo is None:
+            # Naive datetime: assume it's already in IST
+            if use_pytz:
+                v_ist = ist_tz.localize(v)
+            else:
+                v_ist = v.replace(tzinfo=ist_tz)
+        else:
+            # Timezone-aware: convert to IST
+            v_ist = v.astimezone(ist_tz)
+        
+        # Get current time in IST for comparison
+        if use_pytz:
+            now_ist = datetime.now(ist_tz)
+        else:
+            now_ist = datetime.now(ist_tz)
+        
+        if v_ist < now_ist:
+            raise ValueError('Interview date cannot be in the past')
+        if (v_ist.date() - now_ist.date()).days > 365:
+            raise ValueError('Interview date cannot be more than 1 year in the future')
+        
+        return v_ist
+
+class CandidateStatusUpdate(BaseModel):
+    status: Literal['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn'] = Field(..., description="New status for the candidate")
+    interview_date: Optional[datetime] = Field(None, description="Optional: Create a new interview when setting status to 'interview' (in IST)")
+    interview_notes: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Optional: Notes for the interview (if creating new interview)")
+
+    @field_validator('interview_date')
+    @classmethod
+    def validate_interview_date(cls, v: Optional[datetime]) -> Optional[datetime]:
+        """Convert datetime to IST timezone-aware and validate it's in the future"""
+        if v is None:
+            return v
+        
+        try:
+            from zoneinfo import ZoneInfo
+            ist_tz = ZoneInfo("Asia/Kolkata")
+            use_pytz = False
+        except ImportError:
+            # Fallback for Python < 3.9
+            try:
+                import pytz
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                use_pytz = True
+            except ImportError:
+                raise ValueError('Timezone support requires zoneinfo (Python 3.9+) or pytz library')
+        
+        # Convert to IST timezone-aware datetime
+        if v.tzinfo is None:
+            # Naive datetime: assume it's already in IST
+            if use_pytz:
+                v_ist = ist_tz.localize(v)
+            else:
+                v_ist = v.replace(tzinfo=ist_tz)
+        else:
+            # Timezone-aware: convert to IST
+            v_ist = v.astimezone(ist_tz)
+        
+        # Get current time in IST for comparison
+        if use_pytz:
+            now_ist = datetime.now(ist_tz)
+        else:
+            now_ist = datetime.now(ist_tz)
+        
+        if v_ist < now_ist:
+            raise ValueError('Interview date cannot be in the past')
+        if (v_ist.date() - now_ist.date()).days > 365:
+            raise ValueError('Interview date cannot be more than 1 year in the future')
+        
+        return v_ist
+
+    @field_validator('status')
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        """Validate status value"""
+        valid_statuses = ['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn']
+        if v not in valid_statuses:
+            raise ValueError(f'Status must be one of: {", ".join(valid_statuses)}')
+        return v
 
 # Social Media Posting Schema
 class SocialMediaPost(BaseModel):

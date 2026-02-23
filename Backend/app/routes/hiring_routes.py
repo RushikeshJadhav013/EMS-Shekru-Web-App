@@ -1,21 +1,35 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_
 from typing import List, Optional
-from app.schemas.hiring_schema import VacancyCreate, VacancyUpdate, VacancyOut, CandidateCreate, CandidateUpdate, CandidateOut, SocialMediaPost
+from app.schemas.hiring_schema import (
+    VacancyCreate,
+    VacancyUpdate,
+    VacancyOut,
+    CandidateCreate,
+    CandidateUpdate,
+    CandidateOut,
+    CandidateOutNoInterview,
+    SocialMediaPost,
+    CandidateShortlist,
+    CandidateStatusUpdate,
+)
 from app.db.database import get_db
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
 from app.db.models.hiring import Vacancy, Candidate
+from app.db.models.interview import Interview
 from app.db.models.user import User
-from datetime import datetime
+from app.schemas.interview_schema import InterviewCreate
+from datetime import datetime, timedelta
 import json
 import os
 
 router = APIRouter(
     prefix="/hiring",
-    tags=["Hiring Management"]
+    tags=["Hiring Management"],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))]
 )
 
 # Vacancy Routes
@@ -26,19 +40,7 @@ def create_vacancy(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new vacancy. Admin can create for any department, HR only for their department."""
-    # Check permissions
-    if current_user.role == RoleEnum.HR:
-        if vacancy.department != current_user.department:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="HR can only create vacancies for their own department"
-            )
-    elif current_user.role != RoleEnum.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only Admin and HR can create vacancies"
-        )
+    """Create a new vacancy."""
     
     db_vacancy = Vacancy(
         **vacancy.model_dump(),
@@ -64,13 +66,10 @@ def get_vacancies(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all vacancies. HR sees only their department's vacancies."""
+    """Get all vacancies."""
     query = db.query(Vacancy)
     
-    # Filter by department for HR
-    if current_user.role == RoleEnum.HR:
-        query = query.filter(Vacancy.department == current_user.department)
-    elif department:
+    if department:
         query = query.filter(Vacancy.department == department)
     
     if status_filter:
@@ -101,10 +100,6 @@ def get_vacancy(
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
-    # Check permissions for HR
-    if current_user.role == RoleEnum.HR and vacancy.department != current_user.department:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
     candidates_count = db.query(func.count(Candidate.candidate_id)).filter(
         Candidate.vacancy_id == vacancy.vacancy_id
     ).scalar() or 0
@@ -124,14 +119,6 @@ def update_vacancy(
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
-    
-    # Check permissions
-    if current_user.role == RoleEnum.HR:
-        if vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
-        # HR cannot change department
-        if vacancy_update.department and vacancy_update.department != vacancy.department:
-            raise HTTPException(status_code=403, detail="HR cannot change department")
     
     update_data = vacancy_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -160,13 +147,6 @@ def delete_vacancy(
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
-    # Check permissions
-    if current_user.role == RoleEnum.HR:
-        if vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
-    elif current_user.role != RoleEnum.ADMIN:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
     db.delete(vacancy)
     db.commit()
     return None
@@ -182,11 +162,6 @@ def post_to_social_media(
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
-    
-    # Check permissions
-    if current_user.role == RoleEnum.HR:
-        if vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
     
     # Update posting status
     if "linkedin" in post_data.platforms:
@@ -223,7 +198,7 @@ def post_to_social_media(
 
 # Candidate Routes
 
-@router.post("/candidates", response_model=CandidateOut, status_code=status.HTTP_201_CREATED)
+@router.post("/candidates", response_model=CandidateOutNoInterview, status_code=status.HTTP_201_CREATED)
 def create_candidate(
     vacancy_id: int = Form(..., description="Vacancy ID"),
     name: str = Form(..., description="Candidate name"),
@@ -271,11 +246,6 @@ def create_candidate(
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
-    # Check permissions
-    if current_user.role == RoleEnum.HR:
-        if vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
-    
     # Handle resume upload
     final_resume_url = candidate_obj.resume_url
     if resume:
@@ -297,34 +267,23 @@ def create_candidate(
     db.commit()
     db.refresh(db_candidate)
     
-    result = CandidateOut.model_validate(db_candidate)
+    result = CandidateOutNoInterview.model_validate(db_candidate)
     result.vacancy_title = vacancy.title
     result.vacancy_department = vacancy.department
     return result
 
-@router.get("/candidates", response_model=List[CandidateOut])
+@router.get("/candidates", response_model=List[CandidateOutNoInterview])
 def get_candidates(
     vacancy_id: Optional[int] = None,
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all candidates. HR sees only candidates for their department's vacancies."""
+    """Get all candidates."""
     query = db.query(Candidate)
     
     if vacancy_id:
         query = query.filter(Candidate.vacancy_id == vacancy_id)
-        # Check permissions for HR
-        if current_user.role == RoleEnum.HR:
-            vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
-            if vacancy and vacancy.department != current_user.department:
-                raise HTTPException(status_code=403, detail="Access denied")
-    elif current_user.role == RoleEnum.HR:
-        # Filter by HR's department
-        department_vacancies = db.query(Vacancy.vacancy_id).filter(
-            Vacancy.department == current_user.department
-        ).subquery()
-        query = query.filter(Candidate.vacancy_id.in_(department_vacancies))
     
     if status_filter:
         query = query.filter(Candidate.status == status_filter)
@@ -334,15 +293,60 @@ def get_candidates(
     result = []
     for candidate in candidates:
         vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-        candidate_out = CandidateOut.model_validate(candidate)
+        candidate_out = CandidateOutNoInterview.model_validate(candidate)
+        
         if vacancy:
             candidate_out.vacancy_title = vacancy.title
             candidate_out.vacancy_department = vacancy.department
+        
         result.append(candidate_out)
     
     return result
 
-@router.get("/candidates/{candidate_id}", response_model=CandidateOut)
+@router.get("/candidates/shortlisted", response_model=List[CandidateOut])
+def get_shortlisted_candidates(
+    vacancy_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all shortlisted candidates (status='interview'). Optionally filter by vacancy_id."""
+    query = db.query(Candidate).filter(Candidate.status == 'interview')
+    
+    if vacancy_id:
+        query = query.filter(Candidate.vacancy_id == vacancy_id)
+    
+    # Get candidates and their next upcoming interview
+    candidates = query.order_by(Candidate.applied_at.desc()).all()
+    
+    result = []
+    for candidate in candidates:
+        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+        
+        # Get next upcoming interview for this candidate
+        next_interview = db.query(Interview).filter(
+            and_(
+                Interview.candidate_id == candidate.candidate_id,
+                Interview.status.in_(['scheduled', 'rescheduled'])
+            )
+        ).order_by(Interview.start_time.asc()).first()
+        
+        candidate_out = CandidateOut.model_validate(candidate)
+        if vacancy:
+            candidate_out.vacancy_title = vacancy.title
+            candidate_out.vacancy_department = vacancy.department
+        
+        # Set interview_date from interviews table if available (for backward compatibility)
+        if next_interview:
+            candidate_out.interview_date = next_interview.start_time
+        
+        result.append(candidate_out)
+    
+    # Sort by next interview date (upcoming first)
+    result.sort(key=lambda x: (x.interview_date is None, x.interview_date or datetime.max))
+    
+    return result
+
+@router.get("/candidates/{candidate_id}", response_model=CandidateOutNoInterview)
 def get_candidate(
     candidate_id: int,
     current_user: User = Depends(get_current_user),
@@ -353,17 +357,13 @@ def get_candidate(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
-    # Check permissions for HR
-    if current_user.role == RoleEnum.HR:
-        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-        if vacancy and vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
-    
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-    result = CandidateOut.model_validate(candidate)
+    result = CandidateOutNoInterview.model_validate(candidate)
+    
     if vacancy:
         result.vacancy_title = vacancy.title
         result.vacancy_department = vacancy.department
+    
     return result
 
 
@@ -377,12 +377,6 @@ def get_candidate_resume(
     candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-
-    # Check permissions for HR
-    if current_user.role == RoleEnum.HR:
-        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-        if vacancy and vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
 
     if not candidate.resume_url:
         raise HTTPException(status_code=404, detail="Resume not available for this candidate")
@@ -401,7 +395,7 @@ def get_candidate_resume(
     return FileResponse(path=file_path, media_type="application/pdf", filename=os.path.basename(file_path))
 
 
-@router.put("/candidates/{candidate_id}/resume", response_model=CandidateOut)
+@router.put("/candidates/{candidate_id}/resume", response_model=CandidateOutNoInterview)
 def update_candidate_resume(
     candidate_id: int,
     resume: Optional[UploadFile] = File(None),
@@ -413,12 +407,7 @@ def update_candidate_resume(
     candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-
-    # Check permissions for HR
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-    if current_user.role == RoleEnum.HR:
-        if vacancy and vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
 
     # Ensure exactly one of resume or resume_url is provided
     if (resume is None and not resume_url) or (resume is not None and resume_url):
@@ -444,13 +433,195 @@ def update_candidate_resume(
     db.commit()
     db.refresh(candidate)
 
+    result = CandidateOutNoInterview.model_validate(candidate)
+    if vacancy:
+        result.vacancy_title = vacancy.title
+        result.vacancy_department = vacancy.department
+    
+    return result
+
+@router.post("/candidates/{candidate_id}/shortlist", response_model=CandidateOut)
+def shortlist_candidate(
+    candidate_id: int,
+    shortlist_data: CandidateShortlist,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Shortlist a candidate for an interview. Creates an interview record and updates status to 'interview'."""
+    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    
+    # Check if candidate is already rejected or hired
+    if candidate.status in ['rejected', 'hired', 'withdrawn']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot shortlist candidate with status '{candidate.status}'"
+        )
+    
+    # Check for overlapping interviews
+    # Simple overlap check: if new interview starts before existing ends and ends after existing starts
+    overlapping = db.query(Interview).filter(
+        and_(
+            Interview.candidate_id == candidate_id,
+            Interview.status.in_(['scheduled', 'rescheduled']),
+            Interview.start_time <= shortlist_data.interview_date,
+            or_(
+                Interview.end_time > shortlist_data.interview_date,
+                Interview.end_time.is_(None)  # If no end_time, assume 1 hour duration
+            )
+        )
+    ).first()
+    
+    # Also check reverse overlap
+    if not overlapping:
+        overlapping = db.query(Interview).filter(
+            and_(
+                Interview.candidate_id == candidate_id,
+                Interview.status.in_(['scheduled', 'rescheduled']),
+                Interview.start_time >= shortlist_data.interview_date,
+                Interview.start_time < shortlist_data.interview_date + timedelta(hours=1)  # Default 1 hour duration
+            )
+        ).first()
+    
+    if overlapping:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Candidate already has an interview scheduled at this time (Interview ID: {overlapping.interview_id})"
+        )
+    
+    # Create interview record
+    interview_data = InterviewCreate(
+        candidate_id=candidate_id,
+        vacancy_id=candidate.vacancy_id,
+        start_time=shortlist_data.interview_date,
+        end_time=None,  # Can be set later
+        round_type="HR"  # Default to HR round for shortlisting
+    )
+    
+    db_interview = Interview(
+        candidate_id=interview_data.candidate_id,
+        vacancy_id=interview_data.vacancy_id,
+        scheduled_by=current_user.user_id,
+        start_time=interview_data.start_time,
+        end_time=interview_data.end_time,
+        round_type=interview_data.round_type,
+        status="scheduled"
+    )
+    
+    # Store interview notes in feedback_summary (can be updated later with proper feedback)
+    if shortlist_data.interview_notes:
+        db_interview.feedback_summary = shortlist_data.interview_notes
+    
+    db.add(db_interview)
+    
+    # Update candidate status to 'interview'
+    candidate.status = 'interview'
+    candidate.updated_at = datetime.now()
+    
+    db.commit()
+    db.refresh(candidate)
+    db.refresh(db_interview)
+    
     result = CandidateOut.model_validate(candidate)
     if vacancy:
         result.vacancy_title = vacancy.title
         result.vacancy_department = vacancy.department
+    
+    # Set interview_date from the created interview (for backward compatibility)
+    result.interview_date = db_interview.start_time
+    
     return result
 
-@router.put("/candidates/{candidate_id}", response_model=CandidateOut)
+@router.put("/candidates/{candidate_id}/status", response_model=CandidateOutNoInterview)
+def update_candidate_status(
+    candidate_id: int,
+    status_update: CandidateStatusUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a candidate's status with proper validation."""
+    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    
+    # Validate status transitions
+    current_status = candidate.status
+    new_status = status_update.status
+    
+    # Terminal statuses cannot be changed to other statuses
+    terminal_statuses = ['rejected', 'hired', 'withdrawn']
+    if current_status in terminal_statuses and new_status != current_status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change status from '{current_status}' to '{new_status}'. Terminal statuses cannot be changed."
+        )
+    
+    # Cannot change to terminal status from another terminal status (except same status)
+    if new_status in terminal_statuses and current_status in terminal_statuses and new_status != current_status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change status from '{current_status}' to '{new_status}'."
+        )
+    
+    # Business logic validation: when setting status to 'interview', 
+    # there should be at least one scheduled interview
+    if new_status == 'interview':
+        existing_interview = db.query(Interview).filter(
+            and_(
+                Interview.candidate_id == candidate_id,
+                Interview.status.in_(['scheduled', 'rescheduled'])
+            )
+        ).first()
+        
+        if not existing_interview and not status_update.interview_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No scheduled interview found. Please schedule an interview first or provide interview_date to create one."
+            )
+        
+        # If interview_date is provided, create an interview record
+        if status_update.interview_date:
+            interview_data = InterviewCreate(
+                candidate_id=candidate_id,
+                vacancy_id=candidate.vacancy_id,
+                start_time=status_update.interview_date,
+                end_time=None,
+                round_type="HR"
+            )
+            
+            db_interview = Interview(
+                candidate_id=interview_data.candidate_id,
+                vacancy_id=interview_data.vacancy_id,
+                scheduled_by=current_user.user_id,
+                start_time=interview_data.start_time,
+                end_time=interview_data.end_time,
+                round_type=interview_data.round_type,
+                status="scheduled"
+            )
+            
+            if status_update.interview_notes:
+                db_interview.feedback_summary = status_update.interview_notes
+            
+            db.add(db_interview)
+    
+    # Update status
+    candidate.status = new_status
+    
+    candidate.updated_at = datetime.now()
+    db.commit()
+    db.refresh(candidate)
+    
+    result = CandidateOutNoInterview.model_validate(candidate)
+    if vacancy:
+        result.vacancy_title = vacancy.title
+        result.vacancy_department = vacancy.department
+    
+    return result
+
+@router.put("/candidates/{candidate_id}", response_model=CandidateOutNoInterview)
 def update_candidate(
     candidate_id: int,
     candidate_update: CandidateUpdate,
@@ -462,12 +633,6 @@ def update_candidate(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
-    # Check permissions for HR
-    if current_user.role == RoleEnum.HR:
-        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-        if vacancy and vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
-    
     update_data = candidate_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(candidate, field, value)
@@ -477,10 +642,12 @@ def update_candidate(
     db.refresh(candidate)
     
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-    result = CandidateOut.model_validate(candidate)
+    result = CandidateOutNoInterview.model_validate(candidate)
+    
     if vacancy:
         result.vacancy_title = vacancy.title
         result.vacancy_department = vacancy.department
+    
     return result
 
 @router.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -493,14 +660,6 @@ def delete_candidate(
     candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    
-    # Check permissions
-    if current_user.role == RoleEnum.HR:
-        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
-        if vacancy and vacancy.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Access denied")
-    elif current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
-        raise HTTPException(status_code=403, detail="Access denied")
     
     db.delete(candidate)
     db.commit()

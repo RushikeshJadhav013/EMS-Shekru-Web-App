@@ -32,6 +32,7 @@ class Vacancy(Base):
     # Relationships
     created_by_user = relationship("User", foreign_keys=[created_by])
     candidates = relationship("Candidate", back_populates="vacancy", cascade="all, delete-orphan")
+    interviews = relationship("Interview", back_populates="vacancy", cascade="all, delete-orphan")
 
 
 class Candidate(Base):
@@ -55,9 +56,11 @@ class Candidate(Base):
     notice_period = Column(String(50), nullable=True)
     
     # Status
-    status = Column(String(50), default="applied")  # applied, screening, interview, shortlisted, rejected, hired
-    interview_date = Column(DateTime(timezone=True), nullable=True)
-    interview_notes = Column(Text, nullable=True)
+    status = Column(String(50), default="applied")  # applied, screening, interview, offered, rejected, hired, withdrawn
+    # Note: interview_date and interview_notes are deprecated. Use interviews table instead.
+    # Keeping columns for backward compatibility during migration period.
+    interview_date = Column(DateTime(timezone=True), nullable=True)  # DEPRECATED: Use interviews table
+    interview_notes = Column(Text, nullable=True)  # DEPRECATED: Use interviews table
     
     # Source
     source = Column(String(100), nullable=True)  # linkedin, naukri, indeed, referral, other
@@ -68,4 +71,5 @@ class Candidate(Base):
     
     # Relationships
     vacancy = relationship("Vacancy", back_populates="candidates")
+    interviews = relationship("Interview", back_populates="candidate", cascade="all, delete-orphan")
 
