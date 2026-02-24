@@ -97,19 +97,30 @@ class CandidateBase(BaseModel):
             raise ValueError('Name must contain only letters, spaces, and dots')
         return v.strip()
 
+    @field_validator('email')
+    @classmethod
+    def normalize_email(cls, v: EmailStr) -> EmailStr:
+        """Normalize email to lowercase for consistent uniqueness checks."""
+        return EmailStr(v.lower())
+
     @field_validator('phone')
     @classmethod
     def validate_phone(cls, v: Optional[str]) -> Optional[str]:
-        """Validate phone number"""
-        if v is not None:
-            digits = re.sub(r'[^0-9]', '', v)
-            if len(digits) < 10:
-                raise ValueError('Phone number must have at least 10 digits')
-            if len(digits) > 15:
-                raise ValueError('Phone number cannot exceed 15 digits')
-            if not re.match(r'^[6-9]', digits):
-                raise ValueError('Phone number must start with 6, 7, 8, or 9')
-        return v
+        """Validate phone number: exactly 10 digits, starting with 6/7/8/9."""
+        if v is None:
+            return v
+
+        # Keep only digits for validation and storage
+        digits = re.sub(r'[^0-9]', '', v)
+
+        if len(digits) != 10:
+            raise ValueError('Phone number must have exactly 10 digits')
+
+        if not re.match(r'^[6-9]', digits):
+            raise ValueError('Phone number must start with 6, 7, 8, or 9')
+
+        # Store normalized 10-digit phone
+        return digits
 
     @field_validator('experience_years')
     @classmethod
@@ -137,6 +148,23 @@ class CandidateUpdate(BaseModel):
     notice_period: Optional[constr(max_length=100, strip_whitespace=True)] = None
     status: Optional[Literal['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn']] = None
     source: Optional[Literal['linkedin', 'naukri', 'indeed', 'referral', 'website', 'other']] = None
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        """Validate phone number on update: exactly 10 digits, starting with 6/7/8/9."""
+        if v is None:
+            return v
+
+        digits = re.sub(r'[^0-9]', '', v)
+
+        if len(digits) != 10:
+            raise ValueError('Phone number must have exactly 10 digits')
+
+        if not re.match(r'^[6-9]', digits):
+            raise ValueError('Phone number must start with 6, 7, 8, or 9')
+
+        return digits
 
 class CandidateOutNoInterview(CandidateBase):
     candidate_id: int = Field(..., gt=0)

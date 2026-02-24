@@ -662,11 +662,17 @@ def create_leave_allocation_config_route(
     This will deactivate all previous configurations and apply the new one globally.
     Only accessible by admins.
     """
-    # Validate that allocations are reasonable
-    total = config_data.total_annual_leave
     sick = config_data.sick_leave_allocation
     casual = config_data.casual_leave_allocation
     other = config_data.other_leave_allocation
+
+    # total_annual_leave is derived as sick + casual
+    total = sick + casual
+    if total < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Annual leave must be at least 1 day (derived as sick + casual)",
+        )
     
     # Create the configuration
     config = create_leave_config(
@@ -695,7 +701,6 @@ def update_leave_allocation_config_route(
     config = update_leave_config(
         db=db,
         config_id=config_id,
-        total_annual_leave=config_data.total_annual_leave,
         sick_leave_allocation=config_data.sick_leave_allocation,
         casual_leave_allocation=config_data.casual_leave_allocation,
         other_leave_allocation=config_data.other_leave_allocation,

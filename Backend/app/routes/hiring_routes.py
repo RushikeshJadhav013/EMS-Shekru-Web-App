@@ -241,6 +241,31 @@ def create_candidate(
             detail=f"Invalid candidate data: {str(e)}"
         )
     
+    # Enforce unique phone number (if provided)
+    if candidate_obj.phone:
+        existing_phone = (
+            db.query(Candidate)
+            .filter(Candidate.phone == candidate_obj.phone)
+            .first()
+        )
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A candidate with this phone number already exists"
+            )
+
+    # Enforce unique email
+    existing_email = (
+        db.query(Candidate)
+        .filter(Candidate.email == candidate_obj.email)
+        .first()
+    )
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A candidate with this email already exists"
+        )
+    
     # Verify vacancy exists
     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate_obj.vacancy_id).first()
     if not vacancy:
@@ -634,6 +659,41 @@ def update_candidate(
         raise HTTPException(status_code=404, detail="Candidate not found")
     
     update_data = candidate_update.model_dump(exclude_unset=True)
+
+    # Enforce unique phone number on update (if phone is being changed)
+    new_phone = update_data.get("phone")
+    if new_phone:
+        existing_phone = (
+            db.query(Candidate)
+            .filter(
+                Candidate.phone == new_phone,
+                Candidate.candidate_id != candidate_id,
+            )
+            .first()
+        )
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A candidate with this phone number already exists"
+            )
+
+    # Enforce unique email on update (if email is being changed)
+    new_email = update_data.get("email")
+    if new_email:
+        existing_email = (
+            db.query(Candidate)
+            .filter(
+                Candidate.email == new_email,
+                Candidate.candidate_id != candidate_id,
+            )
+            .first()
+        )
+        if existing_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A candidate with this email already exists"
+            )
+
     for field, value in update_data.items():
         setattr(candidate, field, value)
     

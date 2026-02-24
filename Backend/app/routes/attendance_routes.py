@@ -2411,7 +2411,7 @@ def download_monthly_grid_pdf(
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
 
@@ -2444,7 +2444,7 @@ def download_monthly_detailed_grid_pdf(
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
 ):
     from app.crud.attendance_grid_export import export_monthly_detailed_pdf
 
@@ -2477,7 +2477,7 @@ def download_monthly_grid_csv(
     date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_csv
 
