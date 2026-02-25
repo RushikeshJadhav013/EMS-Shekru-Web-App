@@ -30,6 +30,7 @@ class ProjectUpdate(BaseModel):
 class ProjectOut(ProjectBase):
     project_id: int = Field(..., gt=0)
     status: Literal["planned", "in_progress", "completed", "archived", "cancelled"]
+    is_active: bool
     person_in_charge_id: Optional[int] = Field(None, gt=0)
     person_in_charge_name: Optional[str] = None
     created_by: Optional[int] = Field(None, gt=0)
@@ -41,4 +42,9 @@ class ProjectOut(ProjectBase):
     task_count: Optional[int] = None
 
     model_config = {"from_attributes": True}
+
+
+class ProjectStatusUpdate(BaseModel):
+    """Schema for toggling project active status"""
+    is_active: bool
 

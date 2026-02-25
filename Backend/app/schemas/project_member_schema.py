@@ -23,3 +23,10 @@ class ProjectMemberOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class ProjectMembersBulkAdd(BaseModel):
+    user_ids: list[int] = Field(..., min_length=1, description="List of user IDs to add to project")
+    role: Literal["pic", "manager", "member", "viewer"] = Field(
+        "member", description="Role within the project for all added users"
+    )
+

@@ -153,9 +153,6 @@ class BulkTaskUpdate(BaseModel):
         ..., min_length=1, description="List of task IDs to update"
     )
     updates: TaskBulkUpdateFields = Field(..., description="Fields to update for each task")
-    add_assigned_to_ids: Optional[List[int]] = Field(
-        None, description="Optional list of user IDs to add as new assignees. Creates new tasks for each, keeping same title/description/due_date/priority as updated tasks."
-    )
 
 class TaskPassRequest(BaseModel):
     new_assignee_id: int = Field(..., gt=0, description="User ID to pass task to")

@@ -6,12 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models.project import Project
+from app.db.models.task import Task
 from app.db.models.project_member import ProjectMember
 from app.db.models.user import User
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
-from app.schemas.project_schema import ProjectCreate, ProjectUpdate, ProjectOut
-from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut
+from app.schemas.project_schema import ProjectCreate, ProjectUpdate, ProjectOut, ProjectStatusUpdate
+from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut, ProjectMembersBulkAdd
 from app.utils.timezone import now_ist
 
 
@@ -73,6 +74,7 @@ def create_project(
         status="planned",
         person_in_charge_id=current_user.user_id,
         created_by=current_user.user_id,
+        is_active=True,
     )
 
     db.add(project)
@@ -90,6 +92,12 @@ def create_project(
     db.commit()
     db.refresh(project)
 
+    task_count = (
+        db.query(Task)
+        .filter(Task.project_id == project.project_id)
+        .count()
+    )
+
     return ProjectOut(
         project_id=project.project_id,
         name=project.name,
@@ -97,6 +105,7 @@ def create_project(
         start_date=project.start_date,
         end_date=project.end_date,
         status=project.status,
+        is_active=project.is_active,
         person_in_charge_id=project.person_in_charge_id,
         person_in_charge_name=project.person_in_charge.name if project.person_in_charge else None,
         created_by=project.created_by,
@@ -106,7 +115,7 @@ def create_project(
             ProjectMember.project_id == project.project_id,
             ProjectMember.is_active.is_(True),
         ).count(),
-        task_count=None,  # Can be populated later when tasks are linked
+        task_count=task_count,
     )
 
 
@@ -135,6 +144,11 @@ def list_projects(
             .filter(ProjectMember.project_id == project.project_id, ProjectMember.is_active.is_(True))
             .count()
         )
+        task_count = (
+            db.query(Task)
+            .filter(Task.project_id == project.project_id)
+            .count()
+        )
         results.append(
             ProjectOut(
                 project_id=project.project_id,
@@ -143,13 +157,14 @@ def list_projects(
                 start_date=project.start_date,
                 end_date=project.end_date,
                 status=project.status,
+                is_active=project.is_active,
                 person_in_charge_id=project.person_in_charge_id,
                 person_in_charge_name=project.person_in_charge.name if project.person_in_charge else None,
                 created_by=project.created_by,
                 created_at=project.created_at,
                 updated_at=project.updated_at,
                 member_count=member_count,
-                task_count=None,
+                task_count=task_count,
             )
         )
 
@@ -171,6 +186,12 @@ def get_project(
         .count()
     )
 
+    task_count = (
+        db.query(Task)
+        .filter(Task.project_id == project.project_id)
+        .count()
+    )
+
     return ProjectOut(
         project_id=project.project_id,
         name=project.name,
@@ -178,13 +199,14 @@ def get_project(
         start_date=project.start_date,
         end_date=project.end_date,
         status=project.status,
+        is_active=project.is_active,
         person_in_charge_id=project.person_in_charge_id,
         person_in_charge_name=project.person_in_charge.name if project.person_in_charge else None,
         created_by=project.created_by,
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=member_count,
-        task_count=None,
+        task_count=task_count,
     )
 
 
@@ -220,6 +242,12 @@ def update_project(
         .count()
     )
 
+    task_count = (
+        db.query(Task)
+        .filter(Task.project_id == project.project_id)
+        .count()
+    )
+
     return ProjectOut(
         project_id=project.project_id,
         name=project.name,
@@ -227,14 +255,82 @@ def update_project(
         start_date=project.start_date,
         end_date=project.end_date,
         status=project.status,
+        is_active=project.is_active,
         person_in_charge_id=project.person_in_charge_id,
         person_in_charge_name=project.person_in_charge.name if project.person_in_charge else None,
         created_by=project.created_by,
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=member_count,
-        task_count=None,
+        task_count=task_count,
     )
+
+
+@router.put("/{project_id}/status", response_model=ProjectOut)
+def update_project_status(
+    project_id: int,
+    payload: ProjectStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Activate/deactivate a project (is_active flag).
+
+    Only Admin/HR can toggle project active status.
+    """
+    project = _ensure_project_exists(db, project_id)
+
+    project.is_active = payload.is_active
+    db.commit()
+    db.refresh(project)
+
+    member_count = (
+        db.query(ProjectMember)
+        .filter(ProjectMember.project_id == project.project_id, ProjectMember.is_active.is_(True))
+        .count()
+    )
+
+    task_count = (
+        db.query(Task)
+        .filter(Task.project_id == project.project_id)
+        .count()
+    )
+
+    return ProjectOut(
+        project_id=project.project_id,
+        name=project.name,
+        description=project.description,
+        start_date=project.start_date,
+        end_date=project.end_date,
+        status=project.status,
+        is_active=project.is_active,
+        person_in_charge_id=project.person_in_charge_id,
+        person_in_charge_name=project.person_in_charge.name if project.person_in_charge else None,
+        created_by=project.created_by,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+        member_count=member_count,
+        task_count=task_count,
+    )
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Delete a project.
+
+    Only Admin/HR can delete projects.
+    """
+    project = _ensure_project_exists(db, project_id)
+
+    db.delete(project)
+    db.commit()
+
+    return None
 
 
 @router.post("/{project_id}/members", response_model=ProjectMemberOut, status_code=status.HTTP_201_CREATED)
@@ -324,6 +420,86 @@ def list_project_members(
 
     return results
 
+
+@router.post("/{project_id}/members/bulk", response_model=List[ProjectMemberOut], status_code=status.HTTP_201_CREATED)
+def add_project_members_bulk(
+    project_id: int,
+    payload: ProjectMembersBulkAdd,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Bulk add members to a project.
+
+    - Reactivates existing members (updates role).
+    - Creates new members where needed.
+    - Single role applied to all provided user IDs.
+    """
+    project = _ensure_project_exists(db, project_id)
+
+    # Deduplicate IDs
+    user_ids = list({uid for uid in payload.user_ids if uid is not None})
+
+    # Load users and validate they exist and are active
+    users = (
+        db.query(User)
+        .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
+        .all()
+    )
+    found_ids = {u.user_id for u in users}
+    missing = [uid for uid in user_ids if uid not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User(s) not found or inactive for user_id(s): {missing}",
+        )
+
+    # Preload existing member records
+    existing_members = (
+        db.query(ProjectMember)
+        .filter(ProjectMember.project_id == project.project_id, ProjectMember.user_id.in_(user_ids))
+        .all()
+    )
+    members_by_user_id = {m.user_id: m for m in existing_members}
+
+    created_or_updated: list[ProjectMember] = []
+
+    for user in users:
+        member = members_by_user_id.get(user.user_id)
+        if member:
+            # Reactivate and update role
+            member.is_active = True
+            member.removed_at = None
+            member.role = payload.role
+        else:
+            member = ProjectMember(
+                project_id=project.project_id,
+                user_id=user.user_id,
+                role=payload.role,
+                added_by=current_user.user_id,
+            )
+            db.add(member)
+        created_or_updated.append((member, user))
+
+    db.commit()
+
+    # Refresh members
+    for member, _ in created_or_updated:
+        db.refresh(member)
+
+    return [
+        ProjectMemberOut(
+            id=member.id,
+            project_id=member.project_id,
+            user_id=member.user_id,
+            user_name=user.name,
+            user_role=user.role.value if hasattr(user.role, "value") else str(user.role),
+            project_role=member.role,
+            is_active=member.is_active,
+            added_at=member.added_at,
+        )
+        for member, user in created_or_updated
+    ]
 
 @router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_project_member(

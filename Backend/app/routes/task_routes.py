@@ -33,9 +33,41 @@ from app.schemas.task_schema import (
 from app.enums import RoleEnum, TaskStatus
 from app.db.models.task import Task, TaskHistory
 from app.db.models.user import User
+from app.db.models.project_member import ProjectMember
 from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
+
+
+def _ensure_project_member(db: Session, project_id: int | None, user_id: int | None, added_by: int | None) -> None:
+    """
+    Ensure a user is an active member of a project when a task is linked to that project.
+    - If member exists but inactive: reactivate.
+    - If member doesn't exist: create with role 'member'.
+    """
+    if not project_id or not user_id:
+        return
+
+    member = (
+        db.query(ProjectMember)
+        .filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
+        .first()
+    )
+
+    if member:
+        if not member.is_active:
+            member.is_active = True
+            member.removed_at = None
+    else:
+        member = ProjectMember(
+            project_id=project_id,
+            user_id=user_id,
+            role="member",
+            added_by=added_by,
+        )
+        db.add(member)
+
+    db.commit()
 def _serialize_task_notification(notification: TaskNotificationOut | Task):
     raw_details = getattr(notification, "pass_details", None)
     parsed_details = None
@@ -95,6 +127,8 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         task.priority or "Medium",
         project_id=task.project_id,
     )
+    # Ensure assignee is added as a project member when task is linked to a project
+    _ensure_project_member(db, t.project_id, t.assigned_to, user.user_id)
     return TaskOut(
         task_id=t.task_id,
         title=t.title,
@@ -190,6 +224,8 @@ def assign_tasks_bulk(
             payload.priority or "Medium",
             project_id=payload.project_id,
         )
+        # Ensure each assignee is added as a project member when task is linked to a project
+        _ensure_project_member(db, t.project_id, t.assigned_to, user.user_id)
         created_tasks.append(t)
 
     # Return list of TaskOut
@@ -326,11 +362,11 @@ def update_tasks_bulk(
     user: User = Depends(get_current_user),
 ):
     """
-    Bulk update multiple tasks. Assigned users are preserved; use add_assigned_to_ids
-    to create new tasks for additional assignees with the same content.
+    Bulk update multiple tasks. Assigned users are preserved; this endpoint no longer
+    creates additional tasks or assignees.
     """
     updates = payload.updates.model_dump(exclude_unset=True)
-    if not updates and not payload.add_assigned_to_ids:
+    if not updates:
         # Nothing to update; return current tasks
         tasks = db.query(Task).filter(Task.task_id.in_(payload.task_ids)).all()
         return [
@@ -390,57 +426,6 @@ def update_tasks_bulk(
             raise HTTPException(status_code=404, detail=f"Task not found (task_id={task_id})")
         updated_tasks.append(updated)
 
-    # Add new tasks for add_assigned_to_ids (keeps old assignees in updated_tasks)
-    if payload.add_assigned_to_ids:
-        add_ids = list({uid for uid in payload.add_assigned_to_ids if uid is not None})
-        add_ids = [uid for uid in add_ids if uid > 0]
-        if add_ids:
-            add_assignees = db.query(User).filter(User.user_id.in_(add_ids)).all()
-            found_ids = {u.user_id for u in add_assignees}
-            missing = [uid for uid in add_ids if uid not in found_ids]
-            if missing:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Assignee(s) not found for user_id(s): {missing}",
-                )
-            for assignee in add_assignees:
-                if assignee.user_id != user.user_id:
-                    try:
-                        editor_index = ROLE_HIERARCHY.index(user.role)
-                        assignee_index = ROLE_HIERARCHY.index(assignee.role)
-                    except ValueError:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Invalid role configuration",
-                        )
-                    if assignee_index <= editor_index:
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail=f"Cannot assign task to same or higher role (assignee_id={assignee.user_id})",
-                        )
-                    if user.role == RoleEnum.MANAGER and user.department:
-                        manager_tokens = set(department_tokens_lower(user.department))
-                        assignee_tokens = set(department_tokens_lower(assignee.department))
-                        if not manager_tokens.intersection(assignee_tokens):
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"Managers can assign tasks only to users in their departments (assignee_id={assignee.user_id})",
-                            )
-            # Use first task as template (already updated with merged values)
-            tpl = updated_tasks[0]
-            due_date_val = tpl.due_date.date() if tpl.due_date else None
-            for assignee in add_assignees:
-                t = create_task(
-                    db,
-                    tpl.title,
-                    tpl.description or "",
-                    user.user_id,
-                    assignee.user_id,
-                    due_date_val,
-                    tpl.priority or "Medium",
-                )
-                updated_tasks.append(t)
-
     return [
         TaskOut(
             task_id=t.task_id,
@@ -451,6 +436,7 @@ def update_tasks_bulk(
             priority=t.priority,
             assigned_to=t.assigned_to,
             assigned_by=t.assigned_by,
+            project_id=t.project_id,
             created_at=t.created_at,
             last_passed_by=t.last_passed_by,
             last_passed_to=t.last_passed_to,

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Text, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -21,6 +21,8 @@ class Project(Base):
 
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
