@@ -93,6 +93,7 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         task.assigned_to,
         task.due_date,
         task.priority or "Medium",
+        project_id=task.project_id,
     )
     return TaskOut(
         task_id=t.task_id,
@@ -103,6 +104,7 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         priority=t.priority,
         assigned_to=t.assigned_to,
         assigned_by=t.assigned_by,
+        project_id=t.project_id,
         created_at=t.created_at,
         last_passed_by=t.last_passed_by,
         last_passed_to=t.last_passed_to,
@@ -186,6 +188,7 @@ def assign_tasks_bulk(
             assignee.user_id,
             payload.due_date,
             payload.priority or "Medium",
+            project_id=payload.project_id,
         )
         created_tasks.append(t)
 
@@ -200,6 +203,7 @@ def assign_tasks_bulk(
             priority=t.priority,
             assigned_to=t.assigned_to,
             assigned_by=t.assigned_by,
+            project_id=t.project_id,
             created_at=t.created_at,
             last_passed_by=t.last_passed_by,
             last_passed_to=t.last_passed_to,
@@ -227,6 +231,7 @@ def my_tasks(db: Session = Depends(get_db), user = Depends(get_current_user)):
             priority=t.priority,
             assigned_to=t.assigned_to,
             assigned_by=t.assigned_by,
+            project_id=t.project_id,
             created_at=t.created_at,
             last_passed_by=t.last_passed_by,
             last_passed_to=t.last_passed_to,
@@ -301,6 +306,7 @@ def update_status(task_id: int, status: TaskStatus, db: Session = Depends(get_db
         priority=task.priority,
         assigned_to=task.assigned_to,
         assigned_by=task.assigned_by,
+        project_id=task.project_id,
         created_at=task.created_at,
         last_passed_by=task.last_passed_by,
         last_passed_to=task.last_passed_to,
@@ -337,6 +343,7 @@ def update_tasks_bulk(
                 priority=t.priority,
                 assigned_to=t.assigned_to,
                 assigned_by=t.assigned_by,
+                project_id=t.project_id,
                 created_at=t.created_at,
                 last_passed_by=t.last_passed_by,
                 last_passed_to=t.last_passed_to,
@@ -523,6 +530,7 @@ def edit_task(
         priority=updated.priority,
         assigned_to=updated.assigned_to,
         assigned_by=updated.assigned_by,
+        project_id=updated.project_id,
         created_at=updated.created_at,
         last_passed_by=updated.last_passed_by,
         last_passed_to=updated.last_passed_to,
@@ -630,6 +638,7 @@ def pass_task_route(
         priority=updated_task.priority,
         assigned_to=updated_task.assigned_to,
         assigned_by=updated_task.assigned_by,
+        project_id=updated_task.project_id,
         created_at=updated_task.created_at,
         last_passed_by=updated_task.last_passed_by,
         last_passed_to=updated_task.last_passed_to,

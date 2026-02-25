@@ -36,11 +36,17 @@ class TaskCreate(TaskBase):
     assigned_to: int = Field(..., gt=0, description="User ID to assign task to")
     assigned_by: int = Field(..., gt=0, description="User ID who is assigning the task")
     # Note: self-assignment is allowed; role-based validation enforced in route handlers.
+    project_id: Optional[int] = Field(
+        None, gt=0, description="Optional project ID this task belongs to"
+    )
 
 
 class TaskBulkCreate(TaskBase):
     assigned_to_ids: List[int] = Field(
         ..., min_length=1, description="List of user IDs to assign the task to"
+    )
+    project_id: Optional[int] = Field(
+        None, gt=0, description="Optional project ID this task belongs to"
     )
 
 class TaskOut(BaseModel):
@@ -61,6 +67,7 @@ class TaskOut(BaseModel):
     assigned_by_name: Optional[str] = Field(None, description="Name of the task creator")
     assigned_by_role: Optional[RoleEnum] = Field(None, description="Role of the user who assigned the task")
     assigned_to_role: Optional[RoleEnum] = Field(None, description="Role of the user who is assigned the task")
+    project_id: Optional[int] = Field(None, description="Project ID this task belongs to")
 
     model_config = {"from_attributes": True}
 
@@ -83,6 +90,9 @@ class TaskUpdate(BaseModel):
     assigned_to: Optional[int] = Field(None, gt=0, description="New assignee user ID")
     due_date: Optional[date] = Field(None, description="Updated due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field(None, description="Updated task priority")
+    project_id: Optional[int] = Field(
+        None, gt=0, description="Updated project ID this task belongs to"
+    )
 
     @field_validator('title')
     @classmethod

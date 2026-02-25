@@ -26,12 +26,14 @@ class Task(Base):
     last_passed_to = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
     last_pass_note = Column(Text, nullable=True)
     last_passed_at = Column(DateTime, nullable=True)
+    project_id = Column(Integer, ForeignKey("projects.project_id", ondelete="SET NULL"), nullable=True)
 
     assigned_by_user = relationship("User", back_populates="created_tasks", foreign_keys="Task.assigned_by")
     assigned_to_user = relationship("User", back_populates="assigned_tasks", foreign_keys="Task.assigned_to")
     history = relationship("TaskHistory", back_populates="task", cascade="all, delete-orphan")
     notifications = relationship("TaskNotification", back_populates="task", cascade="all, delete-orphan")
     comments = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan", order_by="TaskComment.created_at")
+    project = relationship("Project", back_populates="tasks")
 
 
 class TaskHistory(Base):

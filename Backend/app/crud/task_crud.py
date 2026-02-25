@@ -41,6 +41,8 @@ def _ensure_task_pass_columns(db: Session) -> None:
         statements.append("ALTER TABLE tasks ADD COLUMN last_pass_note TEXT")
     if "last_passed_at" not in columns:
         statements.append("ALTER TABLE tasks ADD COLUMN last_passed_at TIMESTAMP")
+    if "project_id" not in columns:
+        statements.append("ALTER TABLE tasks ADD COLUMN project_id INTEGER")
 
     for statement in statements:
         db.execute(text(statement))
@@ -89,6 +91,7 @@ def create_task(
     assigned_to: int,
     due_date: Optional[datetime],
     priority: Optional[str] = "Medium",
+    project_id: Optional[int] = None,
 ):
     _ensure_task_pass_columns(db)
     task = Task(
@@ -99,6 +102,7 @@ def create_task(
         due_date=due_date,
         status=TaskStatus.PENDING,
         priority=priority or "Medium",
+        project_id=project_id,
     )
     db.add(task)
     db.flush()
