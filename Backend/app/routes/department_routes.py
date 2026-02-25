@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models.user import User
-from app.schemas.department_schema import DepartmentOut, DepartmentCreate, DepartmentUpdate
+from app.schemas.department_schema import DepartmentOut, DepartmentCreate, DepartmentUpdate, DepartmentStatusUpdate
 from app.crud.department_crud import (
     list_departments,
     get_department,
@@ -81,6 +81,29 @@ def update_department_endpoint(
                 db.commit()
     
     return updated_dept
+
+
+@router.patch("/{dept_id}/status", response_model=DepartmentOut)
+def update_department_status_endpoint(
+    dept_id: int,
+    status_in: DepartmentStatusUpdate,
+    db: Session = Depends(get_db),
+    _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+):
+    dept = get_department(db, dept_id)
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
+
+    if status_in.status not in ("active", "inactive"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid status. Must be 'active' or 'inactive'.",
+        )
+
+    dept.status = status_in.status
+    db.commit()
+    db.refresh(dept)
+    return dept
 
 
 @router.delete("/{dept_id}", status_code=status.HTTP_204_NO_CONTENT)

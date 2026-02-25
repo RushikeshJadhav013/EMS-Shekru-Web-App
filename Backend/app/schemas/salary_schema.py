@@ -189,6 +189,11 @@ class EmployeeSalaryUpdate(BaseModel):
         return code
 
 
+class EmployeeSalaryStatusUpdate(BaseModel):
+    """Schema for updating salary active status"""
+    is_active: bool
+
+
 class EmployeeSalaryCTCUpdate(BaseModel):
     """Schema for updating salary by changing CTC"""
     # New package CTC to replace annual_ctc usage

@@ -20,7 +20,8 @@ from app.schemas.salary_schema import (
     EmployeeSalaryCTCCreate, EmployeeSalaryCTCUpdate, SalaryCalculationPreview,
     SalaryIncrementCreate, SalaryIncrementOut,
     SalarySlipRequest, IncrementLetterRequest, SalaryAnnexureRequest,
-    EmailResponse, VariablePayType, SalaryNotificationOut
+    EmailResponse, VariablePayType, SalaryNotificationOut,
+    EmployeeSalaryStatusUpdate,
 )
 from app.crud.salary_crud import (
     create_employee_salary, create_employee_salary_from_ctc, get_employee_salary, 
@@ -42,6 +43,7 @@ from app.services.salary_email_service import (
 )
 from app.services.salary_calculation_service import SalaryCalculator
 from app.crud.user_crud import get_user
+from app.utils.timezone import now_ist
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +245,8 @@ def get_salary_record(
             detail="You can only view your own salary information"
         )
     
-    salary = get_employee_salary(db, user_id)
+    # Fetch salary regardless of active status (include inactive too)
+    salary = db.query(EmployeeSalary).filter(EmployeeSalary.user_id == user_id).first()
     if not salary:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -290,6 +293,32 @@ def delete_salary_record(
             detail="Salary record not found for this employee"
         )
     return None
+
+
+@router.put("/employee/{user_id}/status", response_model=EmployeeSalaryOut)
+def update_salary_status(
+    user_id: int,
+    status_update: EmployeeSalaryStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    """
+    Activate/deactivate an employee salary record.
+    Admin only.
+    """
+    salary = db.query(EmployeeSalary).filter(EmployeeSalary.user_id == user_id).first()
+    if not salary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Salary record not found for this employee",
+        )
+
+    salary.is_active = status_update.is_active
+    salary.updated_at = now_ist()
+    db.commit()
+    db.refresh(salary)
+
+    return _salary_to_response(salary)
 
 
 @router.get("/employees", response_model=List[EmployeeSalaryOut])

@@ -22,14 +22,14 @@ class ProjectCreate(ProjectBase):
 class ProjectUpdate(BaseModel):
     name: Optional[constr(min_length=3, max_length=255, strip_whitespace=True)] = None
     description: Optional[constr(max_length=5000, strip_whitespace=True)] = None
-    status: Optional[Literal["planned", "in_progress", "completed", "archived"]] = None
+    status: Optional[Literal["planned", "in_progress", "completed", "archived", "cancelled"]] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
 
 
 class ProjectOut(ProjectBase):
     project_id: int = Field(..., gt=0)
-    status: Literal["planned", "in_progress", "completed", "archived"]
+    status: Literal["planned", "in_progress", "completed", "archived", "cancelled"]
     person_in_charge_id: Optional[int] = Field(None, gt=0)
     person_in_charge_name: Optional[str] = None
     created_by: Optional[int] = Field(None, gt=0)

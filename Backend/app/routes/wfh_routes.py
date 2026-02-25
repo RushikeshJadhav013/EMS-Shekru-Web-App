@@ -97,17 +97,15 @@ def submit_wfh_request(
     # Use 23:59:59 with no microseconds to avoid DB rounding into next day (00:00:00)
     end_dt = datetime.combine(payload.end_date, time(23, 59, 59))
     
-    # Validation: 24 hours advance notice for future dates
+    # Validation: must be at least 24 hours in the future (no today or past dates)
     now = now_ist()
-    if payload.start_date > now.date():
-        time_difference = start_dt - now
-        hours_difference = time_difference.total_seconds() / 3600
-        
-        if hours_difference < 24:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="WFH requests must be submitted at least 24 hours in advance."
-            )
+    time_difference = start_dt - now
+    hours_difference = time_difference.total_seconds() / 3600
+    if hours_difference < 24:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="WFH requests must be submitted at least 24 hours in advance and cannot start today or in the past.",
+        )
     
     # Check for overlapping requests
     if check_overlapping_wfh(db, current_user.user_id, start_dt, end_dt):
@@ -323,6 +321,17 @@ def update_my_wfh_request(
     # Use 23:59:59 with no microseconds to avoid DB rounding into next day (00:00:00)
     end_dt = datetime.combine(payload.end_date, time(23, 59, 59)) if payload.end_date else None
     
+    # Validation: if start date is being updated, it must be at least 24 hours in the future
+    if start_dt:
+        now = now_ist()
+        time_difference = start_dt - now
+        hours_difference = time_difference.total_seconds() / 3600
+        if hours_difference < 24:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Updated WFH start date must be at least 24 hours in advance and cannot be today or in the past.",
+            )
+
     # Check for overlapping requests if dates are being updated
     if start_dt or end_dt:
         check_start = start_dt or wfh_request.start_date

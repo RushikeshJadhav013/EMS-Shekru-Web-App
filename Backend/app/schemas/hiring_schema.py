@@ -101,7 +101,7 @@ class CandidateBase(BaseModel):
     @classmethod
     def normalize_email(cls, v: EmailStr) -> EmailStr:
         """Normalize email to lowercase for consistent uniqueness checks."""
-        return EmailStr(v.lower())
+        return v.lower()
 
     @field_validator('phone')
     @classmethod

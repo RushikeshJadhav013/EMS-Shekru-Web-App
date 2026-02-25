@@ -22,9 +22,9 @@ class WFHRequestCreate(BaseModel):
         """Validate start date"""
         if v < date(2000, 1, 1):
             raise ValueError('Start date cannot be before year 2000')
-        # Allow backdated WFH requests up to 7 days for flexibility
-        if v < date.today() - timedelta(days=7):
-            raise ValueError('Cannot apply for WFH more than 7 days in the past')
+        # Disallow any past dates; must be today or future at schema level
+        if v < date.today():
+            raise ValueError('Start date cannot be in the past')
         return v
 
     @field_validator('end_date')

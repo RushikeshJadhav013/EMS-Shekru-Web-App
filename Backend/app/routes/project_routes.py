@@ -1,5 +1,5 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -22,6 +22,29 @@ router = APIRouter(
 )
 
 
+def _validate_project_dates(start_date: Optional[date], end_date: Optional[date]) -> None:
+    """Ensure project dates are not in the past and end_date is not before start_date."""
+    today = date.today()
+
+    if start_date is not None and start_date < today:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date cannot be in the past.",
+        )
+
+    if end_date is not None and end_date < today:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end_date cannot be in the past.",
+        )
+
+    if start_date is not None and end_date is not None and end_date < start_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end_date cannot be before start_date.",
+        )
+
+
 def _ensure_project_exists(db: Session, project_id: int) -> Project:
     project = db.query(Project).filter(Project.project_id == project_id).first()
     if not project:
@@ -40,6 +63,8 @@ def create_project(
 
     Person in charge (PIC) is always Admin/HR (current user).
     """
+    _validate_project_dates(payload.start_date, payload.end_date)
+
     project = Project(
         name=payload.name,
         description=payload.description,
@@ -177,6 +202,11 @@ def update_project(
     """
     project = _ensure_project_exists(db, project_id)
 
+    # Determine the effective dates after update for validation
+    new_start_date = payload.start_date if payload.start_date is not None else project.start_date
+    new_end_date = payload.end_date if payload.end_date is not None else project.end_date
+    _validate_project_dates(new_start_date, new_end_date)
+
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(project, field, value)
@@ -253,7 +283,7 @@ def add_project_member(
         project_id=member.project_id,
         user_id=member.user_id,
         user_name=user.name,
-        user_role=str(user.role),
+        user_role=user.role.value if hasattr(user.role, "value") else str(user.role),
         project_role=member.role,
         is_active=member.is_active,
         added_at=member.added_at,
@@ -285,7 +315,7 @@ def list_project_members(
                 project_id=member.project_id,
                 user_id=member.user_id,
                 user_name=user.name,
-                user_role=str(user.role),
+                user_role=user.role.value if hasattr(user.role, "value") else str(user.role),
                 project_role=member.role,
                 is_active=member.is_active,
                 added_at=member.added_at,

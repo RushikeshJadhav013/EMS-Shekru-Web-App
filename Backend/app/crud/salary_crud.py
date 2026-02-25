@@ -297,8 +297,8 @@ def list_employee_salaries(
     skip: int = 0, 
     limit: int = 100
 ) -> List[EmployeeSalary]:
-    """List all employee salaries with optional department filter"""
-    query = db.query(EmployeeSalary).filter(EmployeeSalary.is_active == True)
+    """List all employee salaries (including inactive) with optional department filter"""
+    query = db.query(EmployeeSalary)
     
     if department:
         # Join with User to filter by department

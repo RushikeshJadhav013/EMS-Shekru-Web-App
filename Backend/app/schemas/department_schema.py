@@ -22,9 +22,13 @@ class DepartmentUpdate(BaseModel):
     code: Optional[str] = None
     manager_id: Optional[int] = None
     description: Optional[str] = None
-    status: Optional[str] = None
+    # status: Optional[str] = None
     employee_count: Optional[int] = None
     location: Optional[str] = None
+
+
+class DepartmentStatusUpdate(BaseModel):
+    status: str
 
 
 class DepartmentOut(DepartmentBase):
