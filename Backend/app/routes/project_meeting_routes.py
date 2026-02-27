@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -10,7 +10,12 @@ from app.db.models.project_member import ProjectMember
 from app.db.models.user import User
 from app.dependencies import get_current_user
 from app.enums import RoleEnum
-from app.schemas.meeting_schema import MeetingCreate, MeetingOut, MeetingParticipantOut
+from app.schemas.meeting_schema import (
+    MeetingCreate,
+    MeetingOut,
+    MeetingParticipantOut,
+    MeetingUpdate,
+)
 
 
 router = APIRouter(
@@ -43,6 +48,69 @@ def _ensure_project_access(db: Session, project_id: int, current_user: User) -> 
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You must be an active member of this project to access project meetings",
         )
+
+
+def _is_invited_to_project_meeting(db: Session, project_id: int, meeting_id: int, user_id: int) -> bool:
+    row = (
+        db.query(MeetingParticipant.id)
+        .join(Meeting, MeetingParticipant.meeting_id == Meeting.id)
+        .filter(
+            Meeting.id == meeting_id,
+            Meeting.project_id == project_id,
+            MeetingParticipant.user_id == user_id,
+        )
+        .first()
+    )
+    return bool(row)
+
+
+def _ensure_project_or_invited_access(
+    db: Session, project_id: int, meeting_id: Optional[int], current_user: User
+) -> None:
+    """
+    Access rule for project meetings:
+    - Admin/HR: always allowed
+    - Project active member: allowed
+    - Otherwise: allowed only if user is invited to the specific meeting (meeting_id required)
+    """
+    if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+        return
+
+    member = (
+        db.query(ProjectMember.id)
+        .filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == current_user.user_id,
+            ProjectMember.is_active.is_(True),
+        )
+        .first()
+    )
+    if member:
+        return
+
+    if meeting_id is not None and _is_invited_to_project_meeting(
+        db, project_id, meeting_id, current_user.user_id
+    ):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You must be an active project member or invited to this meeting",
+    )
+
+
+def _get_project_meeting_or_404(db: Session, project_id: int, meeting_id: int) -> Meeting:
+    meeting = (
+        db.query(Meeting)
+        .filter(Meeting.id == meeting_id, Meeting.project_id == project_id)
+        .first()
+    )
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project meeting not found",
+        )
+    return meeting
 
 
 def _serialize_meeting(db: Session, meeting: Meeting) -> MeetingOut:
@@ -157,4 +225,146 @@ def list_project_meetings(
         .all()
     )
     return [_serialize_meeting(db, m) for m in meetings]
+
+
+@router.get("/invited", response_model=List[MeetingOut])
+def list_project_invited_meetings(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List meetings within a project where the current user is invited (participant)
+    but is NOT the creator.
+    """
+    _get_project_or_404(db, project_id)
+
+    meetings = (
+        db.query(Meeting)
+        .join(MeetingParticipant, Meeting.id == MeetingParticipant.meeting_id)
+        .filter(
+            Meeting.project_id == project_id,
+            MeetingParticipant.user_id == current_user.user_id,
+            Meeting.created_by_id != current_user.user_id,
+        )
+        .order_by(Meeting.created_at.desc())
+        .all()
+    )
+
+    return [_serialize_meeting(db, m) for m in meetings]
+
+
+@router.get("/{meeting_id}", response_model=MeetingOut)
+def get_project_meeting(
+    project_id: int,
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_project_or_404(db, project_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+    return _serialize_meeting(db, meeting)
+
+
+@router.put("/{meeting_id}", response_model=MeetingOut)
+def update_project_meeting(
+    project_id: int,
+    meeting_id: int,
+    payload: MeetingUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_project_or_404(db, project_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+
+    if meeting.created_by_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the meeting creator can update this project meeting",
+        )
+
+    data = payload.model_dump(exclude_unset=True)
+    participant_ids = data.pop("participant_ids", None)
+
+    for field, value in data.items():
+        if field == "meeting_url" and value is not None:
+            setattr(meeting, field, str(value))
+        else:
+            setattr(meeting, field, value)
+
+    if participant_ids is not None:
+        db.query(MeetingParticipant).filter(MeetingParticipant.meeting_id == meeting.id).delete()
+
+        user_ids = list({uid for uid in participant_ids if uid is not None})
+        if user_ids:
+            users = (
+                db.query(User)
+                .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
+                .all()
+            )
+            found_ids = {u.user_id for u in users}
+            missing = [uid for uid in user_ids if uid not in found_ids]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"User(s) not found or inactive: {missing}",
+                )
+            for uid in user_ids:
+                db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
+
+    db.commit()
+    db.refresh(meeting)
+    return _serialize_meeting(db, meeting)
+
+
+@router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project_meeting(
+    project_id: int,
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_project_or_404(db, project_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+
+    if meeting.created_by_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the meeting creator can delete this project meeting",
+        )
+
+    db.delete(meeting)
+    db.commit()
+    return None
+
+
+@router.get("/{meeting_id}/participants", response_model=List[MeetingParticipantOut])
+def list_project_meeting_participants(
+    project_id: int,
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_project_or_404(db, project_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+
+    rows = (
+        db.query(MeetingParticipant, User)
+        .join(User, MeetingParticipant.user_id == User.user_id)
+        .filter(MeetingParticipant.meeting_id == meeting.id)
+        .order_by(User.name.asc())
+        .all()
+    )
+    return [
+        MeetingParticipantOut(
+            id=mp.id,
+            user_id=mp.user_id,
+            user_name=user.name,
+        )
+        for mp, user in rows
+    ]
 
