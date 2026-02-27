@@ -28,6 +28,7 @@ from app.db.models import (  # noqa: F401
     interview_feedback,
     project,
     project_member,
+    meeting,
 )
 from app.routes import (
     user_routes,
@@ -50,6 +51,8 @@ from app.routes import (
     salary_routes,  # Salary slip and increment letter routes
     interview_feedback_routes,
     project_routes,
+    meeting_routes,
+    project_meeting_routes,
 )
 from app.db.models.super_admin import SuperAdmin
 import os
@@ -105,6 +108,25 @@ try:
             # Update existing records to have 'office' as default
             conn.execute(
                 text("UPDATE attendances SET work_location = 'office' WHERE work_location IS NULL")
+            )
+
+        # Check if 'project_id' exists on 'meetings' table; if not, add it
+        result = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'meetings'
+                  AND COLUMN_NAME = 'project_id'
+                """
+            )
+        )
+        row = result.first()
+        has_project_id = bool(row[0] if row else 0)
+        if not has_project_id:
+            conn.execute(
+                text("ALTER TABLE meetings ADD COLUMN project_id INT NULL")
             )
 except Exception as _e:
     # Fail-soft: app will still boot; detailed error returned via middleware if used
@@ -200,6 +222,8 @@ app.include_router(wfh_routes.router)
 app.include_router(salary_routes.router)  # Salary slip and increment letter routes
 app.include_router(interview_feedback_routes.router)
 app.include_router(project_routes.router)
+app.include_router(meeting_routes.router)
+app.include_router(project_meeting_routes.router)
 
 # Global exception handlers to ensure CORS headers are always included
 @app.exception_handler(StarletteHTTPException)

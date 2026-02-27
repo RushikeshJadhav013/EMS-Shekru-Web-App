@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from datetime import datetime, timedelta
 from typing import Optional, List
 import io
@@ -24,6 +24,7 @@ def export_leave_csv(
     start_date: datetime = None,
     end_date: datetime = None,
     department: Optional[str] = None,
+    requester: Optional["User"] = None,
 ):
     output = io.StringIO()
     writer = csv.writer(output)
@@ -39,7 +40,23 @@ def export_leave_csv(
 
     query = db.query(Leave, User.employee_id, User.name, User.department).join(User, Leave.user_id == User.user_id)
     if department:
-        query = query.filter(func.lower(User.department) == department.strip().lower())
+        # Allow matching users with multiple comma-separated departments by substring match
+        dept_token = department.strip().lower()
+        query = query.filter(User.department.isnot(None))
+        query = query.filter(func.lower(User.department).like(f"%{dept_token}%"))
+
+    # Role-based visibility filtering
+    if requester is not None:
+        from app.enums import RoleEnum  # local import to avoid circulars
+        if requester.role == RoleEnum.ADMIN:
+            # Admin: cannot see any Admin leaves (including self)
+            query = query.filter(User.role != RoleEnum.ADMIN)
+        elif requester.role == RoleEnum.HR:
+            # HR: cannot see Admins, HRs (including self)
+            query = query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+                User.user_id != requester.user_id,
+            )
     if start_date:
         query = query.filter(Leave.start_date >= start_date)
     if end_date:
@@ -70,6 +87,7 @@ def export_leave_pdf(
     end_date: datetime = None,
     department: Optional[str] = None,
     generated_by: Optional[str] = None,
+    requester: Optional["User"] = None,
 ):
     buffer = io.BytesIO()
         # Use A4 landscape and tighter, consistent margins for managerial reports
@@ -132,7 +150,23 @@ def export_leave_pdf(
     # Data query
     query = db.query(Leave, User.employee_id, User.name, User.department).join(User, Leave.user_id == User.user_id)
     if department:
-        query = query.filter(func.lower(User.department) == department.strip().lower())
+        # Allow matching users with multiple comma-separated departments by substring match
+        dept_token = department.strip().lower()
+        query = query.filter(User.department.isnot(None))
+        query = query.filter(func.lower(User.department).like(f"%{dept_token}%"))
+
+    # Role-based visibility filtering
+    if requester is not None:
+        from app.enums import RoleEnum  # local import to avoid circulars
+        if requester.role == RoleEnum.ADMIN:
+            # Admin: cannot see any Admin leaves (including self)
+            query = query.filter(User.role != RoleEnum.ADMIN)
+        elif requester.role == RoleEnum.HR:
+            # HR: cannot see Admins, HRs (including self)
+            query = query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+                User.user_id != requester.user_id,
+            )
     if start_date:
         query = query.filter(Leave.start_date >= start_date)
     if end_date:

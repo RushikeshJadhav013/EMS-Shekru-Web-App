@@ -275,23 +275,36 @@ def generate_salary_slip_pdf(
             "",
         ])
     
-    # Bank Name row - show Variable Pay on right only when UAN is visible (else already shown next to DOJ)
+    # Bank details (omit rows when values are missing)
+    has_bank_name = bool(bank_name and str(bank_name).strip() and str(bank_name).strip().upper() not in ("NA", "N/A", ""))
+    has_bank_account = bool(
+        bank_account and str(bank_account).strip() and str(bank_account).strip().upper() not in ("NA", "N/A", "")
+    )
+
+    # When UAN is visible, Variable Pay is shown on the right in this section.
     if has_uan:
+        left_cell = (
+            Table([["Bank Name", ":", str(bank_name).strip()]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
+            if has_bank_name
+            else ""
+        )
         details_data.append([
-            Table([["Bank Name", ":", bank_name or "N/A"]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            left_cell,
             Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
         ])
     else:
+        # UAN not visible: Variable Pay already shown next to DOJ. Only show Bank Name if present.
+        if has_bank_name:
+            details_data.append([
+                Table([["Bank Name", ":", str(bank_name).strip()]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+                "",
+            ])
+
+    if has_bank_account:
         details_data.append([
-            Table([["Bank Name", ":", bank_name or "N/A"]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Bank A/C No.", ":", str(bank_account).strip()]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
             "",
         ])
-    
-    # Always add Bank A/C No row
-    details_data.append([
-        Table([["Bank A/C No.", ":", bank_account or "N/A"]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-        "",
-    ])
     
     # Style for inner tables
     inner_style = TableStyle([

@@ -32,4 +32,5 @@ class Project(Base):
     created_by_user = relationship("User", foreign_keys=[created_by])
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="project")
+    meetings = relationship("Meeting", back_populates="project")
 
