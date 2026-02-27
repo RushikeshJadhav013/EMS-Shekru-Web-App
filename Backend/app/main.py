@@ -28,6 +28,7 @@ from app.db.models import (  # noqa: F401
     interview_feedback,
     project,
     project_member,
+    meeting,
 )
 from app.routes import (
     user_routes,
@@ -50,6 +51,7 @@ from app.routes import (
     salary_routes,  # Salary slip and increment letter routes
     interview_feedback_routes,
     project_routes,
+    meeting_routes,
 )
 from app.db.models.super_admin import SuperAdmin
 import os
@@ -200,6 +202,7 @@ app.include_router(wfh_routes.router)
 app.include_router(salary_routes.router)  # Salary slip and increment letter routes
 app.include_router(interview_feedback_routes.router)
 app.include_router(project_routes.router)
+app.include_router(meeting_routes.router)
 
 # Global exception handlers to ensure CORS headers are always included
 @app.exception_handler(StarletteHTTPException)

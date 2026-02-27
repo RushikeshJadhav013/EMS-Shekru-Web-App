@@ -54,7 +54,12 @@ class User(Base):
     task_history_entries = relationship("TaskHistory", back_populates="user", cascade="all, delete-orphan")
     task_comments = relationship("TaskComment", back_populates="user", cascade="all, delete-orphan")
     task_notifications = relationship("TaskNotification", back_populates="user", cascade="all, delete-orphan")
-    shift_assignments = relationship("ShiftAssignment", foreign_keys="ShiftAssignment.user_id", back_populates="user", cascade="all, delete-orphan")
+    shift_assignments = relationship(
+        "ShiftAssignment",
+        foreign_keys="ShiftAssignment.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     shift_notifications = relationship("ShiftNotification", back_populates="user", cascade="all, delete-orphan")
     salary_notifications = relationship("SalaryNotification", back_populates="user", cascade="all, delete-orphan")
 
@@ -66,6 +71,19 @@ class User(Base):
     )
     chat_memberships = relationship(
         "ChatMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    # Meeting-related relationships
+    created_meetings = relationship(
+        "Meeting",
+        back_populates="created_by",
+        foreign_keys="Meeting.created_by_id",
+        cascade="all, delete-orphan",
+    )
+    meeting_participations = relationship(
+        "MeetingParticipant",
         back_populates="user",
         cascade="all, delete-orphan",
     )
