@@ -12,6 +12,7 @@ from app.schemas.meeting_schema import (
     MeetingOut,
     MeetingParticipantOut,
     MeetingUpdate,
+    MeetingParticipantsAdd,
 )
 
 
@@ -203,7 +204,7 @@ def update_meeting(
 )
 def add_meeting_participants(
     meeting_id: int,
-    user_ids: List[int],
+    payload: MeetingParticipantsAdd,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -215,7 +216,7 @@ def add_meeting_participants(
             detail="Only the meeting creator can add participants",
         )
 
-    user_ids = list({uid for uid in user_ids if uid is not None})
+    user_ids = list({uid for uid in payload.user_ids if uid is not None})
     if not user_ids:
         return []
 

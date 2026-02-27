@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, BaseModel, Field
 
 
 class MeetingBase(BaseModel):
@@ -23,6 +23,10 @@ class MeetingUpdate(BaseModel):
     end_time: Optional[datetime] = None
     meeting_url: Optional[AnyHttpUrl] = None
     participant_ids: Optional[List[int]] = None
+
+
+class MeetingParticipantsAdd(BaseModel):
+    user_ids: List[int]
 
 
 class MeetingParticipantOut(BaseModel):

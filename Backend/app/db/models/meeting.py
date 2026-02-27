@@ -23,6 +23,14 @@ class Meeting(Base):
     end_time = Column(DateTime, nullable=True)
     meeting_url = Column(String(1024), nullable=False)
 
+    # Optional: project-linked meeting (used by /projects/{project_id}/meetings endpoints)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.project_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     created_by_id = Column(
         Integer,
         ForeignKey("users.user_id", ondelete="RESTRICT"),
@@ -31,6 +39,7 @@ class Meeting(Base):
     created_at = Column(DateTime, default=now_ist, nullable=False)
 
     created_by = relationship("User", back_populates="created_meetings")
+    project = relationship("Project", back_populates="meetings")
     participants = relationship(
         "MeetingParticipant",
         back_populates="meeting",
