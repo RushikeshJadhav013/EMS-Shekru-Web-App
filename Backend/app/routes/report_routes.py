@@ -49,6 +49,13 @@ def export_leave_report(
     try:
         start_dt = None
         end_dt = None
+        # Role-based access: only Admin and HR can export leave reports
+        if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Only Admin and HR users can access the leave report.",
+            )
+
         if start_date:
             try:
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -60,10 +67,23 @@ def export_leave_report(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
 
+        # Validate date range when both are provided
+        if start_dt and end_dt and end_dt < start_dt:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="end_date cannot be before start_date",
+            )
+
         from app.crud.leave_crud import export_leave_csv, export_leave_pdf
 
         if format.lower() == 'csv':
-            output = export_leave_csv(db, start_date=start_dt, end_date=end_dt, department=department)
+            output = export_leave_csv(
+                db,
+                start_date=start_dt,
+                end_date=end_dt,
+                department=department,
+                requester=current_user,
+            )
             filename = "leave_report.csv"
             return StreamingResponse(
                 output,
@@ -71,7 +91,14 @@ def export_leave_report(
                 headers={"Content-Disposition": f"attachment; filename={filename}"}
             )
         elif format.lower() == 'pdf':
-            buffer = export_leave_pdf(db, start_date=start_dt, end_date=end_dt, department=department, generated_by=current_user.name)
+            buffer = export_leave_pdf(
+                db,
+                start_date=start_dt,
+                end_date=end_dt,
+                department=department,
+                generated_by=current_user.name,
+                requester=current_user,
+            )
             filename = f"leave_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             return StreamingResponse(
                 buffer,
@@ -81,14 +108,20 @@ def export_leave_report(
         else:
             raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="Invalid format. Use 'csv' or 'pdf'")
 
+    except HTTPException:
+        # Re-raise HTTPExceptions (400/403, etc.) as-is so the correct status code is returned
+        raise
     except Exception as e:
         print(f"Leave export error: {str(e)}")
-        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error generating leave report: {str(e)}")
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating leave report: {str(e)}",
+        )
 
 
 @router.get("/employee-performance")
 def get_employee_performance(
-    month: int = Query(..., ge=0, le=11, description="Month (0-11)"),
+    month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., description="Year"),
     department: Optional[str] = Query(None, description="Filter by department"),
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
@@ -100,17 +133,22 @@ def get_employee_performance(
     Calculates attendance score and task completion rate from actual data.
     """
     
+    # Role-based access: only Admin and HR can access employee performance report
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Only Admin and HR users can access the employee performance report.",
+        )
+
     try:
         # Calculate date range for the month
-        # Frontend sends 0-indexed month (0-11), convert to 1-indexed (1-12)
-        actual_month = month + 1
-        
-        start_date = datetime(year, actual_month, 1)
+        # Frontend sends 1-indexed month (1-12)
+        start_date = datetime(year, month, 1)
         # Calculate end date (first day of next month)
-        if actual_month == 12:
+        if month == 12:
             end_date = datetime(year + 1, 1, 1)
         else:
-            end_date = datetime(year, actual_month + 1, 1)
+            end_date = datetime(year, month + 1, 1)
     except ValueError as e:
         # Handle invalid date
         raise HTTPException(
@@ -127,29 +165,46 @@ def get_employee_performance(
         )
     
     try:
-        # Base query for active employees
-        # ✅ Exclude Admin users - Admin is the boss and should not appear in performance reports
-        query = db.query(User).filter(
-            User.is_active == True,
-            User.role != RoleEnum.ADMIN
+        # Base query for active employees, filtered by viewer role
+        query = db.query(User).filter(User.is_active == True)
+
+        # Employment-window filter:
+        # - Exclude users who joined after the selected period ends
+        # - Exclude users who resigned before the selected period starts
+        query = query.filter(
+            or_(User.joining_date.is_(None), User.joining_date < end_date),
+            or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
         )
+
+        # Admin viewer: cannot see any Admin users or self
+        if current_user.role == RoleEnum.ADMIN:
+            query = query.filter(
+                User.role != RoleEnum.ADMIN,
+                User.user_id != current_user.user_id,
+            )
+
+        # HR viewer: cannot see Admin users, any HR users (including self), or self
+        elif current_user.role == RoleEnum.HR:
+            query = query.filter(
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+                User.user_id != current_user.user_id,
+            )
         
         # Apply filters
         if department and department != 'all':
             query = query.filter(User.department == department)
-        else:
-            # If no department filter provided and requester is a Manager, restrict to their departments
-            if current_user.role == RoleEnum.MANAGER:
-                manager_depts = department_tokens_lower(current_user.department)
-                if manager_depts:
-                    patterns = [department_token_regex_pattern(d) for d in manager_depts]
-                    filters = [User.department.op("RLIKE")(pat) for pat in patterns]
-                    query = query.filter(or_(*filters))
         
         if employee_id:
             query = query.filter(User.employee_id == employee_id)
         
         employees = query.order_by(User.name).all()
+
+        # If an explicit employee_id was requested but is not accessible / not found, return a clearer response
+        if employee_id and not employees:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Employee not found or you do not have access to this employee's performance.",
+            )
         
         results = []
         for emp in employees:
@@ -225,7 +280,7 @@ def get_employee_performance(
 
 @router.get("/department-metrics")
 def get_department_metrics(
-    month: int = Query(..., ge=0, le=11, description="Month (0-11)"),
+    month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., description="Year"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -234,18 +289,23 @@ def get_department_metrics(
     Get department-wise performance metrics.
     Aggregates employee data by department.
     """
-    
+
+    # Role-based access: only Admin and HR can access department metrics
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Only Admin and HR users can access the department metrics report.",
+        )
+
     try:
         # Calculate date range
-        # Frontend sends 0-indexed month (0-11), convert to 1-indexed (1-12)
-        actual_month = month + 1
-        
-        start_date = datetime(year, actual_month, 1)
+        # Frontend sends 1-indexed month (1-12)
+        start_date = datetime(year, month, 1)
         # Calculate end date (first day of next month)
-        if actual_month == 12:
+        if month == 12:
             end_date = datetime(year + 1, 1, 1)
         else:
-            end_date = datetime(year, actual_month + 1, 1)
+            end_date = datetime(year, month + 1, 1)
     except ValueError as e:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
@@ -267,23 +327,47 @@ def get_department_metrics(
             total_working_days += 1
         current += timedelta(days=1)
     
-    # Get all departments with active employees
-    departments = db.query(User.department).filter(
+    # Build department → employees map for the selected month/year,
+    # splitting comma-separated department strings and respecting employment window
+    # and viewer role visibility rules.
+    dept_to_employees = {}
+    all_dept_users_query = db.query(User).filter(
         User.is_active == True,
         User.department.isnot(None),
-        User.department != ''
-    ).distinct().all()
+        User.department != '',
+        # Joined before the period ends
+        or_(User.joining_date.is_(None), User.joining_date < end_date),
+        # Not resigned before the period starts
+        or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
+    )
+
+    # Admin viewer: cannot see any Admin users or self
+    if current_user.role == RoleEnum.ADMIN:
+        all_dept_users_query = all_dept_users_query.filter(
+            User.role != RoleEnum.ADMIN,
+            User.user_id != current_user.user_id,
+        )
+    # HR viewer: cannot see Admin users, any HR users (including self), or self
+    elif current_user.role == RoleEnum.HR:
+        all_dept_users_query = all_dept_users_query.filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            User.user_id != current_user.user_id,
+        )
+
+    all_dept_users = all_dept_users_query.all()
+
+    for user in all_dept_users:
+        raw_dept = user.department or ""
+        for part in raw_dept.split(","):
+            dept_name = part.strip()
+            if not dept_name:
+                continue
+            dept_to_employees.setdefault(dept_name, []).append(user)
     
     results = []
-    for (dept_name,) in departments:
-        if not dept_name:
+    for dept_name, dept_employees in dept_to_employees.items():
+        if not dept_employees:
             continue
-        
-        # Get employees in department
-        dept_employees = db.query(User).filter(
-            User.department == dept_name,
-            User.is_active == True
-        ).all()
         
         total_employees = len(dept_employees)
         
@@ -341,7 +425,7 @@ def get_department_metrics(
 
 @router.get("/executive-summary")
 def get_executive_summary(
-    month: int = Query(..., ge=0, le=11, description="Month (0-11)"),
+    month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., description="Year"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -355,31 +439,51 @@ def get_executive_summary(
     - On-time check-outs (15% weight)
     - Leave patterns (10% weight)
     """
+
+    # Role-based access: only Admin and HR can access executive summary
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Only Admin and HR users can access the executive summary report.",
+        )
     
     # Calculate date range
-    # Frontend sends 0-indexed month (0-11), convert to 1-indexed (1-12)
-    actual_month = month + 1
-    
+    # Frontend sends 1-indexed month (1-12)
     try:
-        start_date = datetime(year, actual_month, 1)
+        start_date = datetime(year, month, 1)
         # Calculate end date (first day of next month)
-        if actual_month == 12:
+        if month == 12:
             end_date = datetime(year + 1, 1, 1)
         else:
-            end_date = datetime(year, actual_month + 1, 1)
+            end_date = datetime(year, month + 1, 1)
     except ValueError as e:
-        from fastapi import HTTPException, status as http_status
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid date: month={month}, year={year}. Error: {str(e)}"
         )
     
-    # Get all active employees
-    # ✅ Exclude Admin users - Admin is the boss and should not appear in performance reports
-    employees = db.query(User).filter(
+    # Get all active employees whose employment overlaps the selected period,
+    # then filter further based on viewer role.
+    base_query = db.query(User).filter(
         User.is_active == True,
-        User.role != RoleEnum.ADMIN
-    ).all()
+        # Joined before the period ends
+        or_(User.joining_date.is_(None), User.joining_date < end_date),
+        # Not resigned before the period starts
+        or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
+    )
+
+    # Admin viewer: cannot see any Admin users or self
+    if current_user.role == RoleEnum.ADMIN:
+        employees = base_query.filter(
+            User.role != RoleEnum.ADMIN,
+            User.user_id != current_user.user_id,
+        ).all()
+    # HR viewer: cannot see Admin users, any HR users (including self), or self
+    elif current_user.role == RoleEnum.HR:
+        employees = base_query.filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            User.user_id != current_user.user_id,
+        ).all()
     
     # Calculate working days
     total_working_days = 0
@@ -544,13 +648,32 @@ def get_departments_list(
     current_user: User = Depends(get_current_user),
 ):
     """Get list of all departments with active employees"""
-    departments = db.query(User.department).filter(
+
+    # Role-based access: only Admin and HR can access departments list
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Only Admin and HR users can access the departments list.",
+        )
+
+    # Support multiple departments stored as comma-separated values
+    raw_departments = db.query(User.department).filter(
         User.is_active == True,
         User.department.isnot(None),
         User.department != ''
-    ).distinct().order_by(User.department).all()
-    
-    return {"departments": [dept[0] for dept in departments if dept[0]]}
+    ).all()
+
+    dept_set = set()
+    for (dept_str,) in raw_departments:
+        if not dept_str:
+            continue
+        for part in dept_str.split(","):
+            name = part.strip()
+            if name:
+                dept_set.add(name)
+
+    # Return sorted list for consistent ordering
+    return {"departments": sorted(dept_set)}
 
 
 
@@ -567,24 +690,70 @@ async def export_performance_report(
     Export comprehensive performance report in CSV or PDF format.
     Includes: performance metrics, attendance, tasks, leaves, and leave type summary.
     """
-    
+
+    # Role-based access: only Admin and HR can export this performance report
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Only Admin and HR users can access the performance report export.",
+        )
+
     try:
         # Parse dates
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
+
+        # Validate date range
+        if end < start:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date range. 'end_date' cannot be before 'start_date'.",
+            )
         
-        # Get employees
-        query = db.query(User).filter(User.is_active == True)
+        # Get employees (base query)
+        # Include only employees whose joining_date falls within the selected period
+        query = db.query(User).filter(
+            User.is_active == True,
+            User.joining_date >= start,
+            User.joining_date <= end,
+        )
         if employee_id:
             query = query.filter(User.employee_id == employee_id)
-        employees = query.all()
-        
-        if not employees:
+
+        employees_raw = query.all()
+
+        # If there are no matching active employees at all, return 404
+        if not employees_raw:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="No employees found"
             )
-        
+
+        # Apply role-based visibility on which employees can be included in the export
+        employees = employees_raw
+
+        if current_user.role == RoleEnum.ADMIN:
+            # Admin cannot see self or any Admin users in this report
+            employees = [
+                emp for emp in employees
+                if getattr(emp, "user_id", None) != current_user.user_id
+                and getattr(emp, "role", None) != RoleEnum.ADMIN
+            ]
+        elif current_user.role == RoleEnum.HR:
+            # HR cannot see Admins, self, or other HRs in this report
+            employees = [
+                emp for emp in employees
+                if getattr(emp, "user_id", None) != current_user.user_id
+                and getattr(emp, "role", None) not in (RoleEnum.ADMIN, RoleEnum.HR)
+            ]
+
+        # If, after applying visibility rules, no employees remain, treat it as access denied
+        if not employees:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to export performance report for the requested employees.",
+            )
+
         # Collect comprehensive data for each employee
         report_data = []
         
@@ -700,6 +869,9 @@ async def export_performance_report(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid date format. Use YYYY-MM-DD. Error: {str(e)}"
         )
+    except HTTPException as e:
+        # Re-raise HTTP exceptions (e.g., date range, access, not found) without wrapping them as 500
+        raise e
     except Exception as e:
         print(f"Export error: {str(e)}")
         print(traceback.format_exc())
@@ -991,7 +1163,7 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
 async def export_task_management_report(
     department: Optional[str] = Query(None, description="Filter by department"),
     period_type: Optional[str] = Query(None, description="Period type: 'monthly', 'quarterly', or 'custom' (default: custom if start_date/end_date provided)"),
-    month: Optional[int] = Query(None, ge=0, le=11, description="Month (0-11) for monthly period"),
+    month: Optional[int] = Query(None, ge=1, le=12, description="Month (1-12) for monthly period"),
     quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
     year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom period"),
@@ -1005,7 +1177,7 @@ async def export_task_management_report(
     Professional report with company branding, task details, and comprehensive information.
     
     Supports time-based filters:
-    - Monthly: Use period_type='monthly' with month (0-11) and year
+    - Monthly: Use period_type='monthly' with month (1-12) and year
     - Quarterly: Use period_type='quarterly' with quarter (1-4) and year
     - Custom: Use start_date and end_date (YYYY-MM-DD)
     """
@@ -1036,20 +1208,19 @@ async def export_task_management_report(
             if month is None or year is None:
                 raise HTTPException(
                     status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail="For monthly period, both 'month' (0-11) and 'year' are required"
+                    detail="For monthly period, both 'month' (1-12) and 'year' are required"
                 )
-            # Convert 0-indexed month to 1-indexed
-            actual_month = month + 1
-            start = datetime(year, actual_month, 1)
+            # month is now 1-12 directly
+            start = datetime(year, month, 1)
             # Calculate end date (first day of next month)
-            if actual_month == 12:
+            if month == 12:
                 end = datetime(year + 1, 1, 1)
             else:
-                end = datetime(year, actual_month + 1, 1)
+                end = datetime(year, month + 1, 1)
             # Format period label
             month_names = ['January', 'February', 'March', 'April', 'May', 'June',
                           'July', 'August', 'September', 'October', 'November', 'December']
-            period_label = f"{month_names[month]} {year}"
+            period_label = f"{month_names[month - 1]} {year}"
         
         elif period_type == 'quarterly':
             if quarter is None or year is None:
@@ -1092,39 +1263,22 @@ async def export_task_management_report(
             start = datetime.strptime(start_date, '%Y-%m-%d')
         if not end and end_date:
             end = datetime.strptime(end_date, '%Y-%m-%d')
-        
-        # Build query
-        query = db.query(Task)
-        
-        # Apply filters
-        if department and department != 'all':
-            # Get user IDs in the department (explicit department filter)
-            dept_user_ids = [u.user_id for u in db.query(User).filter(
-                User.department == department,
-                User.is_active == True
-            ).all()]
-        else:
-            # If no department provided and requester is Manager, limit to manager's departments
-            if current_user.role == RoleEnum.MANAGER:
-                manager_depts = department_tokens_lower(current_user.department)
-                dept_user_ids = []
-                if manager_depts:
-                    patterns = [department_token_regex_pattern(d) for d in manager_depts]
-                    filters = [User.department.op("RLIKE")(pat) for pat in patterns]
-                    dept_user_ids = [u.user_id for u in db.query(User).filter(or_(*filters), User.is_active == True).all()]
-                else:
-                    dept_user_ids = []
-            if dept_user_ids:
-                query = query.filter(
-                    (Task.assigned_to.in_(dept_user_ids)) |
-                    (Task.assigned_by.in_(dept_user_ids))
+
+        # -----------------------------
+        # Scope to tasks directly related to current user only
+        # -----------------------------
+        query = (
+            db.query(Task)
+            .outerjoin(TaskHistory, TaskHistory.task_id == Task.task_id)
+            .filter(
+                or_(
+                    Task.assigned_to == current_user.user_id,
+                    Task.assigned_by == current_user.user_id,
+                    TaskHistory.user_id == current_user.user_id,
                 )
-            else:
-                # No users in department, return empty result
-                raise HTTPException(
-                    status_code=http_status.HTTP_404_NOT_FOUND,
-                    detail=f"No users found in department: {department}"
-                )
+            )
+            .distinct()
+        )
         
         if start:
             query = query.filter(Task.created_at >= start)
