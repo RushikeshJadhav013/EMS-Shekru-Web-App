@@ -7,7 +7,7 @@ class CompanyHolidayCreate(BaseModel):
     date: date
     name: str = Field(..., min_length=1)
     description: Optional[str] = None
-    is_recurring: Optional[bool] = False
+    is_recurring: Optional[bool] = True
 
 
 class CompanyHolidayOut(BaseModel):

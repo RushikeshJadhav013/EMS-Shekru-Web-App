@@ -36,13 +36,82 @@ def create_holiday(db: Session, holiday_date: date, name: str, description: Opti
     return h
 
 
-def list_holidays(db: Session, start: Optional[date] = None, end: Optional[date] = None, department: Optional[str] = None) -> List[CompanyHoliday]:
-    q = db.query(CompanyHoliday)
-    if start:
-        q = q.filter(CompanyHoliday.date >= start)
-    if end:
-        q = q.filter(CompanyHoliday.date <= end)
-    return q.order_by(CompanyHoliday.date.asc()).all()
+def list_holidays(
+    db: Session,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    department: Optional[str] = None,
+) -> List[CompanyHoliday]:
+    """
+    List holidays within an optional date range.
+
+    Behaviour for recurring holidays:
+    - When both start and end are provided, recurring holidays are projected into
+      every year spanned by the range.
+      Example: a recurring holiday stored as 2024-01-01 with is_recurring=True
+      will appear as 2025-01-01 when the requested range covers that date.
+    - When start/end are not both provided, fall back to returning stored rows only.
+    """
+    # If no explicit range, preserve simple behaviour (no projection).
+    if not start and not end:
+        q = db.query(CompanyHoliday)
+        return q.order_by(CompanyHoliday.date.asc()).all()
+
+    # Load all holidays once; table is expected to be small.
+    holidays = db.query(CompanyHoliday).all()
+
+    results: List[CompanyHoliday] = []
+
+    for h in holidays:
+        if not h.is_recurring:
+            # Non-recurring: simple range filter on stored date
+            if start and h.date < start:
+                continue
+            if end and h.date > end:
+                continue
+            results.append(h)
+            continue
+
+        # Recurring holiday
+        if not (start and end):
+            # If we don't have a full range, apply simple filter on stored date
+            if start and h.date < start:
+                continue
+            if end and h.date > end:
+                continue
+            results.append(h)
+            continue
+
+        # Project recurring holiday into each year within [start.year, end.year]
+        month = h.date.month
+        day = h.date.day
+        for year in range(start.year, end.year + 1):
+            try:
+                projected = date(year, month, day)
+            except ValueError:
+                # Skip invalid dates (e.g. Feb 29 on non-leap years)
+                continue
+
+            if projected < start or projected > end:
+                continue
+
+            # Create an in-memory instance with the projected date.
+            # Keep the same ID so delete operations still target the base record.
+            projected_holiday = CompanyHoliday(
+                id=h.id,
+                date=projected,
+                name=h.name,
+                description=h.description,
+                created_by=h.created_by,
+                is_recurring=h.is_recurring,
+                created_at=h.created_at,
+                updated_at=h.updated_at,
+            )
+            results.append(projected_holiday)
+
+    # Sort by date (then name for stable ordering)
+    results.sort(key=lambda x: (x.date, x.name))
+    return results
 
 
 def delete_holiday(db: Session, holiday_id: int) -> bool:
