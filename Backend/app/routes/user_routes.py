@@ -692,7 +692,10 @@ def update_employee_status(
 
 @router.get("/export/pdf", summary="Download user details as PDF with optional filters")
 def download_users_pdf(
-    department: Optional[str] = Query(None, description="Filter by department"),
+    department: Optional[str] = Query(
+        None,
+        description="Filter by department. Supports comma-separated values (e.g. 'Sales,HR,IT'). Matches users who have at least one of these departments."
+    ),
     role: Optional[str] = Query(None, description="Filter by role (e.g., ADMIN, HR, MANAGER, EMPLOYEE)"),
     designation: Optional[str] = Query(None, description="Filter by designation"),
     active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
@@ -708,13 +711,24 @@ def download_users_pdf(
     - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
     
     Filters:
-    - department: Filter by department name
+    - department: Filter by department name(s). Comma-separated values (e.g. 'Sales,HR'). Matches users who have at least one of these departments (including users with multiple departments).
     - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
     - designation: Filter by designation
     - status: Filter by active status (true for active, false for inactive)
     
     When no filters are provided, returns the full employee directory.
     """
+    # Parse comma-separated department values
+    department_filters: Optional[List[str]] = None
+    if department:
+        tokens = [p.strip() for p in department.split(",") if p and p.strip()]
+        if not tokens:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one non-empty department value must be provided when using the department filter"
+            )
+        department_filters = tokens
+
     # Validate role filter based on user's role
     if role:
         # Normalize role string to match RoleEnum
@@ -753,7 +767,7 @@ def download_users_pdf(
     try:
         pdf_buffer = export_users_pdf(
             db=db,
-            department=department,
+            departments=department_filters,
             role=role,
             designation=designation,
             status=active_status,
@@ -763,8 +777,8 @@ def download_users_pdf(
         
         # Build filename based on filters
         filename_parts = ["employees_report"]
-        if department:
-            filename_parts.append(f"dept_{department}")
+        if department_filters:
+            filename_parts.append(f"dept_{'-'.join(department_filters)}")
         if role:
             filename_parts.append(f"role_{role}")
         if designation:
@@ -790,7 +804,10 @@ def download_users_pdf(
 
 @router.get("/export/csv", summary="Download user details as CSV with optional filters")
 def download_users_csv(
-    department: Optional[str] = Query(None, description="Filter by department"),
+    department: Optional[str] = Query(
+        None,
+        description="Filter by department. Supports comma-separated values (e.g. 'Sales,HR,IT'). Matches users who have at least one of these departments."
+    ),
     role: Optional[str] = Query(None, description="Filter by role"),
     active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
@@ -805,10 +822,21 @@ def download_users_csv(
     - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
     
     Filters:
-    - department: Filter by department name
+    - department: Filter by department name(s). Comma-separated values (e.g. 'Sales,HR'). Matches users who have at least one of these departments (including users with multiple departments).
     - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
     - status: Filter by active status (true for active, false for inactive)
     """
+    # Parse comma-separated department values
+    department_filters: Optional[List[str]] = None
+    if department:
+        tokens = [p.strip() for p in department.split(",") if p and p.strip()]
+        if not tokens:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one non-empty department value must be provided when using the department filter"
+            )
+        department_filters = tokens
+
     # Validate role filter based on user's role
     if role:
         # Normalize role string to match RoleEnum
@@ -846,7 +874,7 @@ def download_users_csv(
     
     csv_buffer = export_users_csv(
         db=db,
-        department=department,
+        departments=department_filters,
         role=role,
         status=active_status,
         exclude_user_ids=exclude_user_ids,
@@ -855,8 +883,8 @@ def download_users_csv(
     
     # Build filename based on filters
     filename_parts = ["users_report"]
-    if department:
-        filename_parts.append(f"dept_{department}")
+    if department_filters:
+        filename_parts.append(f"dept_{'-'.join(department_filters)}")
     if role:
         filename_parts.append(f"role_{role}")
     if active_status is not None:

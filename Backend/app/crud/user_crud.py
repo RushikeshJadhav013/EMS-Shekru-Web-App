@@ -17,7 +17,7 @@ from typing import Optional, List
 import io
 import csv
 import os
-from app.utils.department_utils import normalize_department_string
+from app.utils.department_utils import normalize_department_string, department_token_regex_pattern
 try:
     from app.config.company_config import (
         COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE,
@@ -302,7 +302,7 @@ def get_users_by_role_created_by_admin(db: Session):
 
 def export_users_pdf(
     db: Session,
-    department: Optional[str] = None,
+    departments: Optional[List[str]] = None,
     role: Optional[str] = None,
     designation: Optional[str] = None,
     status: Optional[bool] = None,
@@ -448,8 +448,12 @@ def export_users_pdf(
     # Filter logic
     query = db.query(User)
 
-    if department:
-        query = query.filter(User.department == department)
+    # Department filter: user has at least one of the requested departments (token-based)
+    # Supports users with multiple comma-separated departments (e.g. "Sales, HR")
+    if departments:
+        patterns = [department_token_regex_pattern(d) for d in departments]
+        dept_filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+        query = query.filter(User.department.isnot(None), or_(*dept_filters))
 
     if role:
         # Robust case-insensitive role filtering
@@ -588,7 +592,7 @@ def export_users_pdf(
 
 def export_users_csv(
     db: Session,
-    department: Optional[str] = None,
+    departments: Optional[List[str]] = None,
     role: Optional[str] = None,
     status: Optional[bool] = None,
     exclude_user_ids: Optional[list[int]] = None,
@@ -600,8 +604,12 @@ def export_users_csv(
     # Filter logic
     query = db.query(User)
 
-    if department:
-        query = query.filter(User.department == department)
+    # Department filter: user has at least one of the requested departments (token-based)
+    # Supports users with multiple comma-separated departments (e.g. "Sales, HR")
+    if departments:
+        patterns = [department_token_regex_pattern(d) for d in departments]
+        dept_filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+        query = query.filter(User.department.isnot(None), or_(*dept_filters))
 
     if role:
         # Robust case-insensitive role filtering
