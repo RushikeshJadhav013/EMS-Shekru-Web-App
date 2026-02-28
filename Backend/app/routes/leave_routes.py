@@ -52,6 +52,7 @@ from app.db.models.user import User
 from app.db.models.leave import Leave
 from fastapi import Body
 from app.enums import RoleEnum
+from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(prefix="/leave", tags=["Leave"])
 
@@ -408,19 +409,50 @@ def approvals_inbox(
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
-    # Admin sees only HR/Manager requests
+    """
+    Pending approvals visibility:
+    - ADMIN: pending requests from HR and Managers.
+    - HR (with or without department): pending requests from Managers, Team Leads, and Employees (all departments).
+    - MANAGER (with one or many departments): pending requests from Team Leads and Employees
+      whose department list intersects with the manager's department(s).
+    - Other roles: no approvals inbox (empty list).
+    """
     role_value = getattr(user.role, "value", str(user.role))
+
     if role_value == RoleEnum.ADMIN.value:
-        pending = list_pending_by_requester_roles(db, [RoleEnum.HR.value, RoleEnum.MANAGER.value])
-    elif role_value in (RoleEnum.HR.value, RoleEnum.MANAGER.value):
-        if not user.department:
+        # Admin sees only HR/Manager requests
+        pending = list_pending_by_requester_roles(
+            db,
+            [RoleEnum.HR.value, RoleEnum.MANAGER.value],
+        )
+    elif role_value == RoleEnum.HR.value:
+        # HR sees all pending requests from Managers, Team Leads, and Employees (any department)
+        pending = list_pending_by_requester_roles(
+            db,
+            [RoleEnum.MANAGER.value, RoleEnum.TEAM_LEAD.value, RoleEnum.EMPLOYEE.value],
+        )
+    elif role_value == RoleEnum.MANAGER.value:
+        # Managers see Team Lead / Employee requests from their own department(s)
+        manager_tokens = set(department_tokens_lower(user.department))
+        if not manager_tokens:
             return []
-        # HR/Manager see only Employee/TeamLead requests from their department
-        pending = list_pending_by_department_and_roles(db, user.department, [RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value])
+
+        all_pending = list_pending_by_requester_roles(
+            db,
+            [RoleEnum.TEAM_LEAD.value, RoleEnum.EMPLOYEE.value],
+        )
+        pending = []
+        for leave in all_pending:
+            u: User = leave.user
+            if not u or not u.department:
+                continue
+            requester_tokens = set(department_tokens_lower(u.department))
+            if manager_tokens.intersection(requester_tokens):
+                pending.append(leave)
     else:
         return []
 
-    # enrich with user details
+    # Enrich with user details
     results = []
     for leave in pending:
         u: User = leave.user
