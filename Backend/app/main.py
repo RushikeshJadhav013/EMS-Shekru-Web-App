@@ -155,7 +155,7 @@ def create_initial_super_admin():
         # Create default Super Admin
         default_admin = SuperAdmin(
             name="Default Super Admin",
-            email="superadmin@example.com",
+            email="shirishb258@gmail.com",
             contact_no="9999999999",
             # if you add a password field later, set hashed_password here
         )
