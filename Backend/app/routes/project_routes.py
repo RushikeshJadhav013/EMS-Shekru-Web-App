@@ -15,11 +15,9 @@ from app.schemas.project_schema import ProjectCreate, ProjectUpdate, ProjectOut,
 from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut, ProjectMembersBulkAdd
 from app.utils.timezone import now_ist
 
-
 router = APIRouter(
     prefix="/projects",
     tags=["Projects"],
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
 )
 
 
@@ -53,7 +51,12 @@ def _ensure_project_exists(db: Session, project_id: int) -> Project:
     return project
 
 
-@router.post("/", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=ProjectOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def create_project(
     payload: ProjectCreate,
     db: Session = Depends(get_db),
@@ -126,11 +129,28 @@ def list_projects(
     current_user: User = Depends(get_current_user),
 ):
     """
-    List all projects.
+    List projects visible to the current user.
 
-    Only Admin/HR can access this endpoint (PICs by definition).
+    - Admin/HR: see all projects (with optional status filter).
+    - Manager/TeamLead/Employee: see only projects where they are active members.
     """
-    query = db.query(Project)
+    # Admin/HR can see all projects
+    if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+        query = db.query(Project)
+    else:
+        # Other roles can see only projects where they are active members
+        query = (
+            db.query(Project)
+            .join(
+                ProjectMember,
+                ProjectMember.project_id == Project.project_id,
+            )
+            .filter(
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .distinct()
+        )
 
     if status_filter:
         query = query.filter(Project.status == status_filter)
@@ -171,14 +191,41 @@ def list_projects(
     return results
 
 
-@router.get("/{project_id}", response_model=ProjectOut)
+@router.get(
+    "/{project_id}",
+    response_model=ProjectOut,
+)
 def get_project(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get a specific project by ID."""
-    project = _ensure_project_exists(db, project_id)
+    """
+    Get a specific project by ID.
+
+    - Admin/HR: can access any project.
+    - Manager/TeamLead/Employee: can access only projects where they are active members.
+    """
+    if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+        # Admin/HR can access any project
+        project = _ensure_project_exists(db, project_id)
+    else:
+        # Other roles can access only projects where they are active members
+        project = (
+            db.query(Project)
+            .join(
+                ProjectMember,
+                ProjectMember.project_id == Project.project_id,
+            )
+            .filter(
+                Project.project_id == project_id,
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not project:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
     member_count = (
         db.query(ProjectMember)
@@ -210,7 +257,11 @@ def get_project(
     )
 
 
-@router.put("/{project_id}", response_model=ProjectOut)
+@router.put(
+    "/{project_id}",
+    response_model=ProjectOut,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def update_project(
     project_id: int,
     payload: ProjectUpdate,
@@ -227,7 +278,13 @@ def update_project(
     # Determine the effective dates after update for validation
     new_start_date = payload.start_date if payload.start_date is not None else project.start_date
     new_end_date = payload.end_date if payload.end_date is not None else project.end_date
-    _validate_project_dates(new_start_date, new_end_date)
+
+    # Allow past dates, but ensure logical ordering
+    if new_start_date is not None and new_end_date is not None and new_end_date < new_start_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end_date cannot be before start_date.",
+        )
 
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
@@ -266,7 +323,11 @@ def update_project(
     )
 
 
-@router.put("/{project_id}/status", response_model=ProjectOut)
+@router.put(
+    "/{project_id}/status",
+    response_model=ProjectOut,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def update_project_status(
     project_id: int,
     payload: ProjectStatusUpdate,
@@ -314,7 +375,11 @@ def update_project_status(
     )
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def delete_project(
     project_id: int,
     db: Session = Depends(get_db),
@@ -333,7 +398,12 @@ def delete_project(
     return None
 
 
-@router.post("/{project_id}/members", response_model=ProjectMemberOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{project_id}/members",
+    response_model=ProjectMemberOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def add_project_member(
     project_id: int,
     payload: ProjectMemberAdd,
@@ -386,7 +456,11 @@ def add_project_member(
     )
 
 
-@router.get("/{project_id}/members", response_model=List[ProjectMemberOut])
+@router.get(
+    "/{project_id}/members",
+    response_model=List[ProjectMemberOut],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def list_project_members(
     project_id: int,
     db: Session = Depends(get_db),
@@ -421,7 +495,12 @@ def list_project_members(
     return results
 
 
-@router.post("/{project_id}/members/bulk", response_model=List[ProjectMemberOut], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{project_id}/members/bulk",
+    response_model=List[ProjectMemberOut],
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def add_project_members_bulk(
     project_id: int,
     payload: ProjectMembersBulkAdd,
@@ -501,7 +580,11 @@ def add_project_members_bulk(
         for member, user in created_or_updated
     ]
 
-@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+)
 def remove_project_member(
     project_id: int,
     user_id: int,

@@ -2,13 +2,14 @@
 Salary CRUD Operations - Database operations for salary management
 """
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_, func
 from typing import Optional, List
 from datetime import datetime
 
 from app.db.models.salary import EmployeeSalary, SalaryIncrement, SalarySlipHistory
 from app.db.models.user import User
 from app.db.models.notification import SalaryNotification
+from app.utils.department_utils import department_token_regex_pattern
 from app.schemas.salary_schema import (
     EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryCTCCreate,
     EmployeeSalaryCTCUpdate, SalaryIncrementCreate, SalaryCalculationPreview
@@ -72,6 +73,27 @@ def create_employee_salary_from_ctc(
         if existing_pf:
             raise ValueError(f"PF No '{pf_normalized}' is already associated with another salary record")
 
+    # Validate bank account uniqueness within the same bank (if provided)
+    if salary_data.bank_name and salary_data.bank_account:
+        bank_name_norm = str(salary_data.bank_name).strip().lower()
+        bank_account_norm = str(salary_data.bank_account).strip()
+        existing_bank = (
+            db.query(EmployeeSalary)
+            .filter(
+                EmployeeSalary.is_active == True,
+                EmployeeSalary.bank_name.isnot(None),
+                EmployeeSalary.bank_account.isnot(None),
+                func.lower(EmployeeSalary.bank_name) == bank_name_norm,
+                EmployeeSalary.bank_account == bank_account_norm,
+            )
+            .first()
+        )
+        if existing_bank:
+            raise ValueError(
+                f"Bank account '{bank_account_norm}' at bank '{salary_data.bank_name}' "
+                "is already associated with another salary record"
+            )
+
     # Add user_id to calculated data
     calculated_data["user_id"] = salary_data.user_id
     # Normalize IFSC code to uppercase without surrounding whitespace (if present)
@@ -119,6 +141,27 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
         ).first()
         if existing_pf:
             raise ValueError(f"PF No '{pf_normalized}' is already associated with another salary record")
+
+    # Validate bank account uniqueness within the same bank (if provided)
+    if salary_data.bank_name and salary_data.bank_account:
+        bank_name_norm = str(salary_data.bank_name).strip().lower()
+        bank_account_norm = str(salary_data.bank_account).strip()
+        existing_bank = (
+            db.query(EmployeeSalary)
+            .filter(
+                EmployeeSalary.is_active == True,
+                EmployeeSalary.bank_name.isnot(None),
+                EmployeeSalary.bank_account.isnot(None),
+                func.lower(EmployeeSalary.bank_name) == bank_name_norm,
+                EmployeeSalary.bank_account == bank_account_norm,
+            )
+            .first()
+        )
+        if existing_bank:
+            raise ValueError(
+                f"Bank account '{bank_account_norm}' at bank '{salary_data.bank_name}' "
+                "is already associated with another salary record"
+            )
 
     # Normalize IFSC code to uppercase without surrounding whitespace (if present)
     create_payload = salary_data.model_dump()
@@ -265,6 +308,33 @@ def update_employee_salary(
     if 'ifsc_code' in update_data and update_data.get('ifsc_code') is not None:
         update_data['ifsc_code'] = str(update_data['ifsc_code']).strip().upper()
 
+    # Validate bank account uniqueness within the same bank on update (if changing bank or account)
+    if ('bank_name' in update_data and update_data.get('bank_name') is not None) or (
+        'bank_account' in update_data and update_data.get('bank_account') is not None
+    ):
+        effective_bank_name = update_data.get('bank_name', salary.bank_name)
+        effective_bank_account = update_data.get('bank_account', salary.bank_account)
+        if effective_bank_name and effective_bank_account:
+            bank_name_norm = str(effective_bank_name).strip().lower()
+            bank_account_norm = str(effective_bank_account).strip()
+            existing_bank = (
+                db.query(EmployeeSalary)
+                .filter(
+                    EmployeeSalary.user_id != user_id,
+                    EmployeeSalary.is_active == True,
+                    EmployeeSalary.bank_name.isnot(None),
+                    EmployeeSalary.bank_account.isnot(None),
+                    func.lower(EmployeeSalary.bank_name) == bank_name_norm,
+                    EmployeeSalary.bank_account == bank_account_norm,
+                )
+                .first()
+            )
+            if existing_bank:
+                raise ValueError(
+                    f"Bank account '{bank_account_norm}' at bank '{effective_bank_name}' "
+                    "is already associated with another salary record"
+                )
+
     for key, value in update_data.items():
         if key not in ['variable_pay_type', 'variable_pay_value'] and value is not None:
             setattr(salary, key, value)
@@ -293,16 +363,18 @@ def delete_employee_salary(db: Session, user_id: int) -> bool:
 
 def list_employee_salaries(
     db: Session, 
-    department: Optional[str] = None,
+    departments: Optional[List[str]] = None,
     skip: int = 0, 
     limit: int = 100
 ) -> List[EmployeeSalary]:
-    """List all employee salaries (including inactive) with optional department filter"""
+    """List all employee salaries (including inactive) with optional department filter(s)."""
     query = db.query(EmployeeSalary)
     
-    if department:
-        # Join with User to filter by department
-        query = query.join(User).filter(User.department == department)
+    if departments:
+        # Join with User to filter by department tokens. Supports users with multiple comma-separated departments.
+        patterns = [department_token_regex_pattern(d) for d in departments]
+        dept_filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+        query = query.join(User).filter(User.department.isnot(None), or_(*dept_filters))
     
     return query.offset(skip).limit(limit).all()
 
