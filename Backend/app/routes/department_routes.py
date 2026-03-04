@@ -152,7 +152,11 @@ def get_department_managers(
             "id": manager.user_id,
             "name": manager.name,
             "email": manager.email,
-            "department": manager.department,
+            # Normalize and validate comma-separated multiple departments
+            # Example stored: "sales, HR , it" -> "Sales, Hr, It"
+            "department": normalize_department_string(manager.department),
+            # Also expose parsed lowercase tokens for consumers that need them
+            "department_tokens": department_tokens_lower(manager.department),
             "role": manager.role.value if hasattr(manager.role, "value") else manager.role,
         }
         for manager in managers
