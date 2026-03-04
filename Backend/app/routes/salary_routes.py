@@ -5,6 +5,7 @@ Admin/HR only access with role-based permissions
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import Optional, List, Literal
 from datetime import datetime
 import logging
@@ -12,6 +13,7 @@ import traceback
 
 from app.db.database import get_db
 from app.db.models.user import User
+from app.db.models.department import Department
 from app.db.models.salary import EmployeeSalary, SalaryIncrement
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
@@ -43,6 +45,7 @@ from app.services.salary_email_service import (
 )
 from app.services.salary_calculation_service import SalaryCalculator
 from app.crud.user_crud import get_user
+from app.utils.department_utils import department_tokens_lower
 from app.utils.timezone import now_ist
 
 logger = logging.getLogger(__name__)
@@ -323,7 +326,10 @@ def update_salary_status(
 
 @router.get("/employees", response_model=List[EmployeeSalaryOut])
 def list_salaries(
-    department: Optional[str] = Query(None, description="Filter by department"),
+    department: Optional[str] = Query(
+        None,
+        description="Filter by department. Supports comma-separated values (e.g. 'Sales,HR').",
+    ),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -333,7 +339,34 @@ def list_salaries(
     List all employee salaries.
     Admin/HR only.
     """
-    salaries = list_employee_salaries(db, department, skip, limit)
+    departments: Optional[List[str]] = None
+    if department:
+        tokens_lower = department_tokens_lower(department)
+        if not tokens_lower:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one non-empty department value must be provided when using the department filter",
+            )
+
+        # Validate against active departments master data
+        rows = (
+            db.query(Department.name)
+            .filter(func.lower(Department.name).in_(tokens_lower))
+            .filter(Department.status == "active")
+            .all()
+        )
+        found_lower = {name.lower() for (name,) in rows if name}
+        missing = [tok for tok in tokens_lower if tok not in found_lower]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid department(s): {missing}",
+            )
+
+        # Use canonical department names from master data for filtering
+        departments = [name for (name,) in rows]
+
+    salaries = list_employee_salaries(db, departments, skip, limit)
     return [_salary_to_response(s) for s in salaries]
 
 
