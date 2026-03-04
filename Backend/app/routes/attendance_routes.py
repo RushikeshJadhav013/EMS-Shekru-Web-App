@@ -580,12 +580,52 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
         # "taskDeadlineReason": getattr(attendance, "task_deadline_reason", None),
     }
 
-def get_attendance_summary(db: Session) -> Dict[str, Any]:
-    """Compute today's summary using configured office timings."""
+def get_attendance_summary(db: Session, current_user: User) -> Dict[str, Any]:
+    """Compute today's summary (role-scoped) using configured office timings."""
     try:
         today = now_ist().date()
-        
-        total_employees = db.query(User).filter(User.is_active.is_(True)).count()
+
+        # Build role-scoped population query
+        pop_query = db.query(User).filter(User.is_active.is_(True))
+
+        user_role = current_user.role
+        if user_role == RoleEnum.ADMIN:
+            # Admin should not consider self and other admins
+            pop_query = pop_query.filter(
+                User.user_id != current_user.user_id,
+                User.role != RoleEnum.ADMIN,
+            )
+        elif user_role == RoleEnum.HR:
+            # HR should not consider self, other HRs, and admins
+            pop_query = pop_query.filter(
+                User.user_id != current_user.user_id,
+                ~User.role.in_([RoleEnum.ADMIN, RoleEnum.HR]),
+            )
+        elif user_role == RoleEnum.MANAGER:
+            # Manager can only see their department(s) TeamLeads and Employees
+            dept_tokens = department_tokens_lower(getattr(current_user, "department", None))
+            if not dept_tokens:
+                return {
+                    "total_employees": 0,
+                    "present_today": 0,
+                    "absent_today": 0,
+                    "late_arrivals": 0,
+                    "early_departures": 0,
+                    "average_work_hours": 0.0,
+                    "date": today.isoformat(),
+                }
+            patterns = [department_token_regex_pattern(d) for d in dept_tokens]
+            dept_filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+            pop_query = pop_query.filter(
+                User.role.in_([RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE]),
+                User.department.isnot(None),
+                or_(*dept_filters),
+            )
+        else:
+            # TeamLead/Employee (and any other roles): only see own summary
+            pop_query = pop_query.filter(User.user_id == current_user.user_id)
+
+        total_employees = pop_query.count()
         if total_employees == 0:
             return {
                 "total_employees": 0,
@@ -600,6 +640,18 @@ def get_attendance_summary(db: Session) -> Dict[str, Any]:
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
         
+        allowed_user_ids = [uid for (uid,) in pop_query.with_entities(User.user_id).all()]
+        if not allowed_user_ids:
+            return {
+                "total_employees": 0,
+                "present_today": 0,
+                "absent_today": 0,
+                "late_arrivals": 0,
+                "early_departures": 0,
+                "average_work_hours": 0.0,
+                "date": today.isoformat(),
+            }
+
         records = (
             db.query(Attendance, User)
             .join(User, Attendance.user_id == User.user_id)
@@ -607,6 +659,7 @@ def get_attendance_summary(db: Session) -> Dict[str, Any]:
                 Attendance.check_in >= today_start,
                 Attendance.check_in <= today_end,
                 User.is_active.is_(True),
+                User.user_id.in_(allowed_user_ids),
             )
             .all()
         )
@@ -1519,7 +1572,7 @@ def attendance_summary(
     current_user: User = Depends(get_current_user),
 ):
     """Get attendance summary with statistics including late/early counts"""
-    return get_attendance_summary(db)
+    return get_attendance_summary(db, current_user)
 
 # Today's Attendance Records (for Manager view)
 @router.get("/today")

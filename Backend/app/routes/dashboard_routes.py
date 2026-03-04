@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_
 from datetime import datetime, timedelta
+from typing import Optional
 
 from app.db.database import get_db
 from app.db.models.user import User
@@ -9,9 +10,11 @@ from app.db.models.attendance import Attendance
 from app.db.models.leave import Leave
 from app.db.models.task import Task
 from app.db.models.office_timing import OfficeTiming
+from app.db.models.department import Department
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user, require_roles
 from app.utils.timezone import now_ist, get_today_bounds_ist
+from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
@@ -29,23 +32,37 @@ def admin_dashboard(
 ):
     today_start, today_end = _today_bounds()
 
-    total_employees = db.query(func.count(User.user_id)).scalar() or 0
-    present_today = (
-        db.query(func.count(Attendance.attendance_id))
-        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
+    # Admin dashboard should not include self or any Admin users.
+    base_user_filter = and_(User.user_id != current_user.user_id, User.role != RoleEnum.ADMIN)
+
+    total_employees = (
+        db.query(func.count(User.user_id))
+        .filter(base_user_filter)
         .scalar()
         or 0
     )
-    on_leave_today = (
+    present_query = (
+        db.query(func.count(Attendance.attendance_id))
+        .join(User, User.user_id == Attendance.user_id)
+        .filter(
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            base_user_filter,
+        )
+    )
+    present_today = present_query.scalar() or 0
+
+    on_leave_query = (
         db.query(func.count(Leave.leave_id))
+        .join(User, User.user_id == Leave.user_id)
         .filter(
             Leave.status == "Approved",
             Leave.start_date <= today_end,
             Leave.end_date >= today_start,
+            base_user_filter,
         )
-        .scalar()
-        or 0
     )
+    on_leave_today = on_leave_query.scalar() or 0
     
     # Calculate late arrivals using office timing configuration
     # First get office timings for proper late calculation
@@ -56,12 +73,16 @@ def admin_dashboard(
         office_timings_map[key] = timing
     
     # Get all attendance records for today with user info for late calculation
-    attendance_for_late_calc = (
+    attendance_for_late_calc_query = (
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
-        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
-        .all()
+        .filter(
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            base_user_filter,
+        )
     )
+    attendance_for_late_calc = attendance_for_late_calc_query.all()
     
     late_arrivals = 0
     for att, usr in attendance_for_late_calc:
@@ -85,36 +106,62 @@ def admin_dashboard(
             if att.check_in.hour > 9 or (att.check_in.hour == 9 and att.check_in.minute > 45):
                 late_arrivals += 1
     # Count pending leaves that admin can actually approve (HR/Manager requests only)
-    pending_leaves = (
+    pending_query = (
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
             Leave.status == "Pending",
-            User.role.in_([RoleEnum.HR.value, RoleEnum.MANAGER.value])
+            User.role.in_([RoleEnum.HR.value, RoleEnum.MANAGER.value]),
+            base_user_filter,
         )
-        .scalar()
-        or 0
     )
-    active_tasks = (
-        db.query(func.count(Task.task_id))
-        .filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
-        .scalar() or 0
+    pending_leaves = pending_query.scalar() or 0
+
+    task_base = (
+        db.query(Task)
+        .join(User, User.user_id == Task.assigned_to)
+        .filter(base_user_filter)
     )
-    completed_tasks = (
-        db.query(func.count(Task.task_id))
-        .filter(Task.status == TaskStatus.COMPLETED.value)
-        .scalar() or 0
-    )
-    # Department performance (by presence rate today)
-    dept_names = [row[0] for row in db.query(User.department).filter(User.department.isnot(None)).distinct().all()]
+
+    active_tasks = task_base.filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])).count() or 0
+    completed_tasks = task_base.filter(Task.status == TaskStatus.COMPLETED.value).count() or 0
     department_performance = []
+
+    # Department performance should support users with comma-separated departments by counting
+    # users/attendance per department token.
+    dept_names = [
+        name
+        for (name,) in (
+            db.query(Department.name)
+            .filter(Department.status == "active")
+            .order_by(Department.name.asc())
+            .all()
+        )
+        if name
+    ]
     for dept in dept_names:
-        dept_total = db.query(func.count(User.user_id)).filter(User.department == dept).scalar() or 0
+        dept_pat = department_token_regex_pattern(str(dept).strip().lower())
+        dept_token_match = and_(
+            User.department.isnot(None),
+            func.lower(User.department).op("RLIKE")(dept_pat),
+        )
+        dept_total = (
+            db.query(func.count(User.user_id))
+            .filter(base_user_filter, dept_token_match)
+            .scalar()
+            or 0
+        )
         dept_present = (
             db.query(func.count(Attendance.attendance_id))
             .join(User, User.user_id == Attendance.user_id)
-            .filter(User.department == dept, Attendance.check_in >= today_start, Attendance.check_in < today_end)
-            .scalar() or 0
+            .filter(
+                Attendance.check_in >= today_start,
+                Attendance.check_in < today_end,
+                base_user_filter,
+                dept_token_match,
+            )
+            .scalar()
+            or 0
         )
         performance = int((dept_present / max(dept_total, 1)) * 100)
         department_performance.append({
@@ -124,10 +171,17 @@ def admin_dashboard(
         })
 
     # Recent activities (today's check-ins)
-    attendance_today = (
+    attendance_today_query = (
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
-        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .filter(
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            base_user_filter,
+        )
+    )
+    attendance_today = (
+        attendance_today_query
         .order_by(Attendance.check_in.desc())
         .limit(20)
         .all()
@@ -207,32 +261,55 @@ def admin_dashboard(
 @router.get("/hr")
 def hr_dashboard(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.HR))
 ):
     today_start, today_end = _today_bounds()
 
-    total_employees = db.query(func.count(User.user_id)).scalar() or 0
+    # HR dashboard should not include Admins, any HR users, or self.
+    hr_base_user_filter = and_(
+        User.user_id != current_user.user_id,
+        User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+    )
+
+    total_employees = (
+        db.query(func.count(User.user_id))
+        .filter(hr_base_user_filter)
+        .scalar()
+        or 0
+    )
     present_today = (
         db.query(func.count(Attendance.attendance_id))
-        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .join(User, User.user_id == Attendance.user_id)
+        .filter(
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            hr_base_user_filter,
+        )
         .scalar()
         or 0
     )
     on_leave_today = (
         db.query(func.count(Leave.leave_id))
+        .join(User, User.user_id == Leave.user_id)
         .filter(
             Leave.status == "Approved",
             Leave.start_date <= today_end,
             Leave.end_date >= today_start,
+            hr_base_user_filter,
         )
         .scalar()
         or 0
     )
     late_arrivals = (
         db.query(func.count(Attendance.attendance_id))
-        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .join(User, User.user_id == Attendance.user_id)
         .filter(
-            func.extract('hour', Attendance.check_in) * 60 + func.extract('minute', Attendance.check_in) > 9 * 60 + 30
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            hr_base_user_filter,
+            func.extract("hour", Attendance.check_in) * 60
+            + func.extract("minute", Attendance.check_in)
+            > 9 * 60 + 30,
         )
         .scalar()
         or 0
@@ -259,19 +336,32 @@ def hr_dashboard(
     # Task statistics for HR
     active_tasks = (
         db.query(func.count(Task.task_id))
-        .filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
-        .scalar() or 0
+        .join(User, User.user_id == Task.assigned_to)
+        .filter(
+            hr_base_user_filter,
+            Task.status.in_(
+                [TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]
+            ),
+        )
+        .scalar()
+        or 0
     )
     completed_tasks = (
         db.query(func.count(Task.task_id))
-        .filter(Task.status == TaskStatus.COMPLETED.value)
-        .scalar() or 0
+        .join(User, User.user_id == Task.assigned_to)
+        .filter(
+            hr_base_user_filter,
+            Task.status == TaskStatus.COMPLETED.value,
+        )
+        .scalar()
+        or 0
     )
 
     # Recent HR-related activities
     recent_leave_requests = (
         db.query(Leave, User)
         .join(User, User.user_id == Leave.user_id)
+        .filter(hr_base_user_filter)
         .order_by(Leave.start_date.desc())
         .limit(12)
         .all()
@@ -280,7 +370,11 @@ def hr_dashboard(
     attendance_today = (
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
-        .filter(Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .filter(
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            hr_base_user_filter,
+        )
         .order_by(Attendance.check_in.desc())
         .limit(10)
         .all()
@@ -288,7 +382,10 @@ def hr_dashboard(
 
     recent_joiners_records = (
         db.query(User)
-        .filter(User.joining_date.isnot(None))
+        .filter(
+            User.joining_date.isnot(None),
+            hr_base_user_filter,
+        )
         .order_by(User.joining_date.desc())
         .limit(8)
         .all()
@@ -397,24 +494,48 @@ def hr_dashboard(
 
 
 @router.get("/manager")
-def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    if not current_user.department:
+def manager_dashboard(
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER)),
+    db: Session = Depends(get_db),
+):
+    dept_tokens = department_tokens_lower(getattr(current_user, "department", None))
+    if not dept_tokens:
         raise HTTPException(status_code=400, detail="Manager must have a department assigned")
-    dept = current_user.department
+
+    # Support comma-separated multiple departments for managers, and users who may also have
+    # comma-separated multi-department values.
+    patterns = [department_token_regex_pattern(tok) for tok in dept_tokens]
+    dept_filters = [func.lower(User.department).op("RLIKE")(pat) for pat in patterns]
+    dept_match = and_(User.department.isnot(None), or_(*dept_filters))
+    # Limit visibility strictly to Team Leads and Employees within these departments
+    visible_roles = [RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE]
+    role_filter = User.role.in_(visible_roles)
+
     today_start, today_end = _today_bounds()
 
-    team_members = db.query(User).filter(User.department == dept).count()
+    team_members = db.query(User).filter(dept_match, role_filter).count()
     present_today = (
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
-        .filter(User.department == dept, Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .filter(
+            dept_match,
+            role_filter,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+        )
         .scalar()
         or 0
     )
     on_leave_today = (
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
-        .filter(User.department == dept, Leave.status == "Approved", Leave.start_date <= today_end, Leave.end_date >= today_start)
+        .filter(
+            dept_match,
+            role_filter,
+            Leave.status == "Approved",
+            Leave.start_date <= today_end,
+            Leave.end_date >= today_start,
+        )
         .scalar()
         or 0
     )
@@ -422,20 +543,28 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     active_tasks = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
+        .filter(
+            dept_match,
+            role_filter,
+            Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]),
+        )
         .scalar() or 0
     )
     completed_tasks = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == TaskStatus.COMPLETED.value)
+        .filter(
+            dept_match,
+            role_filter,
+            Task.status == TaskStatus.COMPLETED.value,
+        )
         .scalar() or 0
     )
     pending_approvals = (
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
-            User.department == dept,
+            dept_match,
             Leave.status == "Pending",
             User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD]),
             User.is_active.is_(True),
@@ -447,7 +576,8 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
         .filter(
-            User.department == dept,
+            dept_match,
+            role_filter,
             Task.status != TaskStatus.COMPLETED.value,
             Task.due_date.isnot(None),
             Task.due_date < now_ist()
@@ -462,7 +592,12 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     attendance_today = (
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
-        .filter(User.department == dept, Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .filter(
+            dept_match,
+            role_filter,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+        )
         .order_by(Attendance.check_in.desc())
         .limit(20)
         .all()
@@ -525,9 +660,9 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         db.query(Leave, User)
         .join(User, User.user_id == Leave.user_id)
         .filter(
-            User.department == dept,
+            dept_match,
+            role_filter,
             Leave.status == "Pending",
-            User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD]),
             User.is_active.is_(True),
         )
         .order_by(Leave.start_date.desc())
@@ -549,7 +684,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     recent_tasks = (
         db.query(Task, User)
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept)
+        .filter(dept_match, role_filter)
         .order_by(Task.due_date.is_(None), Task.due_date.desc())
         .limit(10)
         .all()
@@ -571,7 +706,7 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
     activities.sort(key=lambda item: item["time"], reverse=True)
     team_activities = activities[:15]
 
-    team_leads = db.query(User).filter(User.department == dept, User.role == RoleEnum.TEAM_LEAD).all()
+    team_leads = db.query(User).filter(dept_match, User.role == RoleEnum.TEAM_LEAD).all()
     team_performance = []
     for lead in team_leads:
         lead_tasks = (
@@ -591,8 +726,9 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
         })
 
     if not team_performance:
+        team_label = ", ".join(sorted(dept_tokens)) if dept_tokens else "Team"
         team_performance.append({
-            "team": f"{dept} Team",
+            "team": f"{team_label} Team",
             "lead": "N/A",
             "members": team_members,
             "completion": team_performance_percent,
@@ -613,37 +749,72 @@ def manager_dashboard(current_user=Depends(get_current_user), db: Session = Depe
 
 
 @router.get("/team-lead")
-def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    # Using department as team proxy
+def team_lead_dashboard(
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD)),
+    db: Session = Depends(get_db),
+):
+    # Using department as team proxy (supports comma-separated multi-departments)
     if not current_user.department:
         raise HTTPException(status_code=400, detail="Team Lead must have a department assigned")
-    dept = current_user.department
+
+    dept_tokens = department_tokens_lower(getattr(current_user, "department", None))
+    if not dept_tokens:
+        raise HTTPException(status_code=400, detail="Team Lead must have a valid department configuration")
+
+    patterns = [department_token_regex_pattern(tok) for tok in dept_tokens]
+    dept_filters = [func.lower(User.department).op("RLIKE")(pat) for pat in patterns]
+    dept_match = and_(User.department.isnot(None), or_(*dept_filters))
+    # Limit visibility strictly to Employees within these departments
+    role_filter = User.role == RoleEnum.EMPLOYEE
     today_start, today_end = _today_bounds()
 
-    team_size = db.query(User).filter(User.department == dept).count()
+    team_size = db.query(User).filter(dept_match, role_filter).count()
     present_today = (
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
-        .filter(User.department == dept, Attendance.check_in >= today_start, Attendance.check_in < today_end)
-        .scalar() or 0
+        .filter(
+            dept_match,
+            role_filter,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+        )
+        .scalar()
+        or 0
     )
     on_leave_today = (
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
-        .filter(User.department == dept, Leave.status == "Approved", Leave.start_date <= today_end, Leave.end_date >= today_start)
-        .scalar() or 0
+        .filter(
+            dept_match,
+            role_filter,
+            Leave.status == "Approved",
+            Leave.start_date <= today_end,
+            Leave.end_date >= today_start,
+        )
+        .scalar()
+        or 0
     )
     tasks_in_progress = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == TaskStatus.IN_PROGRESS.value)
-        .scalar() or 0
+        .filter(
+            dept_match,
+            role_filter,
+            Task.status == TaskStatus.IN_PROGRESS.value,
+        )
+        .scalar()
+        or 0
     )
     completed_today = (
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
-        .filter(User.department == dept, Task.status == TaskStatus.COMPLETED.value)
-        .scalar() or 0
+        .filter(
+            dept_match,
+            role_filter,
+            Task.status == TaskStatus.COMPLETED.value,
+        )
+        .scalar()
+        or 0
     )
     pending_reviews = 0  # Not modeled
     team_efficiency = 0  # Not modeled
@@ -652,7 +823,12 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
     attendance_today = (
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
-        .filter(User.department == dept, Attendance.check_in >= today_start, Attendance.check_in < today_end)
+        .filter(
+            dept_match,
+            role_filter,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+        )
         .order_by(Attendance.check_in.desc())
         .limit(20)
         .all()
@@ -723,7 +899,10 @@ def team_lead_dashboard(current_user=Depends(get_current_user), db: Session = De
 
 
 @router.get("/employee")
-def employee_dashboard(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+def employee_dashboard(
+    current_user: User = Depends(require_roles(RoleEnum.EMPLOYEE)),
+    db: Session = Depends(get_db),
+):
     user_id = current_user.user_id
     if not user_id:
         raise HTTPException(status_code=400, detail="Invalid user")
