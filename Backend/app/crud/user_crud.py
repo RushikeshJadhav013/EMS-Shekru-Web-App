@@ -325,18 +325,23 @@ def export_users_pdf(
         spacing_between_line_and_text = 8  # Space between footer line and text
         footer_bottom_padding = 15  # Padding from bottom of page
         
-        # Build first line: Address | Website | Email | Contact
-        first_line_parts = []
+        # Build info lines:
+        # Line 1: Address | Website
+        # Line 2: Email | Contact
+        line1_parts = []
         if COMPANY_ADDRESS:
-            first_line_parts.append(COMPANY_ADDRESS)
+            line1_parts.append(COMPANY_ADDRESS)
         if COMPANY_WEBSITE:
-            first_line_parts.append(f"Website: {COMPANY_WEBSITE}")
+            line1_parts.append(f"Website: {COMPANY_WEBSITE}")
+
+        line2_parts = []
         if COMPANY_EMAIL:
-            first_line_parts.append(f"Email: {COMPANY_EMAIL}")
+            line2_parts.append(f"Email: {COMPANY_EMAIL}")
         if COMPANY_PHONE:
-            first_line_parts.append(f"Contact: {COMPANY_PHONE}")
-        
-        first_line_text = " | ".join(first_line_parts)
+            line2_parts.append(f"Contact: {COMPANY_PHONE}")
+
+        line1_text = " | ".join(line1_parts)
+        line2_text = " | ".join(line2_parts)
         
         # Build second line: Copyright (left) + Page number (right)
         copyright_text = f"© {datetime.now().year} {COMPANY_NAME}. All rights reserved."
@@ -358,12 +363,14 @@ def export_users_pdf(
         spacing_between_copyright_and_page = 15  # Space between copyright and page number
         available_width_line2 = A4[0] - (horizontal_padding * 2) - page_num_width - spacing_between_copyright_and_page
         
-        # Wrap first line if needed (intelligent wrapping at separator points)
-        first_line_final = first_line_text
-        if canvas_obj.stringWidth(first_line_text, "Helvetica", footer_font_size) > available_width_line1:
-            # Split first line intelligently
-            parts = first_line_text.split(' | ')
-            wrapped_lines = []
+        # Wrap info lines if needed (intelligent wrapping at separator points)
+        def _wrap_info_line(text: str) -> list[str]:
+            if not text:
+                return []
+            if canvas_obj.stringWidth(text, "Helvetica", footer_font_size) <= available_width_line1:
+                return [text]
+            parts = text.split(" | ")
+            wrapped_lines: list[str] = []
             current_line = ""
             for part in parts:
                 separator = " | " if current_line else ""
@@ -376,8 +383,13 @@ def export_users_pdf(
                     current_line = part
             if current_line:
                 wrapped_lines.append(current_line)
-            # Use first wrapped line (or original if fits)
-            first_line_final = wrapped_lines[0] if wrapped_lines else first_line_text
+            return wrapped_lines or [text]
+
+        info_lines: list[str] = []
+        # Draw email/contact closer to the bottom (below address/website),
+        # so add wrapped email/contact first, then address/website.
+        info_lines.extend(_wrap_info_line(line2_text))
+        info_lines.extend(_wrap_info_line(line1_text))
         
         # Wrap copyright text if needed for second line
         copyright_final = copyright_text
@@ -388,20 +400,22 @@ def export_users_pdf(
                 copyright_final = copyright_text[:max_chars-3] + "..."
         
         # Calculate footer positions (from bottom up)
-        # We always have exactly 2 lines now
         footer_text_bottom = footer_bottom_padding  # Bottom line (copyright + page)
-        footer_text_top = footer_text_bottom + line_height  # Top line (address info)
-        footer_line_y = footer_text_top + spacing_between_line_and_text  # Separator line above
+        first_info_y = footer_text_bottom + line_height  # Y of the first info line
+        last_info_y = first_info_y + (len(info_lines) - 1) * line_height if info_lines else first_info_y
+        footer_line_y = last_info_y + spacing_between_line_and_text  # Separator line above the last info line
         
         # Draw footer separator line with proper horizontal padding
         canvas_obj.setStrokeColor(colors.HexColor('#1e40af'))
         canvas_obj.setLineWidth(footer_line_thickness)
         canvas_obj.line(horizontal_padding, footer_line_y, A4[0] - horizontal_padding, footer_line_y)
         
-        # Draw first line (Address | Website | Email | Contact)
+        # Draw info lines (Address | Website | Email | Contact, wrapped as needed)
         canvas_obj.setFont("Helvetica", footer_font_size)
-        canvas_obj.setFillColor(colors.HexColor('#64748b'))
-        canvas_obj.drawString(horizontal_padding, footer_text_top, first_line_final)
+        canvas_obj.setFillColor(colors.HexColor('#1e40af'))
+        for idx, text in enumerate(info_lines):
+            y = first_info_y + idx * line_height
+            canvas_obj.drawString(horizontal_padding, y, text)
         
         # Draw second line: Copyright (left) + Page number (right)
         # Draw copyright text
@@ -487,10 +501,10 @@ def export_users_pdf(
     
     # Info block - matching Task Management report format
     info_data = [
-        ['Company Name', COMPANY_NAME or ''],
-        ['Total Employees', str(len(users))],
-        ['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-        ['Report Type', 'Employee Directory'],
+        ['Company Name :', COMPANY_NAME or ''],
+        ['Total Employees :', str(len(users))],
+        ['Generated On :', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+        ['Report Type :', 'Employee Directory'],
     ]
     
     info_table = Table(info_data, colWidths=[1.5*inch, 5*inch])
@@ -527,9 +541,19 @@ def export_users_pdf(
         ])
     
     # Calculate column widths
+    # Give a bit more space to Department and Designation so their headers stay on one line
     num_cols = len(headers)
     total_width = A4[0] - 60  # Total width minus margins
-    col_widths = [total_width / num_cols] * num_cols
+    col_widths = [
+        total_width * 0.12,  # Employee ID
+        total_width * 0.14,  # Name
+        total_width * 0.11,  # Role
+        total_width * 0.15,  # Department
+        total_width * 0.15,  # Designation
+        total_width * 0.16,  # Email
+        total_width * 0.09,  # Phone
+        total_width * 0.07,  # Shift
+    ]
     
     # Cell styles for text wrapping
     body_cell_style = ParagraphStyle(
@@ -562,8 +586,8 @@ def export_users_pdf(
     
     # Table styling - matching Task Management report exactly
     table.setStyle(TableStyle([
-        # Header styling - matching Task Management report
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f1f5f9')),
+        # Header styling - match salary slip payslip header bar background
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E0E0E0')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
@@ -579,8 +603,8 @@ def export_users_pdf(
         ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
         ('TOPPADDING', (0, 1), (-1, -1), 6),
         
-        # Grid - matching Task Management report
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e6edf3')),
+        # Grid - use solid black lines
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
     ]))
     
     elements.append(table)

@@ -14,6 +14,7 @@ from app.enums import RoleEnum
 from app.schemas.project_schema import ProjectCreate, ProjectUpdate, ProjectOut, ProjectStatusUpdate
 from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut, ProjectMembersBulkAdd
 from app.utils.timezone import now_ist
+from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(
     prefix="/projects",
@@ -55,7 +56,7 @@ def _ensure_project_exists(db: Session, project_id: int) -> Project:
     "/",
     response_model=ProjectOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
 )
 def create_project(
     payload: ProjectCreate,
@@ -68,6 +69,15 @@ def create_project(
     Person in charge (PIC) is always Admin/HR (current user).
     """
     _validate_project_dates(payload.start_date, payload.end_date)
+
+    # Managers must have at least one valid department token (supports comma-separated departments)
+    if current_user.role == RoleEnum.MANAGER:
+        manager_depts = department_tokens_lower(getattr(current_user, "department", None))
+        if not manager_depts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manager must have at least one department assigned to create projects.",
+            )
 
     project = Project(
         name=payload.name,
@@ -260,7 +270,7 @@ def get_project(
 @router.put(
     "/{project_id}",
     response_model=ProjectOut,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
 )
 def update_project(
     project_id: int,
@@ -271,9 +281,36 @@ def update_project(
     """
     Update a project.
 
-    Only Admin/HR (PIC roles) can update projects.
+    - Admin/HR (PIC roles): can update any project.
+    - Manager: can update only projects where they are active members and
+      have at least one department assigned (supports comma-separated departments).
     """
     project = _ensure_project_exists(db, project_id)
+
+    # Managers: enforce department configuration + project ownership
+    if current_user.role == RoleEnum.MANAGER:
+        manager_depts = department_tokens_lower(getattr(current_user, "department", None))
+        if not manager_depts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manager must have at least one department assigned to update projects.",
+            )
+
+        # Manager can update only projects where they are active members
+        membership = (
+            db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can update only their own projects.",
+            )
 
     # Determine the effective dates after update for validation
     new_start_date = payload.start_date if payload.start_date is not None else project.start_date
@@ -402,7 +439,7 @@ def delete_project(
     "/{project_id}/members",
     response_model=ProjectMemberOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
 )
 def add_project_member(
     project_id: int,
@@ -413,13 +450,48 @@ def add_project_member(
     """
     Add a member to a project.
 
-    Only Admin/HR (PIC roles) can manage members.
+    - Admin/HR (PIC roles): can manage any project members.
+    - Manager: can manage members only for their own projects and must have
+      at least one department assigned (supports comma-separated departments).
     """
     project = _ensure_project_exists(db, project_id)
 
     user = db.query(User).filter(User.user_id == payload.user_id, User.is_active.is_(True)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+
+    # Managers: enforce department configuration, project ownership, and department match
+    if current_user.role == RoleEnum.MANAGER:
+        manager_depts = set(department_tokens_lower(getattr(current_user, "department", None)))
+        if not manager_depts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manager must have at least one department assigned to manage project members.",
+            )
+
+        # Manager can manage only members of their own project
+        membership = (
+            db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can manage members only for their own projects.",
+            )
+
+        # Manager can add only users from their own department(s)
+        target_depts = set(department_tokens_lower(getattr(user, "department", None)))
+        if not target_depts or not (manager_depts & target_depts):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can manage members only from their own department(s).",
+            )
 
     member = (
         db.query(ProjectMember)
@@ -459,15 +531,36 @@ def add_project_member(
 @router.get(
     "/{project_id}/members",
     response_model=List[ProjectMemberOut],
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
 )
 def list_project_members(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List active members for a project."""
+    """
+    List active members for a project.
+
+    - Admin/HR: can list members of any project.
+    - Manager: can list members only for projects where they are active members.
+    """
     _ensure_project_exists(db, project_id)
+
+    if current_user.role == RoleEnum.MANAGER:
+        membership = (
+            db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can view members only for their own projects.",
+            )
 
     members = (
         db.query(ProjectMember, User)
@@ -499,7 +592,7 @@ def list_project_members(
     "/{project_id}/members/bulk",
     response_model=List[ProjectMemberOut],
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
 )
 def add_project_members_bulk(
     project_id: int,
@@ -515,6 +608,30 @@ def add_project_members_bulk(
     - Single role applied to all provided user IDs.
     """
     project = _ensure_project_exists(db, project_id)
+
+    # Managers: enforce department configuration + project ownership
+    if current_user.role == RoleEnum.MANAGER:
+        manager_depts = set(department_tokens_lower(getattr(current_user, "department", None)))
+        if not manager_depts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manager must have at least one department assigned to manage project members.",
+            )
+
+        membership = (
+            db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can manage members only for their own projects.",
+            )
 
     # Deduplicate IDs
     user_ids = list({uid for uid in payload.user_ids if uid is not None})
@@ -544,6 +661,15 @@ def add_project_members_bulk(
     created_or_updated: list[ProjectMember] = []
 
     for user in users:
+        # Managers can add only users from their own department(s)
+        if current_user.role == RoleEnum.MANAGER:
+            target_depts = set(department_tokens_lower(getattr(user, "department", None)))
+            if not target_depts or not (manager_depts & target_depts):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Managers can manage members only from their own department(s).",
+                )
+
         member = members_by_user_id.get(user.user_id)
         if member:
             # Reactivate and update role
@@ -583,7 +709,7 @@ def add_project_members_bulk(
 @router.delete(
     "/{project_id}/members/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
 )
 def remove_project_member(
     project_id: int,
@@ -594,9 +720,36 @@ def remove_project_member(
     """
     Remove (deactivate) a project member.
 
-    Only Admin/HR (PIC roles) can manage members.
+    - Admin/HR (PIC roles): can manage any project members.
+    - Manager: can manage members only for their own projects and must have
+      at least one department assigned (supports comma-separated departments) and
+      only for users in their own department(s).
     """
     _ensure_project_exists(db, project_id)
+
+    # Managers: enforce department configuration + project ownership
+    if current_user.role == RoleEnum.MANAGER:
+        manager_depts = set(department_tokens_lower(getattr(current_user, "department", None)))
+        if not manager_depts:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manager must have at least one department assigned to manage project members.",
+            )
+
+        membership = (
+            db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == current_user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can manage members only for their own projects.",
+            )
 
     member = (
         db.query(ProjectMember)
@@ -605,6 +758,19 @@ def remove_project_member(
     )
     if not member:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project member not found")
+
+    # Managers can remove only users from their own department(s)
+    if current_user.role == RoleEnum.MANAGER:
+        user = db.query(User).filter(User.user_id == user_id, User.is_active.is_(True)).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+
+        target_depts = set(department_tokens_lower(getattr(user, "department", None)))
+        if not target_depts or not (manager_depts & target_depts):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can manage members only from their own department(s).",
+            )
 
     # Do not allow removing the PIC record via this endpoint
     if member.role == "pic":

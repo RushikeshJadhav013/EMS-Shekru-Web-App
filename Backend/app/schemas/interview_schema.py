@@ -5,6 +5,11 @@ import json
 
 
 class InterviewBase(BaseModel):
+    """
+    Base schema for *input* payloads (create/update).
+    Enforces that start_time must be in the future.
+    """
+
     candidate_id: int = Field(..., gt=0, description="Candidate ID")
     vacancy_id: int = Field(..., gt=0, description="Vacancy ID")
     start_time: datetime = Field(..., description="Interview start time in IST (Asia/Kolkata, UTC+05:30)")
@@ -106,6 +111,38 @@ class InterviewCreate(InterviewBase):
     pass
 
 
+class InterviewBaseOut(BaseModel):
+    """
+    Base schema for *output* payloads (read-only).
+    Does NOT enforce future-only start_time so that historical interviews can be returned.
+    """
+
+    candidate_id: int = Field(..., gt=0, description="Candidate ID")
+    vacancy_id: int = Field(..., gt=0, description="Vacancy ID")
+    start_time: datetime = Field(..., description="Interview start time in IST (Asia/Kolkata, UTC+05:30)")
+    end_time: Optional[datetime] = Field(None, description="Interview end time in IST (optional)")
+    mode: Optional[Literal['onsite', 'remote', 'phone']] = Field(None, description="Interview mode")
+    location: Optional[constr(max_length=255, strip_whitespace=True)] = Field(None, description="Interview location (room/address/call link)")
+    round_type: Optional[constr(max_length=100, strip_whitespace=True)] = Field(None, description="Interview round type (e.g., HR, Technical, Managerial)")
+    panel_members: Optional[List[int]] = Field(None, description="List of user IDs of panel members")
+
+    @field_validator('panel_members', mode='before')
+    @classmethod
+    def parse_panel_members(cls, v: Union[None, List[int], str]) -> Optional[List[int]]:
+        """Parse panel_members from JSON string (DB storage) or list (API input)."""
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else [parsed] if parsed is not None else None
+            except json.JSONDecodeError:
+                return None
+        return None
+
+
 class InterviewUpdate(BaseModel):
     start_time: Optional[datetime] = Field(None, description="Interview start time in IST")
     end_time: Optional[datetime] = Field(None, description="Interview end time in IST")
@@ -192,7 +229,7 @@ class InterviewStatusOnlyUpdate(BaseModel):
     )
 
 
-class InterviewOutBasic(InterviewBase):
+class InterviewOutBasic(InterviewBaseOut):
     """Interview response without feedback fields."""
 
     interview_id: int = Field(..., gt=0)
@@ -209,7 +246,7 @@ class InterviewOutBasic(InterviewBase):
     model_config = {"from_attributes": True}
 
 
-class InterviewOut(InterviewBase):
+class InterviewOut(InterviewBaseOut):
     interview_id: int = Field(..., gt=0)
     status: Literal['scheduled', 'completed', 'cancelled', 'no_show', 'rescheduled']
     scheduled_by: Optional[int] = Field(None, gt=0)
