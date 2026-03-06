@@ -2345,9 +2345,32 @@ def working_hours_summary(
 
     target_user_id = user_id if user_id is not None else current_user.user_id
 
-    # Permission: user can see own; ADMIN/HR/MANAGER can see others
-    if target_user_id != current_user.user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    # Permission / role hierarchy:
+    # - Everyone can view their own summary
+    # - ADMIN: can view all except Admins (and self already handled)
+    # - HR: can view all except Admins + HRs
+    # - MANAGER: can view non-privileged users (not Admin/HR/Manager) in their department(s) (supports comma-separated)
+    if target_user_id != current_user.user_id:
+        target_user = db.query(User).filter(User.user_id == target_user_id).first()
+        if not target_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        if current_user.role == RoleEnum.ADMIN:
+            if target_user.role == RoleEnum.ADMIN:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif current_user.role == RoleEnum.HR:
+            if target_user.role in [RoleEnum.ADMIN, RoleEnum.HR]:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif current_user.role == RoleEnum.MANAGER:
+            if target_user.role in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+            manager_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
+            target_tokens = set(department_tokens_lower(getattr(target_user, "department", None)))
+            if not manager_tokens or not target_tokens or not manager_tokens.intersection(target_tokens):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        else:
+            # TeamLead/Employee/etc cannot view other users
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     def shift_month(year: int, month: int, delta_months: int) -> tuple[int, int]:
         m = month + delta_months
