@@ -37,7 +37,10 @@ class TaskCreate(TaskBase):
     assigned_by: int = Field(..., gt=0, description="User ID who is assigning the task")
     # Note: self-assignment is allowed; role-based validation enforced in route handlers.
     project_id: Optional[int] = Field(
-        None, gt=0, description="Optional project ID this task belongs to"
+        default=None,
+        gt=0,
+        description="Optional project ID this task belongs to",
+        example=None,
     )
 
 
@@ -46,7 +49,10 @@ class TaskBulkCreate(TaskBase):
         ..., min_length=1, description="List of user IDs to assign the task to"
     )
     project_id: Optional[int] = Field(
-        None, gt=0, description="Optional project ID this task belongs to"
+        default=None,
+        gt=0,
+        description="Optional project ID this task belongs to",
+        example=None,
     )
 
 class TaskOut(BaseModel):

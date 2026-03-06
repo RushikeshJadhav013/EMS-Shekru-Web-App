@@ -33,6 +33,7 @@ from app.schemas.task_schema import (
 from app.enums import RoleEnum, TaskStatus
 from app.db.models.task import Task, TaskHistory
 from app.db.models.user import User
+from app.db.models.project import Project
 from app.db.models.project_member import ProjectMember
 from app.utils.department_utils import department_tokens_lower
 
@@ -68,6 +69,17 @@ def _ensure_project_member(db: Session, project_id: int | None, user_id: int | N
         db.add(member)
 
     db.commit()
+
+
+def _validate_project_exists(db: Session, project_id: int | None) -> None:
+    if not project_id:
+        return
+    exists = db.query(Project.project_id).filter(Project.project_id == project_id).first()
+    if not exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project not found for project_id={project_id}",
+        )
 def _serialize_task_notification(notification: TaskNotificationOut | Task):
     raw_details = getattr(notification, "pass_details", None)
     parsed_details = None
@@ -116,6 +128,8 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
             assignee_tokens = set(department_tokens_lower(assignee.department))
             if not manager_tokens.intersection(assignee_tokens):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
+
+    _validate_project_exists(db, task.project_id)
 
     t = create_task(
         db,
@@ -210,6 +224,8 @@ def assign_tasks_bulk(
                 )
 
         validated_assignees.append(assignee)
+
+    _validate_project_exists(db, payload.project_id)
 
     # All validations passed; create tasks
     created_tasks: list[Task] = []
