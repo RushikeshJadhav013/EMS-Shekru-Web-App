@@ -2325,6 +2325,226 @@ def get_user_current_online_status(
     }
 
 
+@router.get("/working-hours/summary")
+def working_hours_summary(
+    period: Literal["week", "current_month", "last_month", "last_3_months", "custom"] = Query(
+        "week",
+        description="Date range filter: week, current_month, last_month, last_3_months, custom",
+    ),
+    user_id: Optional[int] = Query(None, description="Target user_id (defaults to current user)"),
+    start_date: Optional[str] = Query(None, description="Custom start date (YYYY-MM-DD). Required when period=custom"),
+    end_date: Optional[str] = Query(None, description="Custom end date (YYYY-MM-DD). Required when period=custom"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Aggregate working hours for a user across a date range.
+    Working hours only include time when user was online (based on OnlineStatus logs).
+    """
+    from app.db.models.online_status import OnlineStatus
+
+    target_user_id = user_id if user_id is not None else current_user.user_id
+
+    # Permission: user can see own; ADMIN/HR/MANAGER can see others
+    if target_user_id != current_user.user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    def shift_month(year: int, month: int, delta_months: int) -> tuple[int, int]:
+        m = month + delta_months
+        y = year + (m - 1) // 12
+        m = (m - 1) % 12 + 1
+        return y, m
+
+    now = now_ist()
+
+    # Build [start_dt, end_dt) bounds in naive IST
+    if period == "week":
+        today = now.date()
+        start_of_week = today - timedelta(days=today.weekday())  # Monday
+        start_dt = datetime.combine(start_of_week, time.min)
+        end_dt = now
+    elif period == "current_month":
+        start_dt = datetime(now.year, now.month, 1)
+        end_dt = now
+    elif period == "last_month":
+        this_month_start = datetime(now.year, now.month, 1)
+        ly, lm = shift_month(now.year, now.month, -1)
+        start_dt = datetime(ly, lm, 1)
+        end_dt = this_month_start
+    elif period == "last_3_months":
+        sy, sm = shift_month(now.year, now.month, -2)
+        start_dt = datetime(sy, sm, 1)
+        end_dt = now
+    elif period == "custom":
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="For custom period, start_date and end_date are required (YYYY-MM-DD)")
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)  # inclusive end_date
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+        if end_dt <= start_dt:
+            raise HTTPException(status_code=400, detail="end_date must be the same as or after start_date")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid period")
+
+    def add_overlap_seconds(
+        seg_start: datetime,
+        seg_end: datetime,
+        clamp_start: datetime,
+        clamp_end: datetime,
+    ) -> float:
+        s = max(seg_start, clamp_start)
+        e = min(seg_end, clamp_end)
+        if e <= s:
+            return 0.0
+        return (e - s).total_seconds()
+
+    def compute_online_offline_seconds(
+        check_in_time: datetime,
+        effective_start: datetime,
+        effective_end: datetime,
+        logs: list[OnlineStatus],
+    ) -> tuple[float, float, bool]:
+        """
+        Compute (online_seconds, offline_seconds, status_at_end) for one attendance,
+        clamped to [effective_start, effective_end).
+        Assumes user is online at check-in by default.
+        """
+        online_seconds = 0.0
+        offline_seconds = 0.0
+
+        prev_time = check_in_time
+        prev_status = True
+
+        for log in logs:
+            t = log.timestamp
+            if t < check_in_time:
+                continue
+
+            # Handle out-of-order or duplicate timestamps gracefully
+            if t <= prev_time:
+                prev_status = log.is_online
+                continue
+
+            if t > effective_end:
+                break
+
+            seg_seconds = add_overlap_seconds(prev_time, t, effective_start, effective_end)
+            if seg_seconds:
+                if prev_status:
+                    online_seconds += seg_seconds
+                else:
+                    offline_seconds += seg_seconds
+
+            prev_time = t
+            prev_status = log.is_online
+
+        # Final segment until effective_end
+        if effective_end > prev_time:
+            seg_seconds = add_overlap_seconds(prev_time, effective_end, effective_start, effective_end)
+            if seg_seconds:
+                if prev_status:
+                    online_seconds += seg_seconds
+                else:
+                    offline_seconds += seg_seconds
+
+        return online_seconds, offline_seconds, prev_status
+
+    # Fetch attendance sessions overlapping the range
+    attendances = (
+        db.query(Attendance)
+        .filter(Attendance.user_id == target_user_id)
+        .filter(Attendance.check_in < end_dt)
+        .filter(or_(Attendance.check_out.is_(None), Attendance.check_out >= start_dt))
+        .order_by(Attendance.check_in.asc())
+        .all()
+    )
+
+    attendance_ids = [a.attendance_id for a in attendances]
+
+    logs_by_attendance: Dict[int, List[OnlineStatus]] = {}
+    if attendance_ids:
+        status_logs = (
+            db.query(OnlineStatus)
+            .filter(OnlineStatus.attendance_id.in_(attendance_ids))
+            .filter(OnlineStatus.timestamp < end_dt)
+            .order_by(OnlineStatus.attendance_id.asc(), OnlineStatus.timestamp.asc())
+            .all()
+        )
+        for log in status_logs:
+            logs_by_attendance.setdefault(log.attendance_id, []).append(log)
+
+    total_online_seconds = 0.0
+    total_offline_seconds = 0.0
+    days: Dict[str, Dict[str, Union[str, float, int]]] = {}
+    attendance_breakdown: List[Dict[str, Any]] = []
+
+    for att in attendances:
+        att_end = att.check_out if att.check_out else now
+        effective_end = min(att_end, end_dt)
+        effective_start = max(att.check_in, start_dt)
+
+        if effective_end <= effective_start:
+            continue
+
+        logs = logs_by_attendance.get(att.attendance_id, [])
+        online_s, offline_s, status_at_end = compute_online_offline_seconds(
+            check_in_time=att.check_in,
+            effective_start=effective_start,
+            effective_end=effective_end,
+            logs=logs,
+        )
+
+        total_online_seconds += online_s
+        total_offline_seconds += offline_s
+
+        day_key = att.check_in.date().isoformat()
+        day_entry = days.get(day_key)
+        if not day_entry:
+            day_entry = {
+                "date": day_key,
+                "working_hours": 0.0,
+                "working_seconds": 0,
+                "offline_hours": 0.0,
+                "offline_seconds": 0,
+            }
+            days[day_key] = day_entry
+
+        day_entry["working_seconds"] = int(day_entry["working_seconds"]) + int(online_s)
+        day_entry["offline_seconds"] = int(day_entry["offline_seconds"]) + int(offline_s)
+        day_entry["working_hours"] = round(float(day_entry["working_seconds"]) / 3600, 2)
+        day_entry["offline_hours"] = round(float(day_entry["offline_seconds"]) / 3600, 2)
+
+        attendance_breakdown.append(
+            {
+                "attendance_id": att.attendance_id,
+                "date": day_key,
+                "check_in": att.check_in.isoformat(),
+                "check_out": att.check_out.isoformat() if att.check_out else None,
+                "working_hours": round(online_s / 3600, 2),
+                "working_seconds": int(online_s),
+                "offline_hours": round(offline_s / 3600, 2),
+                "offline_seconds": int(offline_s),
+                "is_currently_online": status_at_end if att.check_out is None else False,
+            }
+        )
+
+    days_list = sorted(days.values(), key=lambda x: x["date"])
+
+    return {
+        "user_id": target_user_id,
+        "period": period,
+        "range_start": start_dt.isoformat(),
+        "range_end": end_dt.isoformat(),
+        "total_working_hours": round(total_online_seconds / 3600, 2),
+        "total_working_seconds": int(total_online_seconds),
+        "total_offline_hours": round(total_offline_seconds / 3600, 2),
+        "total_offline_seconds": int(total_offline_seconds),
+        "days": days_list,
+        "attendances": attendance_breakdown,
+    }
+
 @router.get("/working-hours/{attendance_id}")
 def calculate_working_hours(
     attendance_id: int,
