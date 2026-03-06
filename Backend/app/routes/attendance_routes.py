@@ -2451,12 +2451,14 @@ def working_hours_summary(
 
         return online_seconds, offline_seconds, prev_status
 
-    # Fetch attendance sessions overlapping the range
+    # Fetch attendance sessions within the range.
+    # Note: We intentionally scope by check_in date to avoid counting stale/open
+    # attendance records that started before the requested period.
     attendances = (
         db.query(Attendance)
         .filter(Attendance.user_id == target_user_id)
+        .filter(Attendance.check_in >= start_dt)
         .filter(Attendance.check_in < end_dt)
-        .filter(or_(Attendance.check_out.is_(None), Attendance.check_out >= start_dt))
         .order_by(Attendance.check_in.asc())
         .all()
     )
