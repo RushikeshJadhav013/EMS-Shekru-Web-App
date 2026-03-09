@@ -9,6 +9,8 @@ from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
 from app.db.models.office_timing import OfficeTiming
 from app.utils.timezone import now_ist, get_today_bounds_ist
+from app.enums import RoleEnum
+from app.utils.department_utils import department_tokens_lower
 from app.utils.department_utils import department_tokens_lower
 import csv
 import io
@@ -835,7 +837,13 @@ def export_attendance_pdf(
     buffer.seek(0)
     return buffer
 
-def build_monthly_attendance_grid(db, month: int, year: int, department: str = None):
+def build_monthly_attendance_grid(
+    db: Session,
+    month: int,
+    year: int,
+    department: str | None = None,
+    current_user: User | None = None,
+):
     start_day, total_days = monthrange(year, month)
 
     # Header days (1–31)
@@ -847,11 +855,40 @@ def build_monthly_attendance_grid(db, month: int, year: int, department: str = N
             "weekday": day_date.strftime("%a")[:2]
         })
 
-    user_query = db.query(User).filter(User.is_active == True)
-    if department:
-        user_query = user_query.filter(User.department == department)
+    user_query = db.query(User).filter(User.is_active.is_(True))
+
+    # Apply role-based visibility if current_user is provided
+    if current_user is not None:
+        user_role = current_user.role
+        if user_role == RoleEnum.ADMIN:
+            # Admin: exclude self and other admins
+            user_query = user_query.filter(
+                User.user_id != current_user.user_id,
+                User.role != RoleEnum.ADMIN,
+            )
+        elif user_role == RoleEnum.HR:
+            # HR: exclude self, admins, and other HRs
+            user_query = user_query.filter(
+                User.user_id != current_user.user_id,
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            )
+        # Other roles are not expected to call the grid download endpoints;
+        # access is enforced at the router level (require_roles).
 
     users = user_query.all()
+
+    # If a department filter is provided, apply token-based matching to support
+    # comma-separated multi-departments, e.g. "Sales" matches "Sales, North".
+    if department:
+        dept_filter_tokens = set(department_tokens_lower(department))
+        if dept_filter_tokens:
+            users = [
+                u
+                for u in users
+                if dept_filter_tokens.intersection(
+                    set(department_tokens_lower(getattr(u, "department", None)))
+                )
+            ]
 
     rows = []
     for user in users:

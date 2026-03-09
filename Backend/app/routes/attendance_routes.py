@@ -2726,14 +2726,15 @@ def download_monthly_grid_pdf(
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
 
     buffer = export_monthly_grid_pdf(
-        db, 
-        month, 
-        year, 
+        db,
+        month,
+        year,
         department=department,
         employee_id=employee_id,
         date_from=date_from,
         date_to=date_to,
-        status=status
+        status=status,
+        current_user=current_user,
     )
 
     filename = f"attendance_grid_{month:02d}_{year}.pdf"
@@ -2766,7 +2767,8 @@ def download_monthly_detailed_grid_pdf(
         employee_id=employee_id,
         date_from=date_from,
         date_to=date_to,
-        status=status
+        status=status,
+        current_user=current_user,
     )
 
     filename = f"attendance_detailed_grid_{month:02d}_{year}.pdf"
@@ -2792,14 +2794,15 @@ def download_monthly_grid_csv(
     from app.crud.attendance_grid_export import export_monthly_grid_csv
 
     output = export_monthly_grid_csv(
-        db, 
-        month, 
-        year, 
+        db,
+        month,
+        year,
         department=department,
         employee_id=employee_id,
         date_from=date_from,
         date_to=date_to,
-        status=status
+        status=status,
+        current_user=current_user,
     )
 
     filename = f"attendance_grid_{month:02d}_{year}.csv"
