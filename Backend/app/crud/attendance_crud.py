@@ -9,6 +9,7 @@ from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
 from app.db.models.office_timing import OfficeTiming
 from app.utils.timezone import now_ist, get_today_bounds_ist
+from app.utils.department_utils import department_tokens_lower
 import csv
 import io
 import os
@@ -454,16 +455,18 @@ def export_attendance_csv(
 
     # Modify the query to join with User and fetch name, department, and employee_id
     query = db.query(Attendance, User.name, User.department, User.employee_id).join(User, Attendance.user_id == User.user_id)
-    
+
+    # Pre-compute department filter tokens to support comma-separated multi-departments
+    department_filter_tokens: Optional[set[str]] = None
+    if department:
+        department_filter_tokens = set(department_tokens_lower(department))
+
     # Apply filters
     if user_id:
         query = query.filter(Attendance.user_id == user_id)
     
     if employee_id:
         query = query.filter(User.employee_id == employee_id)
-    
-    if department:
-        query = query.filter(func.lower(User.department) == department.strip().lower())
     
     if start_date:
         query = query.filter(Attendance.check_in >= start_date)
@@ -474,6 +477,11 @@ def export_attendance_csv(
         query = query.filter(Attendance.check_in <= end_date_inclusive)
 
     for a, name, department, emp_id in query.order_by(Attendance.check_in.desc()).all():
+        # If a department filter was provided, enforce token-based overlap with user's departments.
+        if department_filter_tokens is not None:
+            user_dept_tokens = set(department_tokens_lower(department))
+            if not user_dept_tokens or not department_filter_tokens.intersection(user_dept_tokens):
+                continue
         # Convert total_hours from decimal to H:MM format for export
         total_hours_val = float(a.total_hours or 0)
         hours = int(total_hours_val)
@@ -663,16 +671,18 @@ def export_attendance_pdf(
     ]
     # Modify the query to join with User and fetch name, department, and employee_id
     query = db.query(Attendance, User.name, User.department, User.employee_id).join(User, Attendance.user_id == User.user_id)
-    
+
+    # Pre-compute department filter tokens to support comma-separated multi-departments
+    department_filter_tokens: Optional[set[str]] = None
+    if department:
+        department_filter_tokens = set(department_tokens_lower(department))
+
     # Apply filters
     if user_id:
         query = query.filter(Attendance.user_id == user_id)
     
     if employee_id:
         query = query.filter(User.employee_id == employee_id)
-    
-    if department:
-        query = query.filter(func.lower(User.department) == department.strip().lower())
     
     if start_date:
         query = query.filter(Attendance.check_in >= start_date)
@@ -683,6 +693,12 @@ def export_attendance_pdf(
         query = query.filter(Attendance.check_in <= end_date_inclusive)
 
     for a, name, department, emp_id in query.order_by(Attendance.check_in.desc()).all():
+        # If a department filter was provided, enforce token-based overlap with user's departments.
+        if department_filter_tokens is not None:
+            user_dept_tokens = set(department_tokens_lower(department))
+            if not user_dept_tokens or not department_filter_tokens.intersection(user_dept_tokens):
+                continue
+
         data.append([
             a.attendance_id,
             emp_id or str(a.user_id),  # Use employee_id if available, fallback to user_id
