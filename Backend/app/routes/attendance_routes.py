@@ -1117,6 +1117,12 @@ async def employee_check_in_json(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        if payload.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to check in for another user."
+            )
+
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
@@ -1376,6 +1382,12 @@ async def employee_check_out_json(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        if payload.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to check out for another user."
+            )
+
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
