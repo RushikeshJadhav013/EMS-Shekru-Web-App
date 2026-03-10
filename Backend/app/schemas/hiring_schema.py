@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator, constr
+from pydantic import BaseModel, EmailStr, Field, field_validator, constr, ValidationInfo
 from typing import Optional, List, Literal
 from datetime import datetime, date, timedelta, timezone
 import re
@@ -28,8 +28,14 @@ class VacancyBase(BaseModel):
 
     @field_validator('closing_date')
     @classmethod
-    def validate_closing_date(cls, v: Optional[datetime]) -> Optional[datetime]:
-        """Validate closing date is in the future"""
+    def validate_closing_date(cls, v: Optional[datetime], info: ValidationInfo) -> Optional[datetime]:
+        """
+        Validate closing date is in the future for input models.
+        Can be skipped for output models by passing context:
+        context={'skip_closing_date_validation': True}
+        """
+        if info.context and info.context.get("skip_closing_date_validation"):
+            return v
         if v is not None:
             if v.date() < date.today():
                 raise ValueError('Closing date cannot be in the past')
