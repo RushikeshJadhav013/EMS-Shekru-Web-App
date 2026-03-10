@@ -77,6 +77,11 @@ class TaskOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class TaskOutWithoutProject(TaskOut):
+    """Task output variant that hides project_id in responses (used for non-project tasks)."""
+    project_id: Optional[int] = Field(None, exclude=True)
+
     @field_validator('title')
     @classmethod
     def validate_title(cls, v: str) -> str:

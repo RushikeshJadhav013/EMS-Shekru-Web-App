@@ -27,6 +27,7 @@ from app.schemas.task_schema import (
     TaskHistoryOut,
     TaskNotificationOut,
     TaskOut,
+    TaskOutWithoutProject,
     TaskPassRequest,
     TaskUpdate,
 )
@@ -269,10 +270,80 @@ def assign_tasks_bulk(
         for t in created_tasks
     ]
 
-@router.get("/", response_model=list[TaskOut])
-def my_tasks(db: Session = Depends(get_db), user = Depends(get_current_user)):
-    tasks = list_tasks(db, user.user_id)
-    # Enrich tasks with human-readable names for assigned_by and assigned_to
+@router.get("/", response_model=list[TaskOutWithoutProject])
+def my_tasks(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    List standalone tasks for the current user (non-project tasks only).
+    Project-linked tasks are exposed via a separate endpoint to avoid duplication in the UI.
+    """
+    tasks = list_tasks(db, user.user_id, project_only=False)
+    return [
+        TaskOut(
+            task_id=t.task_id,
+            title=t.title,
+            description=t.description,
+            status=t.status,
+            due_date=t.due_date.date() if t.due_date else None,
+            priority=t.priority,
+            assigned_to=t.assigned_to,
+            assigned_by=t.assigned_by,
+            # project_id=t.project_id,
+            created_at=t.created_at,
+            last_passed_by=t.last_passed_by,
+            last_passed_to=t.last_passed_to,
+            last_pass_note=t.last_pass_note,
+            last_passed_at=t.last_passed_at,
+            assigned_to_name=t.assigned_to_user.name if t.assigned_to_user else None,
+            assigned_by_name=t.assigned_by_user.name if t.assigned_by_user else None,
+            assigned_by_role=t.assigned_by_user.role if t.assigned_by_user else None,
+            assigned_to_role=t.assigned_to_user.role if t.assigned_to_user else None,
+        )
+        for t in tasks
+    ]
+
+
+@router.get("/projects/{project_id}", response_model=list[TaskOut])
+def project_tasks(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    List project-linked tasks for a given project that are visible to the current user.
+    Validations:
+    - 404 if project does not exist.
+    - 403 if the user is not a member of the project (non-admin/HR).
+    A task is included if the user is assignee/assigner/participant in its history.
+    """
+    # Ensure project exists
+    project = db.query(Project).filter(Project.project_id == project_id).first()
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    # Ensure user has access to this project
+    if user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
+        is_member = (
+            db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user.user_id,
+                ProjectMember.is_active.is_(True),
+            )
+            .first()
+        )
+        if not is_member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not a member of this project",
+            )
+
+    tasks = list_tasks(db, user.user_id, project_only=True, project_id=project_id)
     return [
         TaskOut(
             task_id=t.task_id,
