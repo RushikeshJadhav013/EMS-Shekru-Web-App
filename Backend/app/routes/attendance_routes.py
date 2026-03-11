@@ -1563,8 +1563,24 @@ def get_self_attendance(
     )
 
     response: list[dict] = []
+    timing_cache = _build_office_timing_cache(db)
     for record in records:
         payload = _prepare_attendance_payload(record)
+        # Add attendance evaluation fields (consistent with /attendance/today style)
+        dept_for_timing = None
+        if user_row:
+            dept_for_timing = user_row.department
+        timing = _resolve_office_timing(db, dept_for_timing, cache=timing_cache)
+        evaluation = _evaluate_attendance_status(record.check_in, record.check_out, timing)
+        payload.update(
+            {
+                "status": evaluation["status"],
+                "checkInStatus": evaluation["check_in_status"],
+                "checkOutStatus": evaluation["check_out_status"],
+                "scheduledStart": evaluation["scheduled_start"],
+                "scheduledEnd": evaluation["scheduled_end"],
+            }
+        )
         if user_row:
             payload.update(
                 {
