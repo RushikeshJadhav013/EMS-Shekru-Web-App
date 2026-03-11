@@ -303,7 +303,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def home():
     return {"message": "Employee Management System API is running"}
 
-@app.get("/test-cors", tags=["Test"])
+@app.get("/test-cors", tags=["Test"], include_in_schema=False)
 async def test_cors():
     """
     Test endpoint to verify CORS is working correctly
@@ -318,12 +318,12 @@ async def test_cors():
         ]
     }
 
-@app.options("/tasks/notifications", tags=["Test"])
+@app.options("/tasks/notifications", tags=["Test"], include_in_schema=False)
 async def test_task_notifications_cors():
     """Preflight handler for task notifications"""
     return {"message": "CORS preflight successful for task notifications"}
 
-@app.options("/shift/notifications", tags=["Test"])
+@app.options("/shift/notifications", tags=["Test"], include_in_schema=False)
 async def test_shift_notifications_cors():
     """Preflight handler for shift notifications"""
     return {"message": "CORS preflight successful for shift notifications"}

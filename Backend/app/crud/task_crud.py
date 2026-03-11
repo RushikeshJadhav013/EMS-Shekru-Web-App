@@ -135,9 +135,23 @@ def create_task(
     db.refresh(task)
     return task
 
-def list_tasks(db: Session, user_id: int):
+def list_tasks(
+    db: Session,
+    user_id: int,
+    *,
+    project_only: bool | None = None,
+    project_id: int | None = None,
+):
+    """
+    List tasks visible to a user.
+    - project_only=None (default): include both project and non-project tasks.
+    - project_only=False: only tasks with no project (project_id is NULL).
+    - project_only=True: only tasks linked to a project; if project_id is provided,
+      further restrict to that project.
+    """
     _ensure_task_pass_columns(db)
-    return (
+
+    query = (
         db.query(Task)
         .outerjoin(TaskHistory, TaskHistory.task_id == Task.task_id)
         .filter(
@@ -147,9 +161,16 @@ def list_tasks(db: Session, user_id: int):
                 TaskHistory.user_id == user_id,
             )
         )
-        .distinct()
-        .all()
     )
+
+    if project_only is True:
+        query = query.filter(Task.project_id.isnot(None))
+        if project_id is not None:
+            query = query.filter(Task.project_id == project_id)
+    elif project_only is False:
+        query = query.filter(Task.project_id.is_(None))
+
+    return query.distinct().all()
 
 def update_task_status(db: Session, task_id: int, status: TaskStatus, updated_by: int):
     task = db.query(Task).filter(Task.task_id == task_id).first()

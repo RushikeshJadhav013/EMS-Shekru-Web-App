@@ -303,7 +303,7 @@ def update_salary_status(
     user_id: int,
     status_update: EmployeeSalaryStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
 ):
     """
     Activate/deactivate an employee salary record.

@@ -36,14 +36,30 @@ def draw_page_border(canvas, doc):
     canvas.restoreState()
 
 
-def export_monthly_grid_csv(db, month, year, department=None, employee_id=None, date_from=None, date_to=None, status=None):
+def export_monthly_grid_csv(
+    db,
+    month,
+    year,
+    department=None,
+    employee_id=None,
+    date_from=None,
+    date_to=None,
+    status=None,
+    current_user=None,
+):
     """
     Export Monthly Attendance Grid to CSV (Excel-style layout exactly like image)
     Applies filters to the data after generation, not during.
     """
     from datetime import datetime as dt
-    
-    data = build_monthly_attendance_grid(db, month, year, department)
+
+    data = build_monthly_attendance_grid(
+        db,
+        month,
+        year,
+        department,
+        current_user=current_user,
+    )
     
     # Apply additional filters to rows
     filtered_rows = []
@@ -124,15 +140,31 @@ def export_monthly_grid_csv(db, month, year, department=None, employee_id=None, 
     output.seek(0)
     return output
 
-def export_monthly_grid_pdf(db, month, year, department=None, employee_id=None, date_from=None, date_to=None, status=None):
+def export_monthly_grid_pdf(
+    db,
+    month,
+    year,
+    department=None,
+    employee_id=None,
+    date_from=None,
+    date_to=None,
+    status=None,
+    current_user=None,
+):
     """
     Export Monthly Attendance Grid to PDF (Excel-like layout, landscape)
     Applies filters to the data after generation, not during.
     """
     from datetime import datetime as dt
-    
+
     # Get base data without extra filters
-    data = build_monthly_attendance_grid(db, month, year, department)
+    data = build_monthly_attendance_grid(
+        db,
+        month,
+        year,
+        department,
+        current_user=current_user,
+    )
     
     # Apply additional filters to rows
     filtered_rows = []
@@ -320,7 +352,17 @@ def export_monthly_grid_pdf(db, month, year, department=None, employee_id=None, 
     return buffer
 
 
-def export_monthly_detailed_pdf(db, month, year, department=None, employee_id=None, date_from=None, date_to=None, status=None):
+def export_monthly_detailed_pdf(
+    db,
+    month,
+    year,
+    department=None,
+    employee_id=None,
+    date_from=None,
+    date_to=None,
+    status=None,
+    current_user=None,
+):
     """
     Export Monthly Detailed Attendance Grid to PDF.
     Shows check-in/out times (multiple) and marks paid leaves (casual/sick) as Present + leave type.
@@ -329,11 +371,45 @@ def export_monthly_detailed_pdf(db, month, year, department=None, employee_id=No
     _, total_days = monthrange(year, month)
     days = [{"day": d, "weekday": _date(year, month, d).strftime("%a")[:2]} for d in range(1, total_days + 1)]
 
-    # fetch users
-    user_query = db.query(User).filter(User.is_active == True)
-    if department:
-        user_query = user_query.filter(User.department == department)
-    users = user_query.all()
+    # fetch users (respect role-based visibility and multi-department filtering)
+    user_query = db.query(User).filter(User.is_active.is_(True))
+
+    if current_user is not None:
+        from app.enums import RoleEnum
+        from app.utils.department_utils import department_tokens_lower
+
+        user_role = current_user.role
+        if user_role == RoleEnum.ADMIN:
+            # Admin: exclude self and other admins
+            user_query = user_query.filter(
+                User.user_id != current_user.user_id,
+                User.role != RoleEnum.ADMIN,
+            )
+        elif user_role == RoleEnum.HR:
+            # HR: exclude self, admins, and other HRs
+            user_query = user_query.filter(
+                User.user_id != current_user.user_id,
+                User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            )
+
+        users = user_query.all()
+
+        # Apply comma-separated multi-department filter, if provided
+        if department:
+            dept_filter_tokens = set(department_tokens_lower(department))
+            if dept_filter_tokens:
+                users = [
+                    u
+                    for u in users
+                    if dept_filter_tokens.intersection(
+                        set(department_tokens_lower(getattr(u, "department", None)))
+                    )
+                ]
+    else:
+        # Fallback: no role scoping, legacy behaviour
+        if department:
+            user_query = user_query.filter(User.department == department)
+        users = user_query.all()
 
     # small paragraph style for detailed cells (WO and times)
     d_style = ParagraphStyle('d', fontSize=9)

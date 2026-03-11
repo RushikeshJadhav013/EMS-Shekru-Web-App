@@ -187,9 +187,9 @@ def approve_leave_request(
         if current_user.role not in (RoleEnum.MANAGER, RoleEnum.HR):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Manager or HR can approve/reject this request")
         # Manager/HR may only act on requests from their department
-        req_dept = (requester.department or "").strip().lower()
-        approver_dept = (current_user.department or "").strip().lower()
-        if not req_dept or approver_dept != req_dept:
+        requester_tokens = set(department_tokens_lower(getattr(requester, "department", None)))
+        approver_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
+        if not requester_tokens or not approver_tokens or not (requester_tokens & approver_tokens):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only approve/reject requests from your department")
     elif requester_role == RoleEnum.MANAGER.value:
         if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
@@ -524,15 +524,25 @@ def approvals_history(
         # Manager: users in own department(s), excluding Admins, HRs, other Managers, and self.
         if not user.department:
             return []
-        manager_dept = user.department
-        decided = (
+        manager_tokens = set(department_tokens_lower(user.department))
+        if not manager_tokens:
+            return []
+
+        # Fetch candidate decided leaves for non-privileged roles, then apply token overlap filter.
+        candidates = (
             base_query.join(User, Leave.user_id == User.user_id)
-            .filter(User.department == manager_dept)
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
             .filter(User.user_id != user.user_id)
             .order_by(Leave.end_date.desc())
             .all()
         )
+
+        decided = []
+        for leave in candidates:
+            u: User = leave.user
+            requester_tokens = set(department_tokens_lower(getattr(u, "department", None)))
+            if requester_tokens and manager_tokens.intersection(requester_tokens):
+                decided.append(leave)
     elif role_value in (RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value):
         # Employees/TeamLeads see only their own decided leaves
         decided = base_query.filter(Leave.user_id == user.user_id).order_by(Leave.end_date.desc()).all()

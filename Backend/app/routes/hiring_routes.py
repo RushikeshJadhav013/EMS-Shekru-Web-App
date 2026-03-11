@@ -55,7 +55,10 @@ def create_vacancy(
         Candidate.vacancy_id == db_vacancy.vacancy_id
     ).scalar() or 0
     
-    result = VacancyOut.model_validate(db_vacancy)
+    result = VacancyOut.model_validate(
+        db_vacancy,
+        context={"skip_closing_date_validation": True},
+    )
     result.candidates_count = candidates_count
     return result
 
@@ -83,7 +86,10 @@ def get_vacancies(
             Candidate.vacancy_id == vacancy.vacancy_id
         ).scalar() or 0
         
-        vacancy_out = VacancyOut.model_validate(vacancy)
+        vacancy_out = VacancyOut.model_validate(
+            vacancy,
+            context={"skip_closing_date_validation": True},
+        )
         vacancy_out.candidates_count = candidates_count
         result.append(vacancy_out)
     
@@ -104,7 +110,10 @@ def get_vacancy(
         Candidate.vacancy_id == vacancy.vacancy_id
     ).scalar() or 0
     
-    result = VacancyOut.model_validate(vacancy)
+    result = VacancyOut.model_validate(
+        vacancy,
+        context={"skip_closing_date_validation": True},
+    )
     result.candidates_count = candidates_count
     return result
 
@@ -132,7 +141,10 @@ def update_vacancy(
         Candidate.vacancy_id == vacancy.vacancy_id
     ).scalar() or 0
     
-    result = VacancyOut.model_validate(vacancy)
+    result = VacancyOut.model_validate(
+        vacancy,
+        context={"skip_closing_date_validation": True},
+    )
     result.candidates_count = candidates_count
     return result
 
@@ -192,7 +204,10 @@ def post_to_social_media(
         Candidate.vacancy_id == vacancy.vacancy_id
     ).scalar() or 0
     
-    result = VacancyOut.model_validate(vacancy)
+    result = VacancyOut.model_validate(
+        vacancy,
+        context={"skip_closing_date_validation": True},
+    )
     result.candidates_count = candidates_count
     return result
 

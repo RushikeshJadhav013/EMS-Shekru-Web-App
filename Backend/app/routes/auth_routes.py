@@ -90,7 +90,7 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
     }
 
 # Development/Testing endpoints for debugging OTP
-@router.get("/debug/environment")
+@router.get("/debug/environment", include_in_schema=False)
 def get_debug_environment_info():
     """Get environment information (only in non-production)"""
     if settings.is_production:
@@ -98,7 +98,7 @@ def get_debug_environment_info():
     
     return get_environment_info()
 
-@router.get("/debug/otp/{email}")
+@router.get("/debug/otp/{email}", include_in_schema=False)
 def get_debug_otp_info(email: str):
     """Get OTP information for debugging (only in non-production)"""
     if settings.is_production:
@@ -106,7 +106,7 @@ def get_debug_otp_info(email: str):
     
     return get_otp_info(email)
 
-@router.post("/debug/test-email")
+@router.post("/debug/test-email", include_in_schema=False)
 def test_email_service():
     """Test email service configuration (only in non-production)"""
     if settings.is_production:
@@ -114,7 +114,7 @@ def test_email_service():
     
     return test_email_configuration()
 
-@router.post("/debug/clear-otps")
+@router.post("/debug/clear-otps", include_in_schema=False)
 def clear_all_otps_debug():
     """Clear all OTPs (only in non-production)"""
     if settings.is_production:

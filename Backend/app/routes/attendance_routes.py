@@ -36,71 +36,71 @@ class LogoutPayload(BaseModel):
     user_id: int
     logout_timestamp: str
 
-@router.post("/logout")
-async def logout_with_pause(
-    payload: LogoutPayload,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user)
-):
-    """
-    Logout endpoint that treats logout as a pause in online status.
-    Records logout timestamp to pause Online time and start Offline time tracking.
-    """
-    try:
-        from app.db.models.online_status import OnlineStatus
+# @router.post("/logout")
+# async def logout_with_pause(
+#     payload: LogoutPayload,
+#     db: Session = Depends(get_db),
+#     current_user=Depends(get_current_user)
+# ):
+#     """
+#     Logout endpoint that treats logout as a pause in online status.
+#     Records logout timestamp to pause Online time and start Offline time tracking.
+#     """
+#     try:
+#         from app.db.models.online_status import OnlineStatus
         
-        # Verify user matches current user
-        if current_user.user_id != payload.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot logout for another user"
-            )
+#         # Verify user matches current user
+#         if current_user.user_id != payload.user_id:
+#             raise HTTPException(
+#                 status_code=status.HTTP_403_FORBIDDEN,
+#                 detail="Cannot logout for another user"
+#             )
         
-        # Find today's active attendance record
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
+#         # Find today's active attendance record
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         today_end = today_start + timedelta(days=1)
         
-        attendance = db.query(Attendance).filter(
-            Attendance.user_id == payload.user_id,
-            Attendance.check_in >= today_start,
-            Attendance.check_in < today_end,
-            Attendance.check_out.is_(None)  # Only active attendance
-        ).first()
+#         attendance = db.query(Attendance).filter(
+#             Attendance.user_id == payload.user_id,
+#             Attendance.check_in >= today_start,
+#             Attendance.check_in < today_end,
+#             Attendance.check_out.is_(None)  # Only active attendance
+#         ).first()
         
-        if attendance:
-            # Get current online status
-            latest_status = db.query(OnlineStatus).filter(
-                OnlineStatus.user_id == payload.user_id,
-                OnlineStatus.timestamp >= today_start,
-                OnlineStatus.timestamp < today_end
-            ).order_by(OnlineStatus.timestamp.desc()).first()
+#         if attendance:
+#             # Get current online status
+#             latest_status = db.query(OnlineStatus).filter(
+#                 OnlineStatus.user_id == payload.user_id,
+#                 OnlineStatus.timestamp >= today_start,
+#                 OnlineStatus.timestamp < today_end
+#             ).order_by(OnlineStatus.timestamp.desc()).first()
             
-            # If user is currently online, record logout as going offline
-            current_online_status = True if not latest_status else latest_status.is_online
+#             # If user is currently online, record logout as going offline
+#             current_online_status = True if not latest_status else latest_status.is_online
             
-            if current_online_status:
-                # Use server-side IST timestamp to avoid timezone and client clock issues
-                logout_timestamp = now_ist()
+#             if current_online_status:
+#                 # Use server-side IST timestamp to avoid timezone and client clock issues
+#                 logout_timestamp = now_ist()
                 
-                # Create offline status entry for logout
-                offline_status = OnlineStatus(
-                    attendance_id=attendance.attendance_id,
-                    user_id=payload.user_id,
-                    is_online=False,
-                    reason="Logout - session paused",
-                    timestamp=logout_timestamp
-                )
-                db.add(offline_status)
-                db.commit()
+#                 # Create offline status entry for logout
+#                 offline_status = OnlineStatus(
+#                     attendance_id=attendance.attendance_id,
+#                     user_id=payload.user_id,
+#                     is_online=False,
+#                     reason="Logout - session paused",
+#                     timestamp=logout_timestamp
+#                 )
+#                 db.add(offline_status)
+#                 db.commit()
                 
-                logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
+#                 logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
             
-        return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
+#         return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
         
-    except Exception as e:
-        logger.error(f"Logout error for user {current_user.user_id}: {e}")
-        # Always allow logout even if pause recording fails
-        return {"message": "Logout successful", "user_id": current_user.user_id}
+#     except Exception as e:
+#         logger.error(f"Logout error for user {current_user.user_id}: {e}")
+#         # Always allow logout even if pause recording fails
+#         return {"message": "Logout successful", "user_id": current_user.user_id}
 
 
 # Login resume endpoint to handle resume functionality
@@ -108,80 +108,80 @@ class LoginResumePayload(BaseModel):
     user_id: int
     login_timestamp: str
 
-@router.post("/login-resume")
-async def login_resume(
-    payload: LoginResumePayload,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user)
-):
-    """
-    Login resume endpoint that treats login as resuming from a pause.
-    Records login timestamp to resume Online time and add offline duration to Offline time.
-    """
-    try:
-        from app.db.models.online_status import OnlineStatus
+# @router.post("/login-resume")
+# async def login_resume(
+#     payload: LoginResumePayload,
+#     db: Session = Depends(get_db),
+#     current_user=Depends(get_current_user)
+# ):
+#     """
+#     Login resume endpoint that treats login as resuming from a pause.
+#     Records login timestamp to resume Online time and add offline duration to Offline time.
+#     """
+#     try:
+#         from app.db.models.online_status import OnlineStatus
         
-        # Verify user matches current user
-        if current_user.user_id != payload.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot resume for another user"
-            )
+#         # Verify user matches current user
+#         if current_user.user_id != payload.user_id:
+#             raise HTTPException(
+#                 status_code=status.HTTP_403_FORBIDDEN,
+#                 detail="Cannot resume for another user"
+#             )
         
-        # Find today's active attendance record
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
+#         # Find today's active attendance record
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         today_end = today_start + timedelta(days=1)
         
-        attendance = db.query(Attendance).filter(
-            Attendance.user_id == payload.user_id,
-            Attendance.check_in >= today_start,
-            Attendance.check_in < today_end,
-            Attendance.check_out.is_(None)  # Only active attendance
-        ).first()
+#         attendance = db.query(Attendance).filter(
+#             Attendance.user_id == payload.user_id,
+#             Attendance.check_in >= today_start,
+#             Attendance.check_in < today_end,
+#             Attendance.check_out.is_(None)  # Only active attendance
+#         ).first()
         
-        if attendance:
-            # Get current online status
-            latest_status = db.query(OnlineStatus).filter(
-                OnlineStatus.user_id == payload.user_id,
-                OnlineStatus.timestamp >= today_start,
-                OnlineStatus.timestamp < today_end
-            ).order_by(OnlineStatus.timestamp.desc()).first()
+#         if attendance:
+#             # Get current online status
+#             latest_status = db.query(OnlineStatus).filter(
+#                 OnlineStatus.user_id == payload.user_id,
+#                 OnlineStatus.timestamp >= today_start,
+#                 OnlineStatus.timestamp < today_end
+#             ).order_by(OnlineStatus.timestamp.desc()).first()
             
-            # If user is currently offline (from logout), record login as going online
-            current_online_status = True if not latest_status else latest_status.is_online
+#             # If user is currently offline (from logout), record login as going online
+#             current_online_status = True if not latest_status else latest_status.is_online
             
-            if not current_online_status and latest_status:
-                # Use server-side IST timestamp to avoid timezone and client clock issues
-                login_timestamp = now_ist()
+#             if not current_online_status and latest_status:
+#                 # Use server-side IST timestamp to avoid timezone and client clock issues
+#                 login_timestamp = now_ist()
                 
-                # Calculate offline duration between last offline log and this login
-                offline_duration = login_timestamp - latest_status.timestamp
-                offline_seconds = offline_duration.total_seconds()
+#                 # Calculate offline duration between last offline log and this login
+#                 offline_duration = login_timestamp - latest_status.timestamp
+#                 offline_seconds = offline_duration.total_seconds()
                 
-                # Create online status entry for login resume
-                online_status = OnlineStatus(
-                    attendance_id=attendance.attendance_id,
-                    user_id=payload.user_id,
-                    is_online=True,
-                    reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
-                    timestamp=login_timestamp
-                )
-                db.add(online_status)
-                db.commit()
+#                 # Create online status entry for login resume
+#                 online_status = OnlineStatus(
+#                     attendance_id=attendance.attendance_id,
+#                     user_id=payload.user_id,
+#                     is_online=True,
+#                     reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
+#                     timestamp=login_timestamp
+#                 )
+#                 db.add(online_status)
+#                 db.commit()
                 
-                logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
+#                 logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
                 
-                return {
-                    "message": "Login successful - session resumed", 
-                    "user_id": current_user.user_id,
-                    "offline_duration_seconds": int(offline_seconds)
-                }
+#                 return {
+#                     "message": "Login successful - session resumed", 
+#                     "user_id": current_user.user_id,
+#                     "offline_duration_seconds": int(offline_seconds)
+#                 }
             
-        return {"message": "Login successful", "user_id": current_user.user_id}
+#         return {"message": "Login successful", "user_id": current_user.user_id}
         
-    except Exception as e:
-        logger.error(f"Login resume error for user {current_user.user_id}: {e}")
-        return {"message": "Login successful", "user_id": current_user.user_id}
+#     except Exception as e:
+#         logger.error(f"Login resume error for user {current_user.user_id}: {e}")
+#         return {"message": "Login successful", "user_id": current_user.user_id}
 
 
 class AttendanceJSONPayload(BaseModel):
@@ -720,18 +720,18 @@ class ReverseGeocodePayload(BaseModel):
     lon: float
 
 
-@router.post("/reverse-geocode")
-def reverse_geocode(
-    payload: ReverseGeocodePayload,
-    current_user: User = Depends(get_current_user),
-):
-    """Return human-readable location details for the given coordinates via server-side geocoding."""
-    try:
-        details = location_service.get_location_details(payload.lat, payload.lon)
-        return details
-    except Exception as exc:  # pragma: no cover - defensive catch
-        logger.error("Reverse geocode failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Unable to fetch location details")
+# @router.post("/reverse-geocode")
+# def reverse_geocode(
+#     payload: ReverseGeocodePayload,
+#     current_user: User = Depends(get_current_user),
+# ):
+#     """Return human-readable location details for the given coordinates via server-side geocoding."""
+#     try:
+#         details = location_service.get_location_details(payload.lat, payload.lon)
+#         return details
+#     except Exception as exc:  # pragma: no cover - defensive catch
+#         logger.error("Reverse geocode failed: %s", exc, exc_info=True)
+#         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Unable to fetch location details")
 
 def get_today_attendance_records(db: Session, target_date: Optional[date] = None) -> List[Dict[str, Any]]:
     """
@@ -991,122 +991,122 @@ def validate_and_process_location(location_data: Optional[Dict[str, Any]]) -> Di
         )
 
 # Employee Check-In
-@router.post("/check-in", response_model=AttendanceOut, status_code=status.HTTP_201_CREATED)
-async def employee_check_in_route(
-    request: Request,
-    user_id: int = Form(...),
-    gps_location: Optional[str] = Form(None),
-    selfie: Optional[UploadFile] = File(None),
-    location_data: Optional[str] = Form(None),
-    work_location: Optional[str] = Form('office'),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    try:
-        # Parse location data
-        try:
-            loc_data = json.loads(location_data) if location_data else None
-            processed_location = validate_and_process_location(loc_data or gps_location)
-        except json.JSONDecodeError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid location data format. Must be valid JSON."
-            )
+# @router.post("/check-in", response_model=AttendanceOut, status_code=status.HTTP_201_CREATED)
+# async def employee_check_in_route(
+#     request: Request,
+#     user_id: int = Form(...),
+#     gps_location: Optional[str] = Form(None),
+#     selfie: Optional[UploadFile] = File(None),
+#     location_data: Optional[str] = Form(None),
+#     work_location: Optional[str] = Form('office'),
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user),
+# ):
+#     try:
+#         # Parse location data
+#         try:
+#             loc_data = json.loads(location_data) if location_data else None
+#             processed_location = validate_and_process_location(loc_data or gps_location)
+#         except json.JSONDecodeError:
+#             raise HTTPException(
+#                 status_code=status.HTTP_400_BAD_REQUEST,
+#                 detail="Invalid location data format. Must be valid JSON."
+#             )
 
-        # Validate user exists and is active
-        user = db.query(User).filter(User.user_id == user_id, User.is_active == True).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found or inactive"
-            )
+#         # Validate user exists and is active
+#         user = db.query(User).filter(User.user_id == user_id, User.is_active == True).first()
+#         if not user:
+#             raise HTTPException(
+#                 status_code=status.HTTP_404_NOT_FOUND,
+#                 detail="User not found or inactive"
+#             )
 
-        # Save selfie if provided
-        selfie_path = save_selfie(user_id, selfie, 'checkin') if selfie else None
+#         # Save selfie if provided
+#         selfie_path = save_selfie(user_id, selfie, 'checkin') if selfie else None
 
-        # Check for existing check-in today without check-out
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-        existing_attendance = (
-            db.query(Attendance)
-            .filter(
-                Attendance.user_id == user_id,
-                Attendance.check_in >= today_start,
-                Attendance.check_out.is_(None)
-            )
-            .first()
-        )
+#         # Check for existing check-in today without check-out
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         existing_attendance = (
+#             db.query(Attendance)
+#             .filter(
+#                 Attendance.user_id == user_id,
+#                 Attendance.check_in >= today_start,
+#                 Attendance.check_out.is_(None)
+#             )
+#             .first()
+#         )
 
-        if existing_attendance:
-            return _prepare_attendance_payload(existing_attendance)
+#         if existing_attendance:
+#             return _prepare_attendance_payload(existing_attendance)
 
-        # Validate and set work location (default to 'office')
-        if work_location not in ['office', 'work_from_home']:
-            work_location = 'office'
+#         # Validate and set work location (default to 'office')
+#         if work_location not in ['office', 'work_from_home']:
+#             work_location = 'office'
 
-        # Create new check-in with location data
-        attendance = Attendance(
-            user_id=user_id,
-            check_in=now_ist(),
-            gps_location=_compose_location_entry(None, "Check-in", processed_location),
-            selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
-            total_hours=0.0,
-            work_location=work_location
-        )
+#         # Create new check-in with location data
+#         attendance = Attendance(
+#             user_id=user_id,
+#             check_in=now_ist(),
+#             gps_location=_compose_location_entry(None, "Check-in", processed_location),
+#             selfie=_dump_selfie_data(None, check_in=selfie_path) if selfie_path else None,
+#             total_hours=0.0,
+#             work_location=work_location
+#         )
         
-        db.add(attendance)
-        db.commit()
-        db.refresh(attendance)
+#         db.add(attendance)
+#         db.commit()
+#         db.refresh(attendance)
         
-        # Set user as online after check-in (respects previous offline status from same day)
-        from app.db.models.online_status import OnlineStatus
+#         # Set user as online after check-in (respects previous offline status from same day)
+#         from app.db.models.online_status import OnlineStatus
         
-        # Check if user was offline yesterday - if so, reset to online for new day
-        yesterday_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         # Check if user was offline yesterday - if so, reset to online for new day
+#         yesterday_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         
-        # Get user's last status from yesterday
-        last_status_yesterday = db.query(OnlineStatus).filter(
-            OnlineStatus.user_id == user_id,
-            OnlineStatus.timestamp >= yesterday_start,
-            OnlineStatus.timestamp < today_start
-        ).order_by(OnlineStatus.timestamp.desc()).first()
+#         # Get user's last status from yesterday
+#         last_status_yesterday = db.query(OnlineStatus).filter(
+#             OnlineStatus.user_id == user_id,
+#             OnlineStatus.timestamp >= yesterday_start,
+#             OnlineStatus.timestamp < today_start
+#         ).order_by(OnlineStatus.timestamp.desc()).first()
         
-        # Check if user already has a status today
-        existing_status_today = db.query(OnlineStatus).filter(
-            OnlineStatus.user_id == user_id,
-            OnlineStatus.timestamp >= today_start
-        ).first()
+#         # Check if user already has a status today
+#         existing_status_today = db.query(OnlineStatus).filter(
+#             OnlineStatus.user_id == user_id,
+#             OnlineStatus.timestamp >= today_start
+#         ).first()
         
-        # Only create new online status if:
-        # 1. No status exists today, OR
-        # 2. User was offline yesterday (daily reset)
-        should_set_online = (
-            not existing_status_today or 
-            (last_status_yesterday and not last_status_yesterday.is_online)
-        )
+#         # Only create new online status if:
+#         # 1. No status exists today, OR
+#         # 2. User was offline yesterday (daily reset)
+#         should_set_online = (
+#             not existing_status_today or 
+#             (last_status_yesterday and not last_status_yesterday.is_online)
+#         )
         
-        if should_set_online:
-            online_status = OnlineStatus(
-                attendance_id=attendance.attendance_id,
-                user_id=user_id,
-                is_online=True,
-                reason="Online status after check-in" + (" (daily reset)" if last_status_yesterday and not last_status_yesterday.is_online else ""),
-                timestamp=now_ist()
-            )
-            db.add(online_status)
-            db.commit()
+#         if should_set_online:
+#             online_status = OnlineStatus(
+#                 attendance_id=attendance.attendance_id,
+#                 user_id=user_id,
+#                 is_online=True,
+#                 reason="Online status after check-in" + (" (daily reset)" if last_status_yesterday and not last_status_yesterday.is_online else ""),
+#                 timestamp=now_ist()
+#             )
+#             db.add(online_status)
+#             db.commit()
         
-        print(f"Successfully created check-in for user {user_id}, attendance ID: {attendance.attendance_id}")
+#         print(f"Successfully created check-in for user {user_id}, attendance ID: {attendance.attendance_id}")
         
-        return _prepare_attendance_payload(attendance)
+#         return _prepare_attendance_payload(attendance)
         
-    except Exception as e:
-        db.rollback()
-        print(f"Error in check-in for user {user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred while processing check-in: {str(e)}"
-        )
+#     except Exception as e:
+#         db.rollback()
+#         print(f"Error in check-in for user {user_id}: {str(e)}")
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"An error occurred while processing check-in: {str(e)}"
+#         )
 
 # Employee Check-In via JSON (base64 selfie)
 @router.post("/check-in/json", response_model=AttendanceOut, status_code=status.HTTP_201_CREATED)
@@ -1117,6 +1117,12 @@ async def employee_check_in_json(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        if payload.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to check in for another user."
+            )
+
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
@@ -1217,154 +1223,154 @@ async def employee_check_in_json(
 
 
 # Employee Check-Out
-@router.post("/check-out", response_model=AttendanceOut)
-async def employee_check_out_route(
-    request: Request,
-    user_id: int = Form(...),
-    gps_location: Optional[str] = Form(None),
-    selfie: Optional[UploadFile] = File(None),
-    location_data: Optional[str] = Form(None),
-    work_summary: Optional[str] = Form(None, description="Summary of today's work"),
-    work_report: Optional[UploadFile] = File(None),
-    task_deadline_reason: Optional[str] = Form(None, description="Reason for incomplete tasks on deadline"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    try:
-        # Validate user exists and is active
-        user = db.query(User).filter(User.user_id == user_id, User.is_active == True).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found or inactive"
-            )
+# @router.post("/check-out", response_model=AttendanceOut)
+# async def employee_check_out_route(
+#     request: Request,
+#     user_id: int = Form(...),
+#     gps_location: Optional[str] = Form(None),
+#     selfie: Optional[UploadFile] = File(None),
+#     location_data: Optional[str] = Form(None),
+#     work_summary: Optional[str] = Form(None, description="Summary of today's work"),
+#     work_report: Optional[UploadFile] = File(None),
+#     task_deadline_reason: Optional[str] = Form(None, description="Reason for incomplete tasks on deadline"),
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user),
+# ):
+#     try:
+#         # Validate user exists and is active
+#         user = db.query(User).filter(User.user_id == user_id, User.is_active == True).first()
+#         if not user:
+#             raise HTTPException(
+#                 status_code=status.HTTP_404_NOT_FOUND,
+#                 detail="User not found or inactive"
+#             )
 
-        # Parse and validate location data
-        location_source = location_data or gps_location
-        processed_location: Dict[str, Any]
-        try:
-            normalized_location = _ensure_location_dict(location_source)
-            processed_location = validate_and_process_location(normalized_location)
-        except HTTPException:
-            raise
-        except Exception:
-            processed_location = {
-                "address": "Location not provided",
-                "latitude": None,
-                "longitude": None,
-            }
+#         # Parse and validate location data
+#         location_source = location_data or gps_location
+#         processed_location: Dict[str, Any]
+#         try:
+#             normalized_location = _ensure_location_dict(location_source)
+#             processed_location = validate_and_process_location(normalized_location)
+#         except HTTPException:
+#             raise
+#         except Exception:
+#             processed_location = {
+#                 "address": "Location not provided",
+#                 "latitude": None,
+#                 "longitude": None,
+#             }
 
-        # Check for overdue tasks before allowing checkout
-        from app.db.models.task import Task
-        from app.enums import TaskStatus
-        from datetime import date
+#         # Check for overdue tasks before allowing checkout
+#         from app.db.models.task import Task
+#         from app.enums import TaskStatus
+#         from datetime import date
         
-        today = date.today()
-        overdue_tasks = db.query(Task).filter(
-            Task.assigned_to == user_id,
-            Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
-            Task.due_date == today
-        ).all()
+#         today = date.today()
+#         overdue_tasks = db.query(Task).filter(
+#             Task.assigned_to == user_id,
+#             Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+#             Task.due_date == today
+#         ).all()
         
-        # If there are tasks due today, require a reason
-        if overdue_tasks:
-            reason_text = (task_deadline_reason or "").strip()
-            if not reason_text:
-                task_titles = [task.title for task in overdue_tasks]
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"You have tasks due today that are not completed: {', '.join(task_titles)}. Please provide a reason for not completing them before checkout."
-                )
+#         # If there are tasks due today, require a reason
+#         if overdue_tasks:
+#             reason_text = (task_deadline_reason or "").strip()
+#             if not reason_text:
+#                 task_titles = [task.title for task in overdue_tasks]
+#                 raise HTTPException(
+#                     status_code=status.HTTP_400_BAD_REQUEST,
+#                     detail=f"You have tasks due today that are not completed: {', '.join(task_titles)}. Please provide a reason for not completing them before checkout."
+#                 )
             
-            # Validate reason length and content
-            if len(reason_text) < 15:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Task deadline reason must be at least 15 characters long."
-                )
+#             # Validate reason length and content
+#             if len(reason_text) < 15:
+#                 raise HTTPException(
+#                     status_code=status.HTTP_400_BAD_REQUEST,
+#                     detail="Task deadline reason must be at least 15 characters long."
+#                 )
             
-            # Check if reason contains only numbers
-            if reason_text.isdigit():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Task deadline reason cannot contain only numbers. Please provide a meaningful explanation."
-                )
+#             # Check if reason contains only numbers
+#             if reason_text.isdigit():
+#                 raise HTTPException(
+#                     status_code=status.HTTP_400_BAD_REQUEST,
+#                     detail="Task deadline reason cannot contain only numbers. Please provide a meaningful explanation."
+#                 )
 
-        summary_text = (work_summary or "").strip()
-        if not summary_text:
-            # Provide a default work summary if none is provided (for automatic logout scenarios)
-            summary_text = "Automatic check-out (no summary provided)"
-            logger.info(f"User {user_id} checked out without work summary - using default")
+#         summary_text = (work_summary or "").strip()
+#         if not summary_text:
+#             # Provide a default work summary if none is provided (for automatic logout scenarios)
+#             summary_text = "Automatic check-out (no summary provided)"
+#             logger.info(f"User {user_id} checked out without work summary - using default")
 
-        # Save selfie if provided
-        selfie_path = save_selfie(user_id, selfie, 'checkout') if selfie else None
-        work_report_path = save_work_report_file(user_id, work_report) if work_report else None
+#         # Save selfie if provided
+#         selfie_path = save_selfie(user_id, selfie, 'checkout') if selfie else None
+#         work_report_path = save_work_report_file(user_id, work_report) if work_report else None
 
-        # Find today's check-in
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-        attendance = (
-            db.query(Attendance)
-            .filter(
-                Attendance.user_id == user_id,
-                Attendance.check_in >= today_start,
-                Attendance.check_out.is_(None)  # Only update if not already checked out
-            )
-            .order_by(Attendance.check_in.desc())
-            .first()
-        )
+#         # Find today's check-in
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         attendance = (
+#             db.query(Attendance)
+#             .filter(
+#                 Attendance.user_id == user_id,
+#                 Attendance.check_in >= today_start,
+#                 Attendance.check_out.is_(None)  # Only update if not already checked out
+#             )
+#             .order_by(Attendance.check_in.desc())
+#             .first()
+#         )
 
-        if not attendance:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No active check-in found for today"
-            )
+#         if not attendance:
+#             raise HTTPException(
+#                 status_code=status.HTTP_400_BAD_REQUEST,
+#                 detail="No active check-in found for today"
+#             )
 
-        # Update check-out with location data
-        attendance.check_out = now_ist()
-        if selfie_path:
-            attendance.selfie = _dump_selfie_data(attendance.selfie, check_out=selfie_path)
-        attendance.gps_location = _compose_location_entry(
-            attendance.gps_location,
-            "Check-out",
-            processed_location,
-        )
-        attendance.work_summary = summary_text
-        if work_report_path:
-            attendance.work_report = work_report_path
-        if overdue_tasks and task_deadline_reason:
-            attendance.task_deadline_reason = task_deadline_reason.strip()
+#         # Update check-out with location data
+#         attendance.check_out = now_ist()
+#         if selfie_path:
+#             attendance.selfie = _dump_selfie_data(attendance.selfie, check_out=selfie_path)
+#         attendance.gps_location = _compose_location_entry(
+#             attendance.gps_location,
+#             "Check-out",
+#             processed_location,
+#         )
+#         attendance.work_summary = summary_text
+#         if work_report_path:
+#             attendance.work_report = work_report_path
+#         if overdue_tasks and task_deadline_reason:
+#             attendance.task_deadline_reason = task_deadline_reason.strip()
 
-        # Calculate total hours worked
-        time_worked = attendance.check_out - attendance.check_in
-        attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)  # Convert to hours with 2 decimal places
+#         # Calculate total hours worked
+#         time_worked = attendance.check_out - attendance.check_in
+#         attendance.total_hours = round(time_worked.total_seconds() / 3600, 2)  # Convert to hours with 2 decimal places
         
-        # Automatically set user as offline after check-out
-        from app.db.models.online_status import OnlineStatus
-        offline_status = OnlineStatus(
-            attendance_id=attendance.attendance_id,
-            user_id=user_id,
-            is_online=False,
-            reason="Automatic offline status after check-out",
-            timestamp=now_ist()
-        )
-        db.add(offline_status)
+#         # Automatically set user as offline after check-out
+#         from app.db.models.online_status import OnlineStatus
+#         offline_status = OnlineStatus(
+#             attendance_id=attendance.attendance_id,
+#             user_id=user_id,
+#             is_online=False,
+#             reason="Automatic offline status after check-out",
+#             timestamp=now_ist()
+#         )
+#         db.add(offline_status)
         
-        db.commit()
-        db.refresh(attendance)
+#         db.commit()
+#         db.refresh(attendance)
         
-        print(f"Successfully processed check-out for user {user_id}, attendance ID: {attendance.attendance_id}")
+#         print(f"Successfully processed check-out for user {user_id}, attendance ID: {attendance.attendance_id}")
         
-        return _prepare_attendance_payload(attendance)
+#         return _prepare_attendance_payload(attendance)
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        print(f"Error in check-out for user {user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred while processing check-out: {str(e)}"
-        )
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         db.rollback()
+#         print(f"Error in check-out for user {user_id}: {str(e)}")
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"An error occurred while processing check-out: {str(e)}"
+#         )
 
 
 # Employee Check-Out via JSON (base64 selfie)
@@ -1376,6 +1382,12 @@ async def employee_check_out_json(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        if payload.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to check out for another user."
+            )
+
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
@@ -2325,6 +2337,251 @@ def get_user_current_online_status(
     }
 
 
+@router.get("/working-hours/summary")
+def working_hours_summary(
+    period: Literal["week", "current_month", "last_month", "last_3_months", "custom"] = Query(
+        "week",
+        description="Date range filter: week, current_month, last_month, last_3_months, custom",
+    ),
+    user_id: Optional[int] = Query(None, description="Target user_id (defaults to current user)"),
+    start_date: Optional[str] = Query(None, description="Custom start date (YYYY-MM-DD). Required when period=custom"),
+    end_date: Optional[str] = Query(None, description="Custom end date (YYYY-MM-DD). Required when period=custom"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Aggregate working hours for a user across a date range.
+    Working hours only include time when user was online (based on OnlineStatus logs).
+    """
+    from app.db.models.online_status import OnlineStatus
+
+    target_user_id = user_id if user_id is not None else current_user.user_id
+
+    # Permission / role hierarchy:
+    # - Everyone can view their own summary
+    # - ADMIN: can view all except Admins (and self already handled)
+    # - HR: can view all except Admins + HRs
+    # - MANAGER: can view non-privileged users (not Admin/HR/Manager) in their department(s) (supports comma-separated)
+    if target_user_id != current_user.user_id:
+        target_user = db.query(User).filter(User.user_id == target_user_id).first()
+        if not target_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        if current_user.role == RoleEnum.ADMIN:
+            if target_user.role == RoleEnum.ADMIN:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif current_user.role == RoleEnum.HR:
+            if target_user.role in [RoleEnum.ADMIN, RoleEnum.HR]:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif current_user.role == RoleEnum.MANAGER:
+            if target_user.role in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+            manager_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
+            target_tokens = set(department_tokens_lower(getattr(target_user, "department", None)))
+            if not manager_tokens or not target_tokens or not manager_tokens.intersection(target_tokens):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        else:
+            # TeamLead/Employee/etc cannot view other users
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    def shift_month(year: int, month: int, delta_months: int) -> tuple[int, int]:
+        m = month + delta_months
+        y = year + (m - 1) // 12
+        m = (m - 1) % 12 + 1
+        return y, m
+
+    now = now_ist()
+
+    # Build [start_dt, end_dt) bounds in naive IST
+    if period == "week":
+        today = now.date()
+        start_of_week = today - timedelta(days=today.weekday())  # Monday
+        start_dt = datetime.combine(start_of_week, time.min)
+        end_dt = now
+    elif period == "current_month":
+        start_dt = datetime(now.year, now.month, 1)
+        end_dt = now
+    elif period == "last_month":
+        this_month_start = datetime(now.year, now.month, 1)
+        ly, lm = shift_month(now.year, now.month, -1)
+        start_dt = datetime(ly, lm, 1)
+        end_dt = this_month_start
+    elif period == "last_3_months":
+        sy, sm = shift_month(now.year, now.month, -2)
+        start_dt = datetime(sy, sm, 1)
+        end_dt = now
+    elif period == "custom":
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="For custom period, start_date and end_date are required (YYYY-MM-DD)")
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)  # inclusive end_date
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+        if end_dt <= start_dt:
+            raise HTTPException(status_code=400, detail="end_date must be the same as or after start_date")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid period")
+
+    def add_overlap_seconds(
+        seg_start: datetime,
+        seg_end: datetime,
+        clamp_start: datetime,
+        clamp_end: datetime,
+    ) -> float:
+        s = max(seg_start, clamp_start)
+        e = min(seg_end, clamp_end)
+        if e <= s:
+            return 0.0
+        return (e - s).total_seconds()
+
+    def compute_online_offline_seconds(
+        check_in_time: datetime,
+        effective_start: datetime,
+        effective_end: datetime,
+        logs: list[OnlineStatus],
+    ) -> tuple[float, float, bool]:
+        """
+        Compute (online_seconds, offline_seconds, status_at_end) for one attendance,
+        clamped to [effective_start, effective_end).
+        Assumes user is online at check-in by default.
+        """
+        online_seconds = 0.0
+        offline_seconds = 0.0
+
+        prev_time = check_in_time
+        prev_status = True
+
+        for log in logs:
+            t = log.timestamp
+            if t < check_in_time:
+                continue
+
+            # Handle out-of-order or duplicate timestamps gracefully
+            if t <= prev_time:
+                prev_status = log.is_online
+                continue
+
+            if t > effective_end:
+                break
+
+            seg_seconds = add_overlap_seconds(prev_time, t, effective_start, effective_end)
+            if seg_seconds:
+                if prev_status:
+                    online_seconds += seg_seconds
+                else:
+                    offline_seconds += seg_seconds
+
+            prev_time = t
+            prev_status = log.is_online
+
+        # Final segment until effective_end
+        if effective_end > prev_time:
+            seg_seconds = add_overlap_seconds(prev_time, effective_end, effective_start, effective_end)
+            if seg_seconds:
+                if prev_status:
+                    online_seconds += seg_seconds
+                else:
+                    offline_seconds += seg_seconds
+
+        return online_seconds, offline_seconds, prev_status
+
+    # Fetch attendance sessions within the range.
+    # Note: We intentionally scope by check_in date to avoid counting stale/open
+    # attendance records that started before the requested period.
+    attendances = (
+        db.query(Attendance)
+        .filter(Attendance.user_id == target_user_id)
+        .filter(Attendance.check_in >= start_dt)
+        .filter(Attendance.check_in < end_dt)
+        .order_by(Attendance.check_in.asc())
+        .all()
+    )
+
+    attendance_ids = [a.attendance_id for a in attendances]
+
+    logs_by_attendance: Dict[int, List[OnlineStatus]] = {}
+    if attendance_ids:
+        status_logs = (
+            db.query(OnlineStatus)
+            .filter(OnlineStatus.attendance_id.in_(attendance_ids))
+            .filter(OnlineStatus.timestamp < end_dt)
+            .order_by(OnlineStatus.attendance_id.asc(), OnlineStatus.timestamp.asc())
+            .all()
+        )
+        for log in status_logs:
+            logs_by_attendance.setdefault(log.attendance_id, []).append(log)
+
+    total_online_seconds = 0.0
+    total_offline_seconds = 0.0
+    days: Dict[str, Dict[str, Union[str, float, int]]] = {}
+    attendance_breakdown: List[Dict[str, Any]] = []
+
+    for att in attendances:
+        att_end = att.check_out if att.check_out else now
+        effective_end = min(att_end, end_dt)
+        effective_start = max(att.check_in, start_dt)
+
+        if effective_end <= effective_start:
+            continue
+
+        logs = logs_by_attendance.get(att.attendance_id, [])
+        online_s, offline_s, status_at_end = compute_online_offline_seconds(
+            check_in_time=att.check_in,
+            effective_start=effective_start,
+            effective_end=effective_end,
+            logs=logs,
+        )
+
+        total_online_seconds += online_s
+        total_offline_seconds += offline_s
+
+        day_key = att.check_in.date().isoformat()
+        day_entry = days.get(day_key)
+        if not day_entry:
+            day_entry = {
+                "date": day_key,
+                "working_hours": 0.0,
+                "working_seconds": 0,
+                "offline_hours": 0.0,
+                "offline_seconds": 0,
+            }
+            days[day_key] = day_entry
+
+        day_entry["working_seconds"] = int(day_entry["working_seconds"]) + int(online_s)
+        day_entry["offline_seconds"] = int(day_entry["offline_seconds"]) + int(offline_s)
+        day_entry["working_hours"] = round(float(day_entry["working_seconds"]) / 3600, 2)
+        day_entry["offline_hours"] = round(float(day_entry["offline_seconds"]) / 3600, 2)
+
+        attendance_breakdown.append(
+            {
+                "attendance_id": att.attendance_id,
+                "date": day_key,
+                "check_in": att.check_in.isoformat(),
+                "check_out": att.check_out.isoformat() if att.check_out else None,
+                "working_hours": round(online_s / 3600, 2),
+                "working_seconds": int(online_s),
+                "offline_hours": round(offline_s / 3600, 2),
+                "offline_seconds": int(offline_s),
+                "is_currently_online": status_at_end if att.check_out is None else False,
+            }
+        )
+
+    days_list = sorted(days.values(), key=lambda x: x["date"])
+
+    return {
+        "user_id": target_user_id,
+        "period": period,
+        "range_start": start_dt.isoformat(),
+        "range_end": end_dt.isoformat(),
+        "total_working_hours": round(total_online_seconds / 3600, 2),
+        "total_working_seconds": int(total_online_seconds),
+        "total_offline_hours": round(total_offline_seconds / 3600, 2),
+        "total_offline_seconds": int(total_offline_seconds),
+        "days": days_list,
+        "attendances": attendance_breakdown,
+    }
+
 @router.get("/working-hours/{attendance_id}")
 def calculate_working_hours(
     attendance_id: int,
@@ -2469,14 +2726,15 @@ def download_monthly_grid_pdf(
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
 
     buffer = export_monthly_grid_pdf(
-        db, 
-        month, 
-        year, 
+        db,
+        month,
+        year,
         department=department,
         employee_id=employee_id,
         date_from=date_from,
         date_to=date_to,
-        status=status
+        status=status,
+        current_user=current_user,
     )
 
     filename = f"attendance_grid_{month:02d}_{year}.pdf"
@@ -2509,7 +2767,8 @@ def download_monthly_detailed_grid_pdf(
         employee_id=employee_id,
         date_from=date_from,
         date_to=date_to,
-        status=status
+        status=status,
+        current_user=current_user,
     )
 
     filename = f"attendance_detailed_grid_{month:02d}_{year}.pdf"
@@ -2535,14 +2794,15 @@ def download_monthly_grid_csv(
     from app.crud.attendance_grid_export import export_monthly_grid_csv
 
     output = export_monthly_grid_csv(
-        db, 
-        month, 
-        year, 
+        db,
+        month,
+        year,
         department=department,
         employee_id=employee_id,
         date_from=date_from,
         date_to=date_to,
-        status=status
+        status=status,
+        current_user=current_user,
     )
 
     filename = f"attendance_grid_{month:02d}_{year}.csv"
