@@ -234,7 +234,7 @@ def get_employee_performance(
             
             completed_tasks = db.query(Task).filter(
                 Task.assigned_to == emp.user_id,
-                Task.status == str(TaskStatus.COMPLETED)
+                Task.status == TaskStatus.COMPLETED.value
             ).count()
             
             task_completion_rate = round((completed_tasks / total_tasks) * 100) if total_tasks > 0 else 0
@@ -392,12 +392,12 @@ def get_department_metrics(
         
         tasks_completed = db.query(Task).filter(
             Task.assigned_to.in_(dept_user_ids),
-            Task.status == str(TaskStatus.COMPLETED)
+            Task.status == TaskStatus.COMPLETED.value
         ).count()
         
         tasks_pending = db.query(Task).filter(
             Task.assigned_to.in_(dept_user_ids),
-            Task.status.in_([str(TaskStatus.PENDING), str(TaskStatus.IN_PROGRESS)])
+            Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])
         ).count()
         
         # Calculate task completion rate
@@ -519,7 +519,7 @@ def get_executive_summary(
         
         completed_tasks = db.query(Task).filter(
             Task.assigned_to == emp.user_id,
-            Task.status == str(TaskStatus.COMPLETED)
+            Task.status == TaskStatus.COMPLETED.value
         ).count()
         
         task_completion_score = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0  # 0 if no tasks assigned
@@ -593,7 +593,7 @@ def get_executive_summary(
     
     # Total tasks completed
     total_tasks_completed = db.query(Task).filter(
-        Task.status == str(TaskStatus.COMPLETED)
+        Task.status == TaskStatus.COMPLETED.value
     ).count()
     
     # Find best department
@@ -788,9 +788,9 @@ async def export_performance_report(
             ).all()
             
             total_tasks = len(tasks)
-            completed_tasks = sum(1 for t in tasks if t.status == str(TaskStatus.COMPLETED))
-            pending_tasks = sum(1 for t in tasks if t.status == str(TaskStatus.PENDING))
-            in_progress_tasks = sum(1 for t in tasks if t.status == str(TaskStatus.IN_PROGRESS))
+            pending_tasks = sum(1 for t in tasks if t.status == TaskStatus.PENDING.value)
+            in_progress_tasks = sum(1 for t in tasks if t.status == TaskStatus.IN_PROGRESS.value)
+            completed_tasks = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED.value)
             
             task_completion_rate = round((completed_tasks / total_tasks) * 100) if total_tasks > 0 else 0
             
@@ -1864,7 +1864,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
         
         # Get completed_by from TaskHistory
         completed_by_name = "N/A"
-        if task.status == str(TaskStatus.COMPLETED):
+        if task.status == TaskStatus.COMPLETED.value:
             # Find the history entry where status was changed to COMPLETED
             completion_history = db.query(TaskHistory).filter(
                 TaskHistory.task_id == task.task_id,
