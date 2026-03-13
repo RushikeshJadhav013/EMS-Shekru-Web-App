@@ -20,6 +20,8 @@ class Task(Base):
     assigned_to = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     status = Column(String(50), default=TaskStatus.PENDING)
     priority = Column(String(20), default="Medium")
+    # Optional explicit start date for the task lifecycle
+    start_date = Column(DateTime, nullable=True)
     due_date = Column(DateTime)
     created_at = Column(DateTime, default=get_now_ist)
     last_passed_by = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)

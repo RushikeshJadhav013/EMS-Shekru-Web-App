@@ -7,6 +7,8 @@ class TaskBase(BaseModel):
     title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Task description (max 2000 characters)")
     status: Optional[Literal['Pending', 'In Progress', 'Overdue', 'Completed', 'Cancelled']] = Field("Pending", description="Task status")
+    # Task can start in the past; start_date is informational, not restricted.
+    start_date: Optional[date] = Field(None, description="Task start date (can be past or today)")
     due_date: Optional[date] = Field(None, description="Task due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field("Medium", description="Task priority")
 
@@ -60,6 +62,7 @@ class TaskOut(BaseModel):
     title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Task description (max 2000 characters)")
     status: Optional[Literal['Pending', 'In Progress', 'Overdue', 'Completed', 'Cancelled']] = Field("Pending", description="Task status")
+    start_date: Optional[date] = Field(None, description="Task start date")
     due_date: Optional[date] = Field(None, description="Task due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field("Medium", description="Task priority")
     assigned_to: int = Field(..., gt=0, description="Assigned to user ID")
@@ -99,6 +102,7 @@ class TaskUpdate(BaseModel):
     title: Optional[constr(min_length=3, max_length=255, strip_whitespace=True)] = Field(None, description="Updated title")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Updated description")
     assigned_to: Optional[int] = Field(None, gt=0, description="New assignee user ID")
+    start_date: Optional[date] = Field(None, description="Updated start date (can be past or today)")
     due_date: Optional[date] = Field(None, description="Updated due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field(None, description="Updated task priority")
     project_id: Optional[int] = Field(
@@ -134,6 +138,7 @@ class TaskBulkUpdateFields(BaseModel):
     title: Optional[constr(min_length=3, max_length=255, strip_whitespace=True)] = Field(None, description="Updated title")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Updated description")
     # assigned_to: excluded from bulk update - use add_assigned_to_ids to add new assignees
+    start_date: Optional[date] = Field(None, description="Updated start date (can be past or today)")
     due_date: Optional[date] = Field(None, description="Updated due date")
     priority: Optional[Literal['Low', 'Medium', 'High', 'Urgent']] = Field(None, description="Updated task priority")
 
