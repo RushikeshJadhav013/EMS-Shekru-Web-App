@@ -5,7 +5,6 @@ from datetime import datetime
 class ChatUserSchema(BaseModel):
     user_id: int
     name: str
-    email: str
     role: str
 
 class MessageSchema(BaseModel):

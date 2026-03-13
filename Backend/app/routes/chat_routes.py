@@ -43,7 +43,6 @@ def list_chat_eligible_users(
         ChatUserSchema(
             user_id=u.user_id,
             name=u.name,
-            email=u.email,
             role=u.role.value if hasattr(u.role, "value") else str(u.role),
         )
         for u in users

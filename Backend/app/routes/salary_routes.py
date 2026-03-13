@@ -1215,6 +1215,13 @@ def get_unread_notifications_count(
 
 def _salary_to_response(salary: EmployeeSalary) -> dict:
     """Convert salary model to response dict with computed fields"""
+    # Some legacy/manual salary records may not have package_ctc_annual stored.
+    # EmployeeSalaryOut requires a float, so fall back to calculated CTC.
+    package_ctc_annual = (
+        salary.package_ctc_annual
+        if getattr(salary, "package_ctc_annual", None) is not None
+        else salary.ctc_annual
+    )
     return {
         "id": salary.id,
         "user_id": salary.user_id,
@@ -1241,7 +1248,7 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "updated_at": salary.updated_at,
         "total_earnings_annual": salary.total_earnings_annual,
         "total_deductions_annual": salary.total_deductions_annual,
-        "package_ctc_annual": salary.package_ctc_annual,  # Offered package CTC (for display)
+        "package_ctc_annual": float(package_ctc_annual),  # Offered package CTC (or computed fallback)
         "display_ctc_annual": salary.display_ctc_annual,  # CTC to display (package if set, else calculated)
         "monthly_ctc": salary.monthly_ctc,  # Calculated monthly CTC
         "display_monthly_ctc": salary.display_monthly_ctc,  # Monthly CTC to display
