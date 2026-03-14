@@ -89,7 +89,9 @@ def create_task(
     description: str,
     assigned_by: int,
     assigned_to: int,
-    due_date: Optional[datetime],
+    *,
+    start_date: Optional[datetime] = None,
+    due_date: Optional[datetime] = None,
     priority: Optional[str] = "Medium",
     project_id: Optional[int] = None,
 ):
@@ -99,6 +101,7 @@ def create_task(
         description=description,
         assigned_by=assigned_by,
         assigned_to=assigned_to,
+        start_date=start_date,
         due_date=due_date,
         status=TaskStatus.PENDING,
         priority=priority or "Medium",

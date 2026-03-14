@@ -23,14 +23,15 @@ router = APIRouter(
 
 
 def _validate_project_dates(start_date: Optional[date], end_date: Optional[date]) -> None:
-    """Ensure project dates are not in the past and end_date is not before start_date."""
-    today = date.today()
+    """
+    Validate project dates.
 
-    if start_date is not None and start_date < today:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="start_date cannot be in the past.",
-        )
+    Rules:
+    - start_date: can be in the past (no restriction).
+    - end_date: cannot be in the past.
+    - If both provided, end_date cannot be before start_date.
+    """
+    today = date.today()
 
     if end_date is not None and end_date < today:
         raise HTTPException(
@@ -531,7 +532,9 @@ def add_project_member(
 @router.get(
     "/{project_id}/members",
     response_model=List[ProjectMemberOut],
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
+    # Allow all roles that can belong to projects to view members:
+    # Admin, HR, Manager, Team Lead, Employee
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE))],
 )
 def list_project_members(
     project_id: int,
@@ -542,11 +545,12 @@ def list_project_members(
     List active members for a project.
 
     - Admin/HR: can list members of any project.
-    - Manager: can list members only for projects where they are active members.
+    - Manager/TeamLead/Employee: can list members only for projects where they are active members.
     """
     _ensure_project_exists(db, project_id)
 
-    if current_user.role == RoleEnum.MANAGER:
+    # Non-Admin/HR roles (Manager, Team Lead, Employee) must be active members of the project
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
         membership = (
             db.query(ProjectMember)
             .filter(
@@ -559,7 +563,7 @@ def list_project_members(
         if not membership:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Managers can view members only for their own projects.",
+                detail="You can view members only for projects where you are a member.",
             )
 
     members = (

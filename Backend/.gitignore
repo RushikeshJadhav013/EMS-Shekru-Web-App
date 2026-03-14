@@ -64,7 +64,8 @@ Thumbs.db
 *.swp
 
 static/profile_photos/
-static/selfies/# ===========================================
+static/selfies/
+# ===========================================
 # Python Bytecode & Compiled Files
 # ===========================================
 __pycache__/
@@ -360,3 +361,5 @@ __pycache__/
 firebase_service_acc.json
 firebase_service_acc*.json
 *.firebase.key.json
+
+static/chat_documents/

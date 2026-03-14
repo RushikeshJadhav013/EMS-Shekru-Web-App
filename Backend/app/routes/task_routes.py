@@ -2,7 +2,7 @@ import json
 from datetime import datetime, date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.db.database import get_db
 from app.crud.task_crud import (
@@ -138,8 +138,9 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         task.description or "",
         user.user_id,
         task.assigned_to,
-        task.due_date,
-        task.priority or "Medium",
+        start_date=datetime.combine(task.start_date, datetime.min.time()) if task.start_date else None,
+        due_date=datetime.combine(task.due_date, datetime.min.time()) if task.due_date else None,
+        priority=task.priority or "Medium",
         project_id=task.project_id,
     )
     # Ensure assignee is added as a project member when task is linked to a project
@@ -149,6 +150,7 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         title=t.title,
         description=t.description,
         status=t.status,
+        start_date=t.start_date.date() if t.start_date else None,
         due_date=t.due_date.date() if t.due_date else None,
         priority=t.priority,
         assigned_to=t.assigned_to,
@@ -237,8 +239,9 @@ def assign_tasks_bulk(
             payload.description or "",
             user.user_id,
             assignee.user_id,
-            payload.due_date,
-            payload.priority or "Medium",
+            start_date=datetime.combine(payload.start_date, datetime.min.time()) if payload.start_date else None,
+            due_date=datetime.combine(payload.due_date, datetime.min.time()) if payload.due_date else None,
+            priority=payload.priority or "Medium",
             project_id=payload.project_id,
         )
         # Ensure each assignee is added as a project member when task is linked to a project
@@ -252,6 +255,7 @@ def assign_tasks_bulk(
             title=t.title,
             description=t.description,
             status=t.status,
+            start_date=t.start_date.date() if t.start_date else None,
             due_date=t.due_date.date() if t.due_date else None,
             priority=t.priority,
             assigned_to=t.assigned_to,
@@ -279,18 +283,101 @@ def my_tasks(
     List standalone tasks for the current user (non-project tasks only).
     Project-linked tasks are exposed via a separate endpoint to avoid duplication in the UI.
     """
-    tasks = list_tasks(db, user.user_id, project_only=False)
+    """
+    List standalone (non-project) tasks visible to the current user.
+    Visibility rules:
+    - ADMIN: all non-project tasks except tasks involving other Admins only.
+    - HR: all non-project tasks except tasks created by Admins and assigned to other HRs.
+    - MANAGER: all non-project tasks related to their department(s).
+    - TEAM_LEAD / EMPLOYEE: only tasks where they are creator/assignee/participant (existing behavior).
+    """
+    # Non-project tasks only
+    TaskCreator = aliased(User)
+    TaskAssignee = aliased(User)
+
+    if user.role == RoleEnum.ADMIN:
+        # Admins can see all non-project tasks except tasks where Admins are involved
+        # and the current admin is not part of the task.
+        q = (
+            db.query(Task)
+            .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
+            .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+            .filter(Task.project_id.is_(None))
+        )
+
+        # Exclude tasks involving other admins only (creator or assignee is ADMIN)
+        q = q.filter(
+            ~(
+                (
+                    (TaskCreator.role == RoleEnum.ADMIN)
+                    | (TaskAssignee.role == RoleEnum.ADMIN)
+                )
+                & (Task.assigned_by != user.user_id)
+                & (Task.assigned_to != user.user_id)
+            )
+        )
+        tasks = q.all()
+
+    elif user.role == RoleEnum.HR:
+        # HR can see all non-project tasks except those created by Admins and
+        # assigned to other HRs (i.e. HRs other than themselves).
+        q = (
+            db.query(Task)
+            .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
+            .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+            .filter(Task.project_id.is_(None))
+        )
+
+        q = q.filter(
+            ~(
+                (TaskCreator.role == RoleEnum.ADMIN)
+                & (TaskAssignee.role == RoleEnum.HR)
+                & (Task.assigned_to != user.user_id)
+            )
+        )
+        tasks = q.all()
+
+    elif user.role == RoleEnum.MANAGER:
+        # Managers: see non-project tasks related to their department(s).
+        manager_tokens = set(department_tokens_lower(getattr(user, "department", None)))
+        if not manager_tokens:
+            tasks = []
+        else:
+            tasks = (
+                db.query(Task)
+                .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
+                .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+                .filter(Task.project_id.is_(None))
+                .all()
+            )
+
+            def in_manager_dept(u: User | None) -> bool:
+                if not u or not getattr(u, "department", None):
+                    return False
+                tokens = set(department_tokens_lower(u.department))
+                return bool(manager_tokens & tokens)
+
+            tasks = [
+                t
+                for t in tasks
+                if in_manager_dept(t.assigned_by_user) or in_manager_dept(t.assigned_to_user)
+            ]
+
+    else:
+        # Team Leads / Employees: keep existing per-user visibility via list_tasks
+        tasks = list_tasks(db, user.user_id, project_only=False)
+
     return [
         TaskOut(
             task_id=t.task_id,
             title=t.title,
             description=t.description,
             status=t.status,
+            start_date=t.start_date.date() if t.start_date else None,
             due_date=t.due_date.date() if t.due_date else None,
             priority=t.priority,
             assigned_to=t.assigned_to,
             assigned_by=t.assigned_by,
-            # project_id=t.project_id,
             created_at=t.created_at,
             last_passed_by=t.last_passed_by,
             last_passed_to=t.last_passed_to,
@@ -313,10 +400,16 @@ def project_tasks(
 ):
     """
     List project-linked tasks for a given project that are visible to the current user.
-    Validations:
-    - 404 if project does not exist.
-    - 403 if the user is not a member of the project (non-admin/HR).
-    A task is included if the user is assignee/assigner/participant in its history.
+
+    Project access:
+    - Admin/HR: can access any project.
+    - Manager/TeamLead/Employee: must be active members of the project.
+
+    Task visibility inside the project:
+    - ADMIN: all tasks in the project except tasks involving only other Admins.
+    - HR: all tasks in the project except tasks created by Admins and assigned to other HRs.
+    - MANAGER: all tasks in the project related to their department(s).
+    - TEAM_LEAD / EMPLOYEE: only tasks where they are creator/assignee/participant.
     """
     # Ensure project exists
     project = db.query(Project).filter(Project.project_id == project_id).first()
@@ -343,13 +436,86 @@ def project_tasks(
                 detail="You are not a member of this project",
             )
 
-    tasks = list_tasks(db, user.user_id, project_only=True, project_id=project_id)
+    TaskCreator = aliased(User)
+    TaskAssignee = aliased(User)
+
+    if user.role == RoleEnum.ADMIN:
+        # Admins: all tasks in the project except tasks where only other Admins are involved
+        q = (
+            db.query(Task)
+            .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
+            .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+            .filter(Task.project_id == project_id)
+        )
+
+        q = q.filter(
+            ~(
+                (
+                    (TaskCreator.role == RoleEnum.ADMIN)
+                    | (TaskAssignee.role == RoleEnum.ADMIN)
+                )
+                & (Task.assigned_by != user.user_id)
+                & (Task.assigned_to != user.user_id)
+            )
+        )
+        tasks = q.all()
+
+    elif user.role == RoleEnum.HR:
+        # HR: all tasks in the project except tasks created by Admins and
+        # assigned to other HRs (not themselves).
+        q = (
+            db.query(Task)
+            .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
+            .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+            .filter(Task.project_id == project_id)
+        )
+
+        q = q.filter(
+            ~(
+                (TaskCreator.role == RoleEnum.ADMIN)
+                & (TaskAssignee.role == RoleEnum.HR)
+                & (Task.assigned_to != user.user_id)
+            )
+        )
+        tasks = q.all()
+
+    elif user.role == RoleEnum.MANAGER:
+        # Managers: see project tasks related to their department(s)
+        manager_tokens = set(department_tokens_lower(getattr(user, "department", None)))
+        if not manager_tokens:
+            tasks = []
+        else:
+            tasks = (
+                db.query(Task)
+                .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
+                .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+                .filter(Task.project_id == project_id)
+                .all()
+            )
+
+            def in_manager_dept(u: User | None) -> bool:
+                if not u or not getattr(u, "department", None):
+                    return False
+                tokens = set(department_tokens_lower(u.department))
+                return bool(manager_tokens & tokens)
+
+            tasks = [
+                t
+                for t in tasks
+                if in_manager_dept(t.assigned_by_user) or in_manager_dept(t.assigned_to_user)
+            ]
+
+    else:
+        # Team Leads / Employees: per-user, per-project visibility via list_tasks
+        tasks = list_tasks(db, user.user_id, project_only=True, project_id=project_id)
+
     return [
         TaskOut(
             task_id=t.task_id,
             title=t.title,
             description=t.description,
             status=t.status,
+            start_date=t.start_date.date() if t.start_date else None,
             due_date=t.due_date.date() if t.due_date else None,
             priority=t.priority,
             assigned_to=t.assigned_to,
@@ -425,6 +591,7 @@ def update_status(task_id: int, status: TaskStatus, db: Session = Depends(get_db
         title=task.title,
         description=task.description,
         status=task.status,
+        start_date=task.start_date.date() if task.start_date else None,
         due_date=task.due_date.date() if task.due_date else None,
         priority=task.priority,
         assigned_to=task.assigned_to,
@@ -462,6 +629,7 @@ def update_tasks_bulk(
                 title=t.title,
                 description=t.description,
                 status=t.status,
+                start_date=t.start_date.date() if t.start_date else None,
                 due_date=t.due_date.date() if t.due_date else None,
                 priority=t.priority,
                 assigned_to=t.assigned_to,
@@ -519,6 +687,7 @@ def update_tasks_bulk(
             title=t.title,
             description=t.description,
             status=t.status,
+            start_date=t.start_date.date() if t.start_date else None,
             due_date=t.due_date.date() if t.due_date else None,
             priority=t.priority,
             assigned_to=t.assigned_to,
@@ -599,6 +768,7 @@ def edit_task(
         title=updated.title,
         description=updated.description,
         status=updated.status,
+        start_date=updated.start_date.date() if updated.start_date else None,
         due_date=updated.due_date.date() if updated.due_date else None,
         priority=updated.priority,
         assigned_to=updated.assigned_to,
@@ -707,6 +877,7 @@ def pass_task_route(
         title=updated_task.title,
         description=updated_task.description,
         status=updated_task.status,
+        start_date=updated_task.start_date.date() if updated_task.start_date else None,
         due_date=updated_task.due_date.date() if updated_task.due_date else None,
         priority=updated_task.priority,
         assigned_to=updated_task.assigned_to,

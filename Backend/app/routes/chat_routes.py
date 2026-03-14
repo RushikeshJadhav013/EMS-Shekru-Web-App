@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, UploadFile, File, Form
 from typing import List, Optional
 from firebase_admin import firestore
 from app.dependencies import get_current_user, require_roles
@@ -28,9 +28,39 @@ from app.services.chat_service import (
 from app.enums import RoleEnum, ChatMemberRoleEnum
 from app.utils.timezone import now_ist
 import uuid
-import datetime
+import os
+import shutil
+from pathlib import Path
 
 router = APIRouter(prefix="/chats", tags=["Chat"])
+
+
+CHAT_UPLOAD_DIR = Path("static/chat_documents")
+CHAT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_chat_document(user_id: int, chat_id: str, document: UploadFile):
+    """
+    Save an uploaded chat document and return (file_url, file_name, file_type, file_size).
+    """
+    if not document:
+        return None, None, None, None
+
+    timestamp = now_ist().strftime("%Y%m%d_%H%M%S")
+    file_extension = Path(document.filename).suffix if document.filename else ""
+    safe_chat_id = str(chat_id).replace("/", "_")
+    unique_filename = f"chat_{safe_chat_id}_user_{user_id}_{timestamp}{file_extension}"
+    file_path = CHAT_UPLOAD_DIR / unique_filename
+
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(document.file, buffer)
+
+    file_url = f"/static/chat_documents/{unique_filename}"
+    file_name = document.filename
+    file_type = document.content_type
+    file_size = file_path.stat().st_size
+
+    return file_url, file_name, file_type, file_size
 
 
 @router.get("/users", response_model=List[ChatUserSchema])
@@ -43,7 +73,6 @@ def list_chat_eligible_users(
         ChatUserSchema(
             user_id=u.user_id,
             name=u.name,
-            email=u.email,
             role=u.role.value if hasattr(u.role, "value") else str(u.role),
         )
         for u in users
@@ -313,6 +342,75 @@ def send_message(
 
     return msg
 
+
+@router.post("/{chat_type}/{chat_id}/messages/with-file")
+async def send_message_with_file(
+    chat_type: str,
+    chat_id: str,
+    content: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Send a chat message with a document attachment.
+    The document is stored on the server and referenced from the Firestore message.
+    """
+    if not content and not file:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Either content or file must be provided",
+        )
+
+    is_group = chat_type == "group"
+
+    # Permission checks (reuse logic from send_message)
+    if is_group:
+        group = get_group_ref(chat_id).get()
+        if not group.exists or current.user_id not in group.to_dict().get("members", []):
+            raise HTTPException(403, "Not a group member")
+    else:
+        priv = get_private_chat_ref(chat_id).get()
+        if not priv.exists or current.user_id not in priv.to_dict().get("members", []):
+            raise HTTPException(403, "Not a chat member")
+
+    # Save file to local storage
+    file_url, file_name, file_type, file_size = save_chat_document(
+        user_id=current.user_id,
+        chat_id=chat_id,
+        document=file,
+    )
+
+    col = get_message_collection(is_group, chat_id)
+    msg_id = str(uuid.uuid4())
+    msg = {
+        "id": msg_id,
+        "sender_id": current.user_id,
+        "content": content or "",
+        "timestamp": datetime.utcnow().timestamp(),
+        "read_by": [current.user_id],
+        "file_url": file_url,
+        "file_name": file_name,
+        "file_type": file_type,
+        "file_size": file_size,
+    }
+
+    # Persist message only in Firestore
+    col.document(msg_id).set(msg)
+
+    # Update last_message_at in MySQL metadata (best-effort, stored in IST)
+    try:
+        session_obj = (
+            db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
+        )
+        if session_obj:
+            session_obj.last_message_at = now_ist()
+            db.commit()
+    except Exception:
+        db.rollback()
+
+    return msg
+
 @router.get("/{chat_type}/{chat_id}/messages", response_model=List[MessageSchema])
 def fetch_messages(chat_type: str, chat_id: str, limit: int = Query(20, ge=1, le=100), before: Optional[float] = Query(None), current: User = Depends(get_current_user)):
     is_group = chat_type == "group"
@@ -564,7 +662,6 @@ def edit_message(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to edit message: {e}")
     return {"msg_id": msg_id, "edited": True}
 
-from datetime import datetime, timedelta
 
 @router.delete("/{chat_type}/{chat_id}/messages/{msg_id}/delete", status_code=200)
 def delete_message(

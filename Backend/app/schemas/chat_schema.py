@@ -5,7 +5,6 @@ from datetime import datetime
 class ChatUserSchema(BaseModel):
     user_id: int
     name: str
-    email: str
     role: str
 
 class MessageSchema(BaseModel):
@@ -14,6 +13,11 @@ class MessageSchema(BaseModel):
     content: str
     timestamp: float
     read_by: Optional[List[int]] = []
+    # Optional attachment metadata for documents shared in chat
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    file_type: Optional[str] = None
+    file_size: Optional[int] = None
 
 class CreateMessagePayload(BaseModel):
     content: constr(strip_whitespace=True, min_length=1)
