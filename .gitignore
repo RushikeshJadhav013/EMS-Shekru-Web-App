@@ -527,3 +527,6 @@ Temporary Items
 
 # Firebase service account (backend)
 Backend/firebase_service_acc.json
+
+
+Backend/static/chat_documents/
