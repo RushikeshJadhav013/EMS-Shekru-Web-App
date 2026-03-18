@@ -134,7 +134,7 @@ except Exception as _e:
 
 # Initialize FastAPI
 app = FastAPI(
-    title="TestingEmployee Management System",
+    title="Testing Employee Management System",
     version="1.0"
 )
 
