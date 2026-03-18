@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 from calendar import monthrange
 from datetime import date
 
@@ -72,7 +72,83 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
     )
     if not attendance:
         return None
-        
+
+
+def auto_checkout_overdue_attendances(db: Session) -> int:
+    """
+    Automatically check out users who have not logged out for the day,
+    once 1 hour has passed after their department's configured office
+    end time.
+
+    Returns the number of attendance records that were auto-checked out.
+    """
+    from app.db.models.online_status import OnlineStatus
+
+    now = now_ist()
+
+    # Build cache of office timings (global + per-department)
+    timing_cache = _build_office_timing_cache(db)
+
+    # Find all open attendances (no check_out yet)
+    open_records = (
+        db.query(Attendance, User)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(Attendance.check_out.is_(None))
+        .all()
+    )
+
+    updated_count = 0
+
+    for attendance, user in open_records:
+        # Resolve office timing for this user's department
+        timing = _resolve_office_timing(db, getattr(user, "department", None), timing_cache)
+        if not timing or not attendance.check_in:
+            continue
+
+        # Scheduled end for the attendance date, plus 1 hour grace window
+        attendance_date = attendance.check_in.date()
+        scheduled_end_dt = datetime.combine(attendance_date, timing.end_time)
+        auto_checkout_dt = scheduled_end_dt + timedelta(hours=1)
+
+        # Only auto-checkout if current time is past the auto-checkout threshold
+        if now < auto_checkout_dt:
+            continue
+
+        # Use the auto-checkout time as the checkout timestamp so we don't
+        # over-count hours if this runs much later.
+        attendance.check_out = auto_checkout_dt
+
+        # Compute working hours using online status logs if available;
+        # fall back to wall-clock duration on error.
+        try:
+            hours = compute_online_work_hours(db, attendance)
+        except Exception:
+            delta = attendance.check_out - attendance.check_in
+            hours = max(0.0, delta.total_seconds() / 3600.0)
+
+        attendance.total_hours = round(hours, 2)
+
+        # Provide a default work summary if none is set
+        if not getattr(attendance, "work_summary", None):
+            attendance.work_summary = "Automatic check-out (no summary provided)"
+
+        # Record automatic offline status so online-hours calculations remain consistent
+        offline_status = OnlineStatus(
+            attendance_id=attendance.attendance_id,
+            user_id=attendance.user_id,
+            is_online=False,
+            reason="Automatic offline status after auto check-out",
+            timestamp=attendance.check_out,
+        )
+        db.add(offline_status)
+
+        updated_count += 1
+
+    if updated_count:
+        db.commit()
+
+    return updated_count
+
 def compute_online_work_hours(db: Session, attendance: Attendance) -> float:
     """
     Compute total online-only working hours for an attendance record using OnlineStatus logs.
@@ -227,8 +303,23 @@ def _resolve_office_timing(
         cache = _build_office_timing_cache(db)
     global_entry, department_entries = cache
     dept_key = _normalize_department_value(department)
-    if dept_key and dept_key in department_entries:
-        return department_entries[dept_key]
+    if dept_key:
+        # Direct match on the full normalized department string
+        if dept_key in department_entries:
+            return department_entries[dept_key]
+
+        # Support users with comma-separated multi-departments by resolving
+        # against any single-department OfficeTiming whose key matches one
+        # of the department tokens.
+        tokens: List[str] = department_tokens_lower(dept_key)
+        if tokens:
+            for token in tokens:
+                for key, entry in department_entries.items():
+                    # Compare token-wise in a case-insensitive way
+                    key_tokens = department_tokens_lower(key)
+                    if token in key_tokens:
+                        return entry
+
     return global_entry
 
 
@@ -300,6 +391,10 @@ def _evaluate_attendance_status(
 
 
 def get_today_attendance_status(db: Session, department: str = None):
+    # First, auto-checkout any overdue open attendances so today's status
+    # reflects accurate working hours and check-out information.
+    auto_checkout_overdue_attendances(db)
+
     records_query = (
         db.query(
             Attendance,
@@ -342,6 +437,9 @@ def get_today_attendance_status(db: Session, department: str = None):
 
 def get_today_attendance_records(db: Session):
     """Get today's attendance records with user details for manager view"""
+    # Ensure overdue open attendances are auto-checked-out before
+    # returning today's records.
+    auto_checkout_overdue_attendances(db)
     today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
@@ -384,6 +482,9 @@ def get_today_attendance_records(db: Session):
 
 def get_attendance_summary(db: Session):
     """Get attendance summary with statistics"""
+    # Keep statistics consistent by auto-checking-out any overdue
+    # open attendances before computing the summary.
+    auto_checkout_overdue_attendances(db)
     today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     

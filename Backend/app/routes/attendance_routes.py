@@ -2048,6 +2048,41 @@ def get_effective_office_timing(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from app.utils.department_utils import department_tokens_lower
+
+    # Role-based visibility:
+    # - ADMIN and HR can view office timings for any department (or global when department is omitted).
+    # - MANAGER, TEAM_LEAD, EMPLOYEE can only view timings for their own department(s).
+    #   For users with comma-separated multi-departments, allow any overlapping token.
+
+    user_role = current_user.role
+    user_dept_raw = getattr(current_user, "department", None)
+
+    # Determine the effective department parameter for restricted roles
+    if user_role in [RoleEnum.MANAGER, RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE]:
+        user_tokens = set(department_tokens_lower(user_dept_raw))
+
+        # If no department was provided, default to the user's own department string
+        if department is None:
+            if not user_dept_raw:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Department is not configured for current user",
+                )
+            department = user_dept_raw
+        else:
+            # Ensure the requested department overlaps with the user's departments
+            requested_tokens = set(department_tokens_lower(department))
+            if not user_tokens or not requested_tokens or not user_tokens.intersection(
+                requested_tokens
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to view office timings for this department",
+                )
+
+    # For ADMIN and HR, the provided department (or None) is used as-is.
+
     timing = _resolve_office_timing(db, department)
     if not timing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office timing not configured")
