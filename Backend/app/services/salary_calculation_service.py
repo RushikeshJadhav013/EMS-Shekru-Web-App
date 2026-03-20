@@ -4,32 +4,28 @@ Salary Calculation Service - Automatic salary component calculations based on CT
 STRICT CALCULATION RULES (FINAL – LOCKED):
 
 1. Total Gross =
-   CTC − (Employer PF + Variable Pay + Medical + Conveyance + Other)
+   Basic + HRA + Medical + Conveyance + Other + Special Allowance
 
 2. Basic = 50% of CTC
 3. HRA = 50% of Basic
 
 4. Special Allowance =
-   (CTC − Variable Pay) − (Basic + HRA + Medical + Conveyance + Other + Professional Tax + Other Tax + PF)
-   (If no variable pay is present, Variable Pay = 0 and the formula reduces to CTC − (...))
+   CTC − (Basic + HRA + Medical + Conveyance + Other)
 
 5. Total Earnings Annual = Total Gross ONLY
 
-6. Employer PF is part of CTC, NEVER deducted from employee
+6. Employer PF is part of CTC and is deducted from employee for in-hand
 
     7. Monthly In-Hand =
-   Total Earnings / 12  (Total Earnings = Total Gross)
+   (Total Earnings − Professional Tax − Other Tax − PF) / 12
+   (Total Earnings = Total Gross)
 
 CTC IDENTITY:
 CTC =
 Total Gross
-+ Employer PF
- + Variable Pay
- + Medical
- + Conveyance
- + Other
- + Professional Tax
- + Other Tax
+
+# Note: Employer PF, Professional Tax, and Other Tax are computed separately from the
+# fixed rules and used for net/in-hand calculations (not for splitting Total Gross).
 """
 
 from typing import Dict, Optional
@@ -53,11 +49,12 @@ class VariablePayType(str, Enum):
 class SalaryCalculator:
 
     # ---------- Fixed Annual Amounts ----------
-    MEDICAL_ALLOWANCE_ANNUAL = 19200.0
+    MEDICAL_ALLOWANCE_ANNUAL = 13200.0
     CONVEYANCE_ALLOWANCE_ANNUAL = 15000.0
     OTHER_ALLOWANCE_ANNUAL = 3000.0
 
-    PROFESSIONAL_TAX_ANNUAL = 2400.0
+    # Professional Tax is treated as ₹200/month, except February ₹300 (₹2,500/year).
+    PROFESSIONAL_TAX_ANNUAL = 2500.0
     OTHER_TAX_ANNUAL = 12000.0
 
     EMPLOYER_PF_PERCENTAGE = 0.12   # 12% of Basic
@@ -95,52 +92,26 @@ class SalaryCalculator:
         other_tax = cls.OTHER_TAX_ANNUAL
 
         # ---------- BASIC & EMPLOYER PF ----------
-        # If variable pay is provided (fixed or percentage), deduct it from CTC
-        # first and compute Basic as 50% of the remaining CTC. Otherwise Basic is
-        # 50% of full CTC.
-        if variable_pay_annual > 0:
-            ctc_for_basic = annual_ctc - variable_pay_annual
-        else:
-            ctc_for_basic = annual_ctc
+        # Variable Pay is NOT part of the CTC breakup, so it must not affect Basic/HRA.
+        ctc_for_basic = annual_ctc
 
         basic = round(ctc_for_basic * cls.BASIC_PERCENTAGE, 2)
         hra = round(basic * cls.HRA_PERCENTAGE, 2)
         employer_pf = round(basic * employer_pf_percentage, 2)
 
-        # ---------- TOTAL GROSS ----------
-        # Total Gross = CTC − (Employer PF + Variable Pay + Medical + Conveyance + Other)
-        total_gross = round(
-            annual_ctc
-            - employer_pf
-            - variable_pay_annual
-            - medical
-            - conveyance
-            - other,
-            2
-        )
-
-        if total_gross <= 0:
-            raise ValueError("CTC too low to calculate salary")
-
         # ---------- BREAKUP ----------
         hra = round(basic * cls.HRA_PERCENTAGE, 2)
 
-        # Special Allowance is defined as the remainder of (CTC - variable_pay)
-        # after subtracting components that are part of the CTC (basic, HRA,
-        # fixed allowances, professional & other taxes, and employer PF).
-        ctc_for_special = annual_ctc - variable_pay_annual if variable_pay_annual > 0 else annual_ctc
-
+        # Special Allowance (as requested):
+        #   Special = CTC − Basic − HRA − Medical − Conveyance − Other
         special = round(
-            ctc_for_special
+            annual_ctc
             - (
                 basic
                 + hra
                 + medical
                 + conveyance
                 + other
-                + professional_tax
-                + other_tax
-                + employer_pf
             ),
             2
         )
@@ -148,21 +119,30 @@ class SalaryCalculator:
         if special < 0:
             raise ValueError("Special Allowance became negative. Increase CTC.")
 
-        # ---------- NET PAY ----------
-        net_annual = total_gross - professional_tax - other_tax
-        # Monthly in-hand now defined as total earnings (Total Gross) / 12
-        monthly_in_hand = round(total_gross / 12, 2)
-
-        # ---------- CTC RECONSTRUCTION ----------
-        calculated_ctc = round(
-            total_gross
-            + employer_pf
-            + variable_pay_annual
+        # Total Gross:
+        #   TotalGross = Basic + HRA + Medical + Conveyance + Other + Special
+        total_gross = round(
+            basic
+            + hra
             + medical
             + conveyance
-            + other,
+            + other
+            + special,
             2
         )
+
+        if total_gross <= 0:
+            raise ValueError("CTC too low to calculate salary")
+
+        # ---------- NET PAY ----------
+        # Total Gross here means earnings before employee deductions (PT + Other Tax + PF).
+        net_annual = total_gross - professional_tax - other_tax - employer_pf
+        monthly_in_hand = round(net_annual / 12, 2)
+
+        # ---------- CTC RECONSTRUCTION ----------
+        # With Special Allowance = CTC − (Basic + HRA + Medical + Conveyance + Other),
+        # the resulting Total Gross equals the input annual_ctc.
+        calculated_ctc = round(total_gross, 2)
 
         # ---------- HARD VALIDATIONS ----------
         # Reconstruct CTC to ensure arithmetic consistency.
@@ -189,14 +169,19 @@ class SalaryCalculator:
 
             # Totals
             "total_earnings_annual": total_gross,
-            "total_employee_deductions_annual": professional_tax + other_tax,
+            "total_employee_deductions_annual": round(professional_tax + other_tax + employer_pf, 2),
             "total_employer_contributions_annual": employer_pf,
             "net_annual": net_annual,
             "monthly_in_hand": monthly_in_hand,
 
             # CTC
             "package_ctc_annual": annual_ctc,
-            "monthly_ctc": round(annual_ctc / 12, 2),
+            # Monthly CTC should be based on computed CTC (model definition):
+            # ctc_annual = total_gross + pf_annual + professional_tax_annual + other_deduction_annual
+            "monthly_ctc": round(
+                (total_gross + employer_pf + professional_tax + other_tax) / 12,
+                2
+            ),
             "monthly_gross": round(total_gross / 12, 2),
             "monthly_variable_pay": round(variable_pay_annual / 12, 2),
         }

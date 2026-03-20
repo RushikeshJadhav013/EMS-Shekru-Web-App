@@ -169,7 +169,7 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
         create_payload["ifsc_code"] = str(create_payload["ifsc_code"]).strip().upper()
 
     # Store package_ctc_annual even for legacy/manual creates.
-    # Formula: (basic+hra+special+conveyance+medical+other)+pf+variable_pay+professional_tax+other_deduction
+    # Formula: (basic+hra+special+conveyance+medical+other)+pf+professional_tax+other_deduction
     # - `variable_pay` is present on the legacy schema/model.
     package_ctc_annual = (
         float(create_payload.get("basic_annual") or 0)
@@ -179,7 +179,6 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
         + float(create_payload.get("medical_allowance_annual") or 0)
         + float(create_payload.get("other_allowance_annual") or 0)
         + float(create_payload.get("pf_annual") or 0)
-        + float(create_payload.get("variable_pay") or 0)
         + float(create_payload.get("professional_tax_annual") or 0)
         + float(create_payload.get("other_deduction_annual") or 0)
     )

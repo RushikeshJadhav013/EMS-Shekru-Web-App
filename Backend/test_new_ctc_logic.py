@@ -1,13 +1,13 @@
 """
 Test script to verify the new CTC salary calculation logic.
 
-NEW Formula:
-1. Total Gross = CTC − (Employer PF + Variable Pay + Medical ₹19,200 + Conveyance ₹15,000 + Other ₹3,000 + Professional Tax ₹2,400 + Other Tax ₹12,000)
-2. Basic = 50% of Total Gross
-3. HRA = 50% of Basic
-4. Special Allowance = Total Gross − (Basic + HRA + all fixed allowances)
-5. Total Earnings (Annual) = Total Gross
-6. Employer PF is NOT double-counted in deductions
+NEW Formula (updated for current calculator):
+1. Basic = 50% of CTC
+2. HRA = 50% of Basic
+3. Employer PF = 12% of Basic
+4. Special Allowance = CTC − (Basic + HRA + Medical + Conveyance + Other)
+5. Total Gross = Basic + HRA + Medical + Conveyance + Other + Special
+6. Total Earnings (Annual) = Total Gross
 """
 
 import sys
@@ -24,10 +24,10 @@ def test_ctc_calculation(ctc: float):
     components = SalaryCalculator.calculate_salary_components(ctc)
     
     # Fixed values
-    medical = 19200.0
+    medical = 13200.0
     conveyance = 15000.0
     other = 3000.0
-    professional_tax = 2400.0
+    professional_tax = 2500.0
     other_tax = 12000.0
     fixed_allowances = medical + conveyance + other  # ₹37,200
     fixed_deductions = professional_tax + other_tax  # ₹14,400
@@ -48,41 +48,44 @@ def test_ctc_calculation(ctc: float):
     print(f"Monthly In-Hand:             ₹{components['monthly_in_hand']:,.2f}")
     
     print("\n--- Verification ---")
-    # Verify: Total Gross = Basic + HRA + Special Allowance
-    calculated_total_gross = (
-        components['basic_annual'] + 
-        components['hra_annual'] + 
-        components['special_allowance_annual']
+    # Verify: Special and Total Gross per formula
+    basic = components["basic_annual"]
+    hra = components["hra_annual"]
+    employer_pf = components["employer_pf_annual"]
+
+    expected_special = ctc - (
+        basic + hra + medical + conveyance + other
     )
-    print(f"Calculated Total Gross:      ₹{calculated_total_gross:,.2f}")
-    print(f"Total Gross = Basic+HRA+Special: {abs(calculated_total_gross - components['total_gross_annual']) < 0.01}")
+    print(f"Expected Special:             ₹{expected_special:,.2f}")
+    print(f"Special matches formula:     {abs(components['special_allowance_annual'] - expected_special) < 0.01}")
+
+    calculated_total_gross = (
+        basic + hra + medical + conveyance + other + components["special_allowance_annual"]
+    )
+    print(f"TotalGross per formula:      ₹{calculated_total_gross:,.2f}")
+    print(f"Total gross matches formula: {abs(components['total_gross_annual'] - calculated_total_gross) < 0.01}")
     
     # Verify: Total Earnings = Total Gross
     print(f"Total Earnings = Total Gross: {abs(components['total_earnings_annual'] - components['total_gross_annual']) < 0.01}")
     
-    # Verify: Basic = 50% of Total Gross
-    expected_basic = components['total_gross_annual'] * 0.50
-    print(f"Basic = 50% of Total Gross:  {abs(components['basic_annual'] - expected_basic) < 0.01}")
+    # Verify: Basic = 50% of CTC
+    expected_basic = ctc * 0.50
+    print(f"Basic = 50% of CTC:          {abs(components['basic_annual'] - expected_basic) < 0.01}")
     
     # Verify: HRA = 50% of Basic
     expected_hra = components['basic_annual'] * 0.50
     print(f"HRA = 50% of Basic:          {abs(components['hra_annual'] - expected_hra) < 0.01}")
     
-    # Verify: CTC = Total Gross + Employer PF + Variable Pay + Fixed Allowances + Fixed Deductions
-    reconstructed_ctc = (
-        components['total_gross_annual'] + 
-        components['employer_pf_annual'] + 
-        components['variable_pay_annual'] +
-        fixed_allowances +
-        fixed_deductions
-    )
+    # Verify: (with requested formulas) Total Gross equals input CTC
+    reconstructed_ctc = components["total_gross_annual"]
     print(f"Reconstructed CTC:           ₹{reconstructed_ctc:,.2f}")
     print(f"Original CTC:                ₹{ctc:,.2f}")
     print(f"CTC matches:                 {abs(reconstructed_ctc - ctc) < 1.0}")
     
-    # Verify: Employer PF is NOT in deductions
+    # Verify: Employee deductions include PF (PT + Other Tax + PF)
+    expected_employee_deductions = professional_tax + other_tax + employer_pf
     print(f"Employee Deductions:         ₹{components['total_employee_deductions_annual']:,.2f}")
-    print(f"Employer PF NOT in deductions: {components['total_employee_deductions_annual'] == 0.0}")
+    print(f"Matches (PT + OtherTax + PF): {abs(components['total_employee_deductions_annual'] - expected_employee_deductions) < 0.01}")
     
     return components
 

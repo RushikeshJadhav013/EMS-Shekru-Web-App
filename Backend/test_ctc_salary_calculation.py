@@ -62,7 +62,7 @@ def test_preview_calculation():
             print(f"  Other Allowance (Fixed):        ₹{data['other_allowance_annual']:>12,.2f}")
             
             print(f"\nDEDUCTIONS (Annual):")
-            print(f"  Professional Tax (₹200/month):  ₹{data['professional_tax_annual']:>12,.2f}")
+            print(f"  Professional Tax (₹200/month, Feb ₹300):  ₹{data['professional_tax_annual']:>12,.2f}")
             print(f"  Other Tax (₹1000/month):        ₹{data['other_tax_annual']:>12,.2f}")
             
             print(f"\nMONTHLY BREAKDOWN:")

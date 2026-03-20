@@ -493,8 +493,8 @@ def download_salary_slip(
     Employees can download their own, Admin/HR can download any.
     
     The salary slip uses CTC-based calculation logic:
-    - Total Gross = CTC - (Employer PF + Variable Pay)
-    - Deductions: Professional Tax (₹200/month) + Other Tax (₹1,000/month)
+    - Total Gross = CTC - (Employer PF)
+    - Deductions: Professional Tax (₹200/month, Feb ₹300) + Other Tax (₹1,000/month)
     - Net Payable = Total Gross - Deductions
     """
     # Check permissions
@@ -527,11 +527,12 @@ def download_salary_slip(
         # Total Gross = sum of all earnings (already calculated from CTC)
         gross = salary.total_earnings_annual / 12
         
-        # Employee deductions = Professional Tax + Other Tax (not Employer PF)
-        # Employer PF is stored in pf_annual but is NOT deducted from employee salary
-        employee_deductions = (salary.professional_tax_annual + salary.other_deduction_annual) / 12
+        # Employee deductions = Professional Tax (month-specific) + Other Tax + PF
+        pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
+        pf_monthly = round((salary.pf_annual or 0) / 12, 2)
+        employee_deductions = pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly
         
-        # Net = Gross - Employee Deductions
+        # Net = Gross - employee deductions (Professional Tax + Other Tax + PF)
         net = gross - employee_deductions
         
         create_salary_slip_history(
@@ -607,10 +608,11 @@ def send_salary_slip(
         pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
         
         # Calculate net salary using CTC-based logic
-        # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax)
-        # Employer PF is NOT deducted from employee salary
+        # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax + PF)
         gross = salary.total_earnings_annual / 12
-        employee_deductions = (salary.professional_tax_annual + salary.other_deduction_annual) / 12
+        pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
+        pf_monthly = round((salary.pf_annual or 0) / 12, 2)
+        employee_deductions = pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly
         net_salary = gross - employee_deductions
         
         # Send email
@@ -1261,18 +1263,18 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
     Generate salary slip PDF for user using CTC-based calculation logic.
     
     The salary record contains components calculated from CTC:
-    - Total Gross = CTC - (Employer PF + Variable Pay)
+    - Total Gross = CTC - (Employer PF)
     - Basic = 50% of Total Gross
     - HRA = 50% of Basic
-    - Medical Allowance = ₹19,200/year (fixed)
+    - Medical Allowance = ₹13,200/year (fixed)
     - Conveyance Allowance = ₹15,000/year (fixed)
     - Other Allowance = ₹3,000/year (fixed)
     - Special Allowance = Remaining balance
     
     Deductions:
-    - Professional Tax = ₹200/month (₹2,400/year)
+    - Professional Tax = ₹200/month (Feb ₹300) (₹2,500/year)
     - Other Tax = ₹1,000/month (₹12,000/year) - stored in other_deduction_annual
-    - Employer PF = 12% of Basic - stored in pf_annual (not deducted from employee)
+    - Employer PF = 12% of Basic - stored in pf_annual (treated as employee deduction for net calculation)
     """
     # Calculate monthly values from annual values
     basic_monthly = round(salary.basic_annual / 12, 2)
@@ -1283,10 +1285,10 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
     other_monthly = round(salary.other_allowance_annual / 12, 2)
     
     # Deductions (monthly)
-    pt_monthly = round(salary.professional_tax_annual / 12, 2)  # ₹200/month
+    pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
     other_ded_monthly = round(salary.other_deduction_annual / 12, 2)  # ₹1,000/month (Other Tax)
     
-    # Employer PF (for display, not deducted from employee salary)
+    # Employer PF (shown in slip and also treated as an employee deduction for net calculation)
     employer_pf_monthly = round(salary.pf_annual / 12, 2) if salary.pf_annual else 0
     
     # Variable pay (monthly)

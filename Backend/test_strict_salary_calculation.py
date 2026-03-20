@@ -1,20 +1,14 @@
 """
 Test script to verify STRICT salary calculation rules.
 
-STRICT CALCULATION RULES (as provided by user):
-1. Total Gross = CTC − (Employer PF + Variable Pay + Medical ₹19,200 + Conveyance ₹15,000 + Other ₹3,000 + Professional Tax ₹2,400 + Other Tax ₹12,000)
-2. Basic = 50% of Total Gross
-3. HRA = 50% of Basic
-4. Special Allowance = Total Gross − (Basic + HRA + Medical + Conveyance + Other)
-5. Total Earnings Annual MUST equal Total Gross only
-6. Employer PF is part of CTC, NEVER deducted from employee
-7. Monthly In-Hand = (Total Gross − Professional Tax − Other Tax) / 12
-
-INTERPRETATION:
-- Rule 1: Medical, Conveyance, Other are subtracted from CTC to get Total Gross
-- Rule 4: Special Allowance = Total Gross - Basic - HRA - Medical - Conveyance - Other
-- This means Total Gross = Basic + HRA + Special Allowance (NOT including Medical, Conveyance, Other)
-- CTC = Total Gross + Employer PF + Variable Pay + Medical + Conveyance + Other + PT + Other Tax
+STRICT CALCULATION RULES (match current `SalaryCalculator` implementation):
+1. Basic = 50% of CTC
+2. HRA = 50% of Basic
+3. Employer PF = 12% of Basic
+4. Special Allowance = CTC − (Basic + HRA + Medical + Conveyance + Other)
+5. Total Gross = Basic + HRA + Medical + Conveyance + Other + Special
+6. Total Earnings Annual MUST equal Total Gross only
+7. Monthly In-Hand = (Total Gross − Professional Tax − Other Tax − PF) / 12
 """
 
 import sys
@@ -32,10 +26,10 @@ def test_strict_calculation(ctc: float, variable_pay: float = 0.0):
     print('='*60)
     
     # Fixed values
-    MEDICAL = 19200.0
+    MEDICAL = 13200.0
     CONVEYANCE = 15000.0
     OTHER = 3000.0
-    PT = 2400.0
+    PT = 2500.0
     OTHER_TAX = 12000.0
     
     # Calculate components
@@ -81,15 +75,15 @@ def test_strict_calculation(ctc: float, variable_pay: float = 0.0):
     
     print("\n--- VERIFICATION ---")
     
-    # Rule 1: Total Gross = CTC − (Employer PF + Variable Pay + Medical + Conveyance + Other + PT + Other Tax)
-    expected_total_gross = ctc - employer_pf - variable - MEDICAL - CONVEYANCE - OTHER - PT - OTHER_TAX
+    # Rule 1: Total Gross = CTC (with requested formulas)
+    expected_total_gross = ctc
     rule1_pass = abs(total_gross - expected_total_gross) < 1
     print(f"Rule 1 - Total Gross Formula: {'✓ PASS' if rule1_pass else '✗ FAIL'}")
     if not rule1_pass:
         print(f"  Expected: ₹{expected_total_gross:,.2f}, Got: ₹{total_gross:,.2f}")
     
-    # Rule 2: Basic = 50% of Total Gross
-    expected_basic = total_gross * 0.50
+    # Rule 2: Basic = 50% of CTC
+    expected_basic = ctc * 0.50
     rule2_pass = abs(basic - expected_basic) < 1
     print(f"Rule 2 - Basic = 50% of Total Gross: {'✓ PASS' if rule2_pass else '✗ FAIL'}")
     if not rule2_pass:
@@ -102,10 +96,8 @@ def test_strict_calculation(ctc: float, variable_pay: float = 0.0):
     if not rule3_pass:
         print(f"  Expected: ₹{expected_hra:,.2f}, Got: ₹{hra:,.2f}")
     
-    # Rule 4: Special Allowance = Total Gross − (Basic + HRA + Medical + Conveyance + Other)
-    # Since Medical, Conveyance, Other are NOT in Total Gross, this simplifies to:
-    # Special Allowance = Total Gross - Basic - HRA
-    expected_special = total_gross - basic - hra - MEDICAL - CONVEYANCE - OTHER
+    # Rule 4: Special Allowance = CTC − (Basic + HRA + Medical + Conveyance + Other)
+    expected_special = ctc - basic - hra - MEDICAL - CONVEYANCE - OTHER
     rule4_pass = abs(special - expected_special) < 1
     print(f"Rule 4 - Special Allowance Formula: {'✓ PASS' if rule4_pass else '✗ FAIL'}")
     if not rule4_pass:
@@ -117,22 +109,23 @@ def test_strict_calculation(ctc: float, variable_pay: float = 0.0):
     if not rule5_pass:
         print(f"  Expected: ₹{total_gross:,.2f}, Got: ₹{total_earnings:,.2f}")
     
-    # Verify Total Gross = Basic + HRA + Special (NOT including Medical, Conveyance, Other)
-    calculated_gross = basic + hra + special
+    # With the current definitions:
+    # total_gross = basic + hra + special + medical + conveyance + other
+    calculated_gross = basic + hra + special + MEDICAL + CONVEYANCE + OTHER
     gross_sum_pass = abs(calculated_gross - total_gross) < 1
-    print(f"Total Gross = Basic + HRA + Special: {'✓ PASS' if gross_sum_pass else '✗ FAIL'}")
+    print(f"TotalGross = Basic+HRA+Special+FixedAllowances: {'✓ PASS' if gross_sum_pass else '✗ FAIL'}")
     if not gross_sum_pass:
         print(f"  Expected: ₹{total_gross:,.2f}, Got: ₹{calculated_gross:,.2f}")
     
-    # Rule 7: Monthly In-Hand = (Total Gross − PT − Other Tax) / 12
-    expected_monthly_in_hand = (total_gross - PT - OTHER_TAX) / 12
+    # Rule 7: Monthly In-Hand = (Total Gross − PT − OtherTax − PF) / 12
+    expected_monthly_in_hand = (total_gross - PT - OTHER_TAX - employer_pf) / 12
     rule7_pass = abs(monthly_in_hand - expected_monthly_in_hand) < 1
     print(f"Rule 7 - Monthly In-Hand Formula: {'✓ PASS' if rule7_pass else '✗ FAIL'}")
     if not rule7_pass:
         print(f"  Expected: ₹{expected_monthly_in_hand:,.2f}, Got: ₹{monthly_in_hand:,.2f}")
     
-    # Verify CTC reconstruction: CTC = Total Gross + Employer PF + Variable Pay + Medical + Conveyance + Other + PT + Other Tax
-    reconstructed_ctc = total_gross + employer_pf + variable + MEDICAL + CONVEYANCE + OTHER + PT + OTHER_TAX
+    # Verify CTC reconstruction: with requested formulas TotalGross equals input CTC
+    reconstructed_ctc = total_gross
     ctc_match = abs(reconstructed_ctc - ctc) < 1
     print(f"CTC Reconstruction: {'✓ PASS' if ctc_match else '✗ FAIL'}")
     if not ctc_match:
@@ -141,7 +134,7 @@ def test_strict_calculation(ctc: float, variable_pay: float = 0.0):
     print("\n--- SUMMARY ---")
     print(f"Annual CTC:                     ₹{ctc:>12,.2f}")
     print(f"Annual Total Gross:             ₹{total_gross:>12,.2f}")
-    print(f"Annual Net (after deductions):  ₹{total_gross - PT - OTHER_TAX:>12,.2f}")
+    print(f"Annual Net (after deductions):  ₹{(total_gross - PT - OTHER_TAX - employer_pf):>12,.2f}")
     print(f"Monthly In-Hand:                ₹{monthly_in_hand:>12,.2f}")
     
     all_pass = all([rule1_pass, rule2_pass, rule3_pass, rule4_pass, rule5_pass, gross_sum_pass, rule7_pass, ctc_match])
