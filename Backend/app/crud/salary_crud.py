@@ -38,12 +38,17 @@ def create_employee_salary_from_ctc(
     if existing:
         raise ValueError(f"Salary record already exists for user_id {salary_data.user_id}")
     
-    # Calculate salary components from package CTC (package_ctc_annual is required)
+    # Calculate salary components from package CTC (package_ctc_annual is required).
+    # PF default is null unless employer_pf_percentage is explicitly provided.
+    employer_pf_pct = None
+    if "employer_pf_percentage" in salary_data.model_fields_set and salary_data.employer_pf_percentage is not None:
+        employer_pf_pct = salary_data.employer_pf_percentage / 100.0
+
     calculated_data = calculate_salary_from_ctc(
         annual_ctc=salary_data.package_ctc_annual,
         variable_pay_type=salary_data.variable_pay_type.value,
         variable_pay_value=salary_data.variable_pay_value,
-        employer_pf_percentage=salary_data.employer_pf_percentage / 100.0,  # Convert percentage to decimal
+        employer_pf_percentage=employer_pf_pct,
         uan_number=salary_data.uan_number,
         pf_no=salary_data.pf_no,
         bank_name=salary_data.bank_name,
@@ -52,6 +57,8 @@ def create_employee_salary_from_ctc(
         working_days_per_month=salary_data.working_days_per_month,
         payment_mode=salary_data.payment_mode
     )
+    if employer_pf_pct is None:
+        calculated_data["pf_annual"] = None
     
     # Validate UAN uniqueness if provided
     if salary_data.uan_number:
@@ -218,7 +225,7 @@ def update_employee_salary_from_ctc(
     vp_type = ctc_update.variable_pay_type.value if ctc_update.variable_pay_type else "none"
     vp_value = ctc_update.variable_pay_value if ctc_update.variable_pay_value is not None else 0.0
     
-    # Use existing employer PF percentage if not provided
+    # PF default is null unless employer_pf_percentage is provided.
     employer_pf_pct = ctc_update.employer_pf_percentage / 100.0 if ctc_update.employer_pf_percentage is not None else None
     
     # Calculate new salary components using package CTC
@@ -229,6 +236,8 @@ def update_employee_salary_from_ctc(
         employer_pf_percentage=employer_pf_pct,
         **existing_data
     )
+    if employer_pf_pct is None:
+        calculated_data["pf_annual"] = None
     
     # Update all calculated fields
     for key, value in calculated_data.items():
@@ -352,7 +361,9 @@ def update_employee_salary(
                 )
 
     for key, value in update_data.items():
-        if key not in ['variable_pay_type', 'variable_pay_value'] and value is not None:
+        if key == "pf_annual" and value is None:
+            setattr(salary, key, None)
+        elif key not in ['variable_pay_type', 'variable_pay_value'] and value is not None:
             setattr(salary, key, value)
     
     salary.updated_at = now_ist()

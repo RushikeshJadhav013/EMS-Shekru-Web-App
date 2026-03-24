@@ -108,7 +108,7 @@ class EmployeeSalaryCreate(BaseModel):
     # Deductions
     professional_tax_annual: float = Field(default=0.0, ge=0)
     other_deduction_annual: float = Field(default=0.0, ge=0)
-    pf_annual: float = Field(default=0.0, ge=0)
+    pf_annual: Optional[float] = Field(default=None, ge=0)
     
     # Additional info
     uan_number: Optional[str] = None
@@ -230,7 +230,7 @@ class EmployeeSalaryOut(BaseModel):
     other_allowance_annual: float
     professional_tax_annual: float
     other_deduction_annual: float
-    pf_annual: float
+    pf_annual: Optional[float]
     pan_number: Optional[str]
     uan_number: Optional[str]
     pf_no: Optional[str]
@@ -242,7 +242,7 @@ class EmployeeSalaryOut(BaseModel):
     payment_mode: str
     is_active: bool
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime]
     
     # Computed fields
     total_earnings_annual: float

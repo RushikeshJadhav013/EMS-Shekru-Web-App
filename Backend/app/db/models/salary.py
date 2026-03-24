@@ -81,7 +81,8 @@ class EmployeeSalary(Base):
     
     # Timestamps
     created_at = Column(DateTime, default=now_ist)
-    updated_at = Column(DateTime, default=now_ist, onupdate=now_ist)
+    # Keep null on create; populate only after first update.
+    updated_at = Column(DateTime, nullable=True, onupdate=now_ist)
     
     # Relationship
     user = relationship("User", backref="salary_info")
@@ -128,7 +129,7 @@ class EmployeeSalary(Base):
         Total employee deductions (Professional Tax + Other Tax + PF).
         These are deducted from Total Gross for in-hand calculation.
         """
-        return self.professional_tax_annual + self.other_deduction_annual + self.pf_annual
+        return self.professional_tax_annual + self.other_deduction_annual + (self.pf_annual or 0.0)
     
     @property
     def total_deductions_annual(self):
@@ -140,7 +141,7 @@ class EmployeeSalary(Base):
         Note: Historically this was an alias for employee deductions only;
         changed to include PF per updated requirement.
         """
-        return self.professional_tax_annual + self.other_deduction_annual + self.pf_annual
+        return self.professional_tax_annual + self.other_deduction_annual + (self.pf_annual or 0.0)
     
     @property
     def ctc_annual(self):
@@ -157,7 +158,7 @@ class EmployeeSalary(Base):
 
         return (
             self.total_gross_annual
-            + self.pf_annual
+            + (self.pf_annual or 0.0)
             + self.professional_tax_annual
             + self.other_deduction_annual
         )
@@ -182,7 +183,7 @@ class EmployeeSalary(Base):
         Monthly In-Hand = (Total Gross − PT − Other Tax − PF) / 12
         """
         return round(
-            (self.total_gross_annual - self.professional_tax_annual - self.other_deduction_annual - self.pf_annual)
+            (self.total_gross_annual - self.professional_tax_annual - self.other_deduction_annual - (self.pf_annual or 0.0))
             / 12,
             2,
         )

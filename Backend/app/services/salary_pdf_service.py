@@ -128,10 +128,17 @@ def generate_salary_slip_pdf(
     except Exception:
         pf_numeric = 0.0
 
-    # Employee deductions for "Net Payable" includes PF.
+    # Show PF amount/parameters in slip only when PF No exists.
+    show_pf = bool(pf_no and str(pf_no).strip() and str(pf_no).strip().upper() not in ("NA", "N/A", ""))
+    if not show_pf:
+        pf_numeric = 0.0
+
+    # Employee deductions for "Net Payable"
     employee_total_deductions = professional_tax + other_deduction + pf_numeric
     total_deductions = professional_tax + other_deduction + pf_numeric
-    net_payable = total_earnings - employee_total_deductions
+    # Variable pay should only affect "Total Net Payable" when it has a value.
+    variable_pay_amount = float(variable_pay) if variable_pay else 0.0
+    net_payable = (total_earnings + variable_pay_amount) - employee_total_deductions
     
     # Page width for calculations
     page_width = landscape(A4)[0] - 40  # minus margins
@@ -341,17 +348,19 @@ def generate_salary_slip_pdf(
     earnings_header = [["Earnings", "Amount(Rs)", "Deductions", "Amount(Rs)"]]
     
     # Data rows - align earnings and deductions side by side
-    # Prepare a display string for PF using parsed numeric value when available
-    if pf_numeric and pf_numeric > 0:
+    # Prepare a display string for PF only when PF No exists.
+    if show_pf and pf_numeric and pf_numeric > 0:
         pf_display = format_currency(pf_numeric)
+        pf_label = "PF"
     else:
-        pf_display = str(pf) if pf else "-"
+        pf_display = ""
+        pf_label = ""
 
     earnings_deductions_data = [
         ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
         ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
         # Put PF in the same row as Special Allowance (deductions columns)
-        ["Special Allowance", format_currency(special_allowance), "PF", pf_display],
+        ["Special Allowance", format_currency(special_allowance), pf_label, pf_display],
         ["Medical Allowance", format_currency(medical_allowance), "", ""],
         ["Conveyance Allowance", format_currency(conveyance), "", ""],
         ["Other Allowance", format_currency(other_allowance), "", ""],

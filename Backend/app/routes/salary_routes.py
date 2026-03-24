@@ -234,12 +234,19 @@ def create_salary_record(
 @router.get("/employee/{user_id}", response_model=EmployeeSalaryOut)
 def get_salary_record(
     user_id: int,
+    month: Optional[int] = Query(default=None, ge=1, le=12, description="Optional month (1-12) for month-specific in-hand"),
+    year: Optional[int] = Query(default=None, ge=2000, le=2100, description="Optional year for month-specific in-hand"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Get salary record for an employee.
     Employees can view their own salary, Admin/HR can view any.
+
+    Optional query params:
+    - month/year: when provided together, `monthly_in_hand` is calculated for that
+      specific month (Professional Tax = 300 in Feb, 200 in other months).
+    - when omitted, default `monthly_in_hand` remains annual-average based.
     """
     # Check permissions
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -256,7 +263,26 @@ def get_salary_record(
             detail="Salary record not found for this employee"
         )
     
-    return _salary_to_response(salary)
+    response = _salary_to_response(salary)
+
+    # Month-specific monthly_in_hand override (Option A on same endpoint).
+    if month is not None or year is not None:
+        if month is None or year is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provide both month and year together for month-specific monthly_in_hand."
+            )
+
+        monthly_gross = round(salary.total_earnings_annual / 12, 2)
+        pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
+        other_ded_monthly = round((salary.other_deduction_annual or 0) / 12, 2)
+        pf_monthly = round((salary.pf_annual or 0) / 12, 2)
+        response["monthly_in_hand"] = round(
+            monthly_gross - pt_monthly - other_ded_monthly - pf_monthly,
+            2
+        )
+
+    return response
 
 
 @router.put("/employee/{user_id}", response_model=EmployeeSalaryOut)
@@ -523,17 +549,17 @@ def download_salary_slip(
         # Generate PDF (pass optional PF number if provided)
         pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
         
-        # Record in history using CTC-based calculation
-        # Total Gross = sum of all earnings (already calculated from CTC)
+        # Record in history using slip calculation values
         gross = salary.total_earnings_annual / 12
+        variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
         
         # Employee deductions = Professional Tax (month-specific) + Other Tax + PF
         pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
         pf_monthly = round((salary.pf_annual or 0) / 12, 2)
         employee_deductions = pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly
         
-        # Net = Gross - employee deductions (Professional Tax + Other Tax + PF)
-        net = gross - employee_deductions
+        # Net = Gross + variable pay - employee deductions (Professional Tax + Other Tax + PF)
+        net = (gross + variable_pay_monthly) - employee_deductions
         
         create_salary_slip_history(
             db, user_id, month, year, gross, employee_deductions, net, current_user.user_id
@@ -607,13 +633,14 @@ def send_salary_slip(
         # Generate PDF (pass optional PF number if provided)
         pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
         
-        # Calculate net salary using CTC-based logic
+        # Calculate net salary using slip logic (include variable pay when present)
         # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax + PF)
         gross = salary.total_earnings_annual / 12
+        variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
         pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
         pf_monthly = round((salary.pf_annual or 0) / 12, 2)
         employee_deductions = pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly
-        net_salary = gross - employee_deductions
+        net_salary = (gross + variable_pay_monthly) - employee_deductions
         
         # Send email
         success = send_salary_slip_email(
