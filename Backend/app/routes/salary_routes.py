@@ -18,7 +18,7 @@ from app.db.models.salary import EmployeeSalary, SalaryIncrement
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
 from app.schemas.salary_schema import (
-    EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryOut,
+    EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryManualFullUpdate, EmployeeSalaryOut,
     EmployeeSalaryCTCCreate, EmployeeSalaryCTCUpdate, SalaryCalculationPreview,
     SalaryIncrementCreate, SalaryIncrementOut,
     SalarySlipRequest, IncrementLetterRequest, SalaryAnnexureRequest,
@@ -27,7 +27,7 @@ from app.schemas.salary_schema import (
 )
 from app.crud.salary_crud import (
     create_employee_salary, create_employee_salary_from_ctc, get_employee_salary, 
-    update_employee_salary, update_employee_salary_from_ctc, delete_employee_salary, 
+    update_employee_salary, update_employee_salary_manual_full, update_employee_salary_from_ctc, delete_employee_salary, 
     list_employee_salaries, preview_salary_calculation,
     create_salary_increment, get_salary_increment, get_user_increments,
     get_latest_increment, update_increment_letter_sent,
@@ -153,7 +153,7 @@ def create_salary_from_ctc(
         return _salary_to_response(salary)
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
@@ -304,6 +304,33 @@ def update_salary_record(
         )
     
     return _salary_to_response(salary)
+
+
+@router.put("/employee/{user_id}/manual-full-edit", response_model=EmployeeSalaryOut)
+def update_salary_record_manual_full(
+    user_id: int,
+    salary_update: EmployeeSalaryManualFullUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+):
+    """
+    Manual full-edit update for salary components.
+    Allows direct editing of component amounts (basic/hra/special/conveyance/medical/other etc.)
+    without triggering automatic CTC-based recomputation.
+    """
+    try:
+        salary = update_employee_salary_manual_full(db, user_id, salary_update)
+        if not salary:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Salary record not found for this employee"
+            )
+        return _salary_to_response(salary)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 
 @router.delete("/employee/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -510,7 +537,7 @@ def download_salary_slip(
     user_id: int,
     month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., ge=2000, le=2100, description="Year"),
-    pf_no: Optional[str] = Query(None, description="PF Number"),
+    # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -518,10 +545,10 @@ def download_salary_slip(
     Download salary slip PDF for an employee.
     Employees can download their own, Admin/HR can download any.
     
-    The salary slip uses CTC-based calculation logic:
-    - Total Gross = CTC - (Employer PF)
-    - Deductions: Professional Tax (₹200/month, Feb ₹300) + Other Tax (₹1,000/month)
-    - Net Payable = Total Gross - Deductions
+    The salary slip uses the current salary-structure logic:
+    - Monthly Gross = total_earnings_annual / 12
+    - Deductions = Professional Tax (₹200/month, Feb ₹300) + Other Tax (other_deduction_annual/12) + PF (pf_annual/12)
+    - Net Payable = (Monthly Gross + Variable Pay Monthly) - Deductions
     """
     # Check permissions
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -546,8 +573,8 @@ def download_salary_slip(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF (pass optional PF number if provided)
-        pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
+        # Generate PDF (PF No is taken from salary record)
+        pdf_buffer = _generate_salary_slip(user, salary, month, year)
         
         # Record in history using slip calculation values
         gross = salary.total_earnings_annual / 12
@@ -591,7 +618,7 @@ def send_salary_slip(
     user_id: int,
     month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., ge=2000, le=2100, description="Year"),
-    pf_no: Optional[str] = Query(None, description="PF Number"),
+    # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
 ):
@@ -599,7 +626,6 @@ def send_salary_slip(
     Generate and send salary slip via email.
     Admin/HR only. Requires employee email to be verified.
     
-    Uses CTC-based calculation logic for salary components.
     """
     try:
         # Get user and salary info
@@ -630,8 +656,8 @@ def send_salary_slip(
                 detail="Salary record not found for this employee"
             )
         
-        # Generate PDF (pass optional PF number if provided)
-        pdf_buffer = _generate_salary_slip(user, salary, month, year, pf_no)
+        # Generate PDF (PF No is taken from salary record)
+        pdf_buffer = _generate_salary_slip(user, salary, month, year)
         
         # Calculate net salary using slip logic (include variable pay when present)
         # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax + PF)

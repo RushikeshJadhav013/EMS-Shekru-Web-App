@@ -12,7 +12,7 @@ from app.db.models.notification import SalaryNotification
 from app.utils.department_utils import department_token_regex_pattern
 from app.schemas.salary_schema import (
     EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryCTCCreate,
-    EmployeeSalaryCTCUpdate, SalaryIncrementCreate, SalaryCalculationPreview
+    EmployeeSalaryCTCUpdate, EmployeeSalaryManualFullUpdate, SalaryIncrementCreate, SalaryCalculationPreview
 )
 from app.services.salary_calculation_service import calculate_salary_from_ctc, SalaryCalculator
 from app.utils.timezone import now_ist
@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== EMPLOYEE SALARY CRUD ====================
+
+def _has_pf_account(pf_no: Optional[str]) -> bool:
+    """PF can be generated only when PF account/member id exists."""
+    if pf_no is None:
+        return False
+    val = str(pf_no).strip().upper()
+    return val not in ("", "NA", "N/A")
 
 def create_employee_salary_from_ctc(
     db: Session, 
@@ -38,11 +45,21 @@ def create_employee_salary_from_ctc(
     if existing:
         raise ValueError(f"Salary record already exists for user_id {salary_data.user_id}")
     
-    # Calculate salary components from package CTC (package_ctc_annual is required).
-    # PF default is null unless employer_pf_percentage is explicitly provided.
-    employer_pf_pct = None
-    if "employer_pf_percentage" in salary_data.model_fields_set and salary_data.employer_pf_percentage is not None:
-        employer_pf_pct = salary_data.employer_pf_percentage / 100.0
+    # PF input mode: either percentage or annual amount.
+    pf_pct_provided = (
+        "employer_pf_percentage" in salary_data.model_fields_set
+        and salary_data.employer_pf_percentage is not None
+    )
+    pf_amount_provided = (
+        "pf_annual" in salary_data.model_fields_set
+        and salary_data.pf_annual is not None
+    )
+    if pf_pct_provided and pf_amount_provided:
+        raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+    if (pf_pct_provided or pf_amount_provided) and not _has_pf_account(salary_data.pf_no):
+        raise ValueError("PF cannot be generated without PF account. Please provide a valid pf_no first.")
+
+    employer_pf_pct = salary_data.employer_pf_percentage / 100.0 if pf_pct_provided else None
 
     calculated_data = calculate_salary_from_ctc(
         annual_ctc=salary_data.package_ctc_annual,
@@ -57,7 +74,10 @@ def create_employee_salary_from_ctc(
         working_days_per_month=salary_data.working_days_per_month,
         payment_mode=salary_data.payment_mode
     )
-    if employer_pf_pct is None:
+    # Apply selected PF mode to persisted field.
+    if pf_amount_provided:
+        calculated_data["pf_annual"] = float(salary_data.pf_annual)
+    elif employer_pf_pct is None:
         calculated_data["pf_annual"] = None
     
     # Validate UAN uniqueness if provided
@@ -121,7 +141,10 @@ def create_employee_salary_from_ctc(
 
 
 def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> EmployeeSalary:
-    """Create a new employee salary record (legacy manual entry)"""
+    """Create a new employee salary record (legacy manual entry).
+
+    Breakup is aligned with auto CTC calculation logic for consistency.
+    """
     # Check if salary record already exists for this user
     existing = db.query(EmployeeSalary).filter(
         EmployeeSalary.user_id == salary_data.user_id
@@ -170,14 +193,20 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
                 "is already associated with another salary record"
             )
 
-    # Normalize IFSC code to uppercase without surrounding whitespace (if present)
+    # Normalize payload and align breakup with auto CTC calculation.
     create_payload = salary_data.model_dump()
     if create_payload.get("ifsc_code") is not None:
         create_payload["ifsc_code"] = str(create_payload["ifsc_code"]).strip().upper()
 
-    # Store package_ctc_annual even for legacy/manual creates.
-    # Formula: (basic+hra+special+conveyance+medical+other)+pf+professional_tax+other_deduction
-    # - `variable_pay` is present on the legacy schema/model.
+    pf_pct = create_payload.get("employer_pf_percentage")
+    pf_amount = create_payload.get("pf_annual")
+    if pf_pct is not None and pf_amount is not None:
+        raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+    if (pf_pct is not None or pf_amount is not None) and not _has_pf_account(create_payload.get("pf_no")):
+        raise ValueError("PF cannot be generated without PF account. Please provide a valid pf_no first.")
+
+    # Reconstruct offered package CTC from earnings side only so legacy create
+    # follows the same breakup basis as the auto CTC endpoint.
     package_ctc_annual = (
         float(create_payload.get("basic_annual") or 0)
         + float(create_payload.get("hra_annual") or 0)
@@ -185,13 +214,35 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
         + float(create_payload.get("conveyance_annual") or 0)
         + float(create_payload.get("medical_allowance_annual") or 0)
         + float(create_payload.get("other_allowance_annual") or 0)
-        + float(create_payload.get("pf_annual") or 0)
-        + float(create_payload.get("professional_tax_annual") or 0)
-        + float(create_payload.get("other_deduction_annual") or 0)
     )
-    create_payload["package_ctc_annual"] = package_ctc_annual
 
-    db_salary = EmployeeSalary(**create_payload)
+    variable_pay_input = float(create_payload.get("variable_pay") or 0)
+    calculated_data = calculate_salary_from_ctc(
+        annual_ctc=package_ctc_annual,
+        variable_pay_type="fixed" if variable_pay_input > 0 else "none",
+        variable_pay_value=variable_pay_input,
+        employer_pf_percentage=None,
+        uan_number=create_payload.get("uan_number"),
+        pf_no=create_payload.get("pf_no"),
+        bank_name=create_payload.get("bank_name"),
+        bank_account=create_payload.get("bank_account"),
+        ifsc_code=create_payload.get("ifsc_code"),
+        working_days_per_month=create_payload.get("working_days_per_month"),
+        payment_mode=create_payload.get("payment_mode"),
+    )
+
+    # PF mode for legacy create: either annual amount or percentage of basic.
+    if pf_amount is not None:
+        calculated_data["pf_annual"] = float(pf_amount)
+    elif pf_pct is not None:
+        calculated_data["pf_annual"] = round(float(calculated_data.get("basic_annual") or 0) * float(pf_pct) / 100.0, 2)
+    else:
+        calculated_data["pf_annual"] = None
+
+    calculated_data["user_id"] = salary_data.user_id
+    calculated_data["package_ctc_annual"] = package_ctc_annual
+
+    db_salary = EmployeeSalary(**calculated_data)
     db.add(db_salary)
     db.commit()
     db.refresh(db_salary)
@@ -225,8 +276,15 @@ def update_employee_salary_from_ctc(
     vp_type = ctc_update.variable_pay_type.value if ctc_update.variable_pay_type else "none"
     vp_value = ctc_update.variable_pay_value if ctc_update.variable_pay_value is not None else 0.0
     
-    # PF default is null unless employer_pf_percentage is provided.
-    employer_pf_pct = ctc_update.employer_pf_percentage / 100.0 if ctc_update.employer_pf_percentage is not None else None
+    # PF input mode: either percentage or annual amount.
+    pf_pct_provided = ctc_update.employer_pf_percentage is not None
+    pf_amount_provided = ctc_update.pf_annual is not None
+    if pf_pct_provided and pf_amount_provided:
+        raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+    if (pf_pct_provided or pf_amount_provided) and not _has_pf_account(salary.pf_no):
+        raise ValueError("PF cannot be generated without PF account. Please add a valid pf_no first.")
+
+    employer_pf_pct = ctc_update.employer_pf_percentage / 100.0 if pf_pct_provided else None
     
     # Calculate new salary components using package CTC
     calculated_data = calculate_salary_from_ctc(
@@ -236,7 +294,10 @@ def update_employee_salary_from_ctc(
         employer_pf_percentage=employer_pf_pct,
         **existing_data
     )
-    if employer_pf_pct is None:
+    # Apply selected PF mode to persisted field.
+    if pf_amount_provided:
+        calculated_data["pf_annual"] = float(ctc_update.pf_annual)
+    elif employer_pf_pct is None:
         calculated_data["pf_annual"] = None
     
     # Update all calculated fields
@@ -280,6 +341,10 @@ def update_employee_salary(
         return None
     
     update_data = salary_update.model_dump(exclude_unset=True)
+    pf_pct_provided = update_data.get("employer_pf_percentage") is not None
+    pf_amount_provided = update_data.get("pf_annual") is not None
+    if pf_pct_provided and pf_amount_provided:
+        raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
     
     # Handle variable pay update - recalculate if changed
     if 'variable_pay_type' in update_data or 'variable_pay_value' in update_data:
@@ -333,6 +398,16 @@ def update_employee_salary(
     if 'ifsc_code' in update_data and update_data.get('ifsc_code') is not None:
         update_data['ifsc_code'] = str(update_data['ifsc_code']).strip().upper()
 
+    # Business rule: PF cannot be generated/stored without PF account.
+    effective_pf_no = update_data.get("pf_no", salary.pf_no)
+    if pf_pct_provided and not _has_pf_account(effective_pf_no):
+        raise ValueError("PF cannot be generated without PF account. Please add a valid pf_no first.")
+    if pf_pct_provided:
+        # In manual update flow, PF % is applied on current Basic annual.
+        update_data["pf_annual"] = round(float(salary.basic_annual or 0) * float(update_data["employer_pf_percentage"]) / 100.0, 2)
+    if not _has_pf_account(effective_pf_no):
+        update_data["pf_annual"] = None
+
     # Validate bank account uniqueness within the same bank on update (if changing bank or account)
     if ('bank_name' in update_data and update_data.get('bank_name') is not None) or (
         'bank_account' in update_data and update_data.get('bank_account') is not None
@@ -363,7 +438,7 @@ def update_employee_salary(
     for key, value in update_data.items():
         if key == "pf_annual" and value is None:
             setattr(salary, key, None)
-        elif key not in ['variable_pay_type', 'variable_pay_value'] and value is not None:
+        elif key not in ['variable_pay_type', 'variable_pay_value', 'employer_pf_percentage'] and value is not None:
             setattr(salary, key, value)
     
     salary.updated_at = now_ist()
@@ -371,6 +446,112 @@ def update_employee_salary(
     db.refresh(salary)
     
     logger.info(f"Updated salary record for user_id: {user_id}")
+    return salary
+
+
+def update_employee_salary_manual_full(
+    db: Session,
+    user_id: int,
+    salary_update: EmployeeSalaryManualFullUpdate
+) -> Optional[EmployeeSalary]:
+    """Manual full-edit update: directly update salary components and related fields."""
+    salary = get_employee_salary(db, user_id)
+    if not salary:
+        return None
+
+    update_data = salary_update.model_dump(exclude_unset=True)
+    pf_pct_provided = update_data.get("employer_pf_percentage") is not None
+    pf_amount_provided = update_data.get("pf_annual") is not None
+    if pf_pct_provided and pf_amount_provided:
+        raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+
+    # PF No uniqueness check (exclude current record)
+    if 'pf_no' in update_data and update_data.get('pf_no') is not None:
+        pf_normalized = str(update_data.get('pf_no')).strip().upper()
+        existing_pf = db.query(EmployeeSalary).filter(
+            EmployeeSalary.pf_no == pf_normalized,
+            EmployeeSalary.user_id != user_id,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_pf:
+            raise ValueError(f"PF No '{pf_normalized}' is already associated with another salary record")
+
+    # UAN uniqueness check (exclude current record)
+    if 'uan_number' in update_data and update_data.get('uan_number') is not None:
+        uan_digits = re.sub(r'[^0-9]', '', str(update_data.get('uan_number')))
+        existing_uan = db.query(EmployeeSalary).filter(
+            EmployeeSalary.uan_number == uan_digits,
+            EmployeeSalary.user_id != user_id,
+            EmployeeSalary.is_active == True
+        ).first()
+        if existing_uan:
+            raise ValueError(f"UAN '{uan_digits}' is already associated with another salary record")
+
+    # Normalize IFSC
+    if 'ifsc_code' in update_data and update_data.get('ifsc_code') is not None:
+        update_data['ifsc_code'] = str(update_data['ifsc_code']).strip().upper()
+
+    # Bank account uniqueness check if either bank/account is being changed
+    if ('bank_name' in update_data and update_data.get('bank_name') is not None) or (
+        'bank_account' in update_data and update_data.get('bank_account') is not None
+    ):
+        effective_bank_name = update_data.get('bank_name', salary.bank_name)
+        effective_bank_account = update_data.get('bank_account', salary.bank_account)
+        if effective_bank_name and effective_bank_account:
+            bank_name_norm = str(effective_bank_name).strip().lower()
+            bank_account_norm = str(effective_bank_account).strip()
+            existing_bank = (
+                db.query(EmployeeSalary)
+                .filter(
+                    EmployeeSalary.user_id != user_id,
+                    EmployeeSalary.is_active == True,
+                    EmployeeSalary.bank_name.isnot(None),
+                    EmployeeSalary.bank_account.isnot(None),
+                    func.lower(EmployeeSalary.bank_name) == bank_name_norm,
+                    EmployeeSalary.bank_account == bank_account_norm,
+                )
+                .first()
+            )
+            if existing_bank:
+                raise ValueError(
+                    f"Bank account '{bank_account_norm}' at bank '{effective_bank_name}' "
+                    "is already associated with another salary record"
+                )
+
+    # PF business rule: without PF account, PF amount must be null.
+    effective_pf_no = update_data.get("pf_no", salary.pf_no)
+    if pf_pct_provided and not _has_pf_account(effective_pf_no):
+        raise ValueError("PF cannot be generated without PF account. Please add a valid pf_no first.")
+    if pf_pct_provided:
+        effective_basic = float(update_data.get("basic_annual", salary.basic_annual) or 0)
+        update_data["pf_annual"] = round(effective_basic * float(update_data["employer_pf_percentage"]) / 100.0, 2)
+    if not _has_pf_account(effective_pf_no):
+        update_data["pf_annual"] = None
+
+    for key, value in update_data.items():
+        if key == "employer_pf_percentage":
+            continue
+        if value is not None:
+            setattr(salary, key, value)
+        elif key in ("pf_annual", "pf_no"):
+            # allow explicit clearing for PF fields
+            setattr(salary, key, None)
+
+    # Recompute package CTC aligned with other salary APIs (earnings-side basis).
+    salary.package_ctc_annual = (
+        float(salary.basic_annual or 0)
+        + float(salary.hra_annual or 0)
+        + float(salary.special_allowance_annual or 0)
+        + float(salary.conveyance_annual or 0)
+        + float(salary.medical_allowance_annual or 0)
+        + float(salary.other_allowance_annual or 0)
+    )
+
+    salary.updated_at = now_ist()
+    db.commit()
+    db.refresh(salary)
+
+    logger.info(f"Manually full-updated salary record for user_id: {user_id}")
     return salary
 
 

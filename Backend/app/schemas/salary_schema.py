@@ -48,7 +48,17 @@ class EmployeeSalaryCTCCreate(BaseModel):
     variable_pay_value: float = Field(default=0.0, ge=0, description="Percentage (0-100) or fixed amount")
     
     # Employer PF configuration (editable)
-    employer_pf_percentage: float = Field(default=12.0, ge=0, le=100, description="Employer PF percentage (default 12%)")
+    employer_pf_percentage: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Employer PF percentage (optional). Defaults to null; provide value manually when needed."
+    )
+    pf_annual: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="PF annual amount (optional). Provide either this OR employer_pf_percentage, not both."
+    )
     
     # Optional fields
     uan_number: Optional[str] = None
@@ -65,6 +75,15 @@ class EmployeeSalaryCTCCreate(BaseModel):
             vp_type = values['variable_pay_type']
             if vp_type == VariablePayType.PERCENTAGE and not (0 <= v <= 100):
                 raise ValueError('Variable pay percentage must be between 0 and 100')
+        return v
+
+    @validator("pf_annual", always=True)
+    def validate_pf_input_mode_ctc_create(cls, v, values):
+        pct = values.get("employer_pf_percentage")
+        if pct is not None and v is not None:
+            raise ValueError(
+                "Provide either employer_pf_percentage or pf_annual, not both."
+            )
         return v
 
     @validator("uan_number", pre=True, always=False)
@@ -109,6 +128,12 @@ class EmployeeSalaryCreate(BaseModel):
     professional_tax_annual: float = Field(default=0.0, ge=0)
     other_deduction_annual: float = Field(default=0.0, ge=0)
     pf_annual: Optional[float] = Field(default=None, ge=0)
+    employer_pf_percentage: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Optional PF percentage. Provide either this OR pf_annual, not both."
+    )
     
     # Additional info
     uan_number: Optional[str] = None
@@ -144,6 +169,13 @@ class EmployeeSalaryCreate(BaseModel):
             raise ValueError("Invalid IFSC format. Expected 4 letters, '0', then 6 alphanumeric characters (uppercase)")
         return code
 
+    @validator("pf_annual", always=True)
+    def validate_pf_input_mode_create(cls, v, values):
+        pct = values.get("employer_pf_percentage")
+        if pct is not None and v is not None:
+            raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+        return v
+
 
 class EmployeeSalaryUpdate(BaseModel):
     """Schema for updating employee salary record - only non-fixed components"""
@@ -153,16 +185,22 @@ class EmployeeSalaryUpdate(BaseModel):
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
     ifsc_code: Optional[str] = None
-    working_days_per_month: Optional[int] = Field(default=None, ge=1, le=31)
-    payment_mode: Optional[str] = None
+    working_days_per_month: Optional[int] = Field(default=22, ge=1, le=31)
+    payment_mode: Optional[str] = Field(default="Bank Transfer")
     
     # Variable pay can be updated
     variable_pay_type: Optional[VariablePayType] = None
     variable_pay_value: Optional[float] = Field(default=None, ge=0)
     
     # Other deductions (non-automatic)
-    other_deduction_annual: Optional[float] = Field(default=None, ge=0)
+    # other_deduction_annual: Optional[float] = Field(default=None, ge=0)
     pf_annual: Optional[float] = Field(default=None, ge=0)
+    employer_pf_percentage: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Optional PF percentage. Provide either this OR pf_annual, not both."
+    )
 
     @validator("uan_number", pre=True, always=False)
     def validate_uan_number_update(cls, v):
@@ -188,6 +226,71 @@ class EmployeeSalaryUpdate(BaseModel):
             raise ValueError("Invalid IFSC format. Expected 4 letters, '0', then 6 alphanumeric characters (uppercase)")
         return code
 
+    @validator("pf_annual", always=True)
+    def validate_pf_input_mode_update(cls, v, values):
+        pct = values.get("employer_pf_percentage")
+        if pct is not None and v is not None:
+            raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+        return v
+
+
+class EmployeeSalaryManualFullUpdate(BaseModel):
+    """Schema for manual full-edit salary update (direct component editing)."""
+    basic_annual: Optional[float] = Field(default=None, ge=0)
+    hra_annual: Optional[float] = Field(default=None, ge=0)
+    special_allowance_annual: Optional[float] = Field(default=None, ge=0)
+    conveyance_annual: Optional[float] = Field(default=None, ge=0)
+    medical_allowance_annual: Optional[float] = Field(default=None, ge=0)
+    other_allowance_annual: Optional[float] = Field(default=None, ge=0)
+    professional_tax_annual: Optional[float] = Field(default=None, ge=0)
+    other_deduction_annual: Optional[float] = Field(default=None, ge=0)
+    pf_annual: Optional[float] = Field(default=None, ge=0)
+    employer_pf_percentage: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Optional PF percentage. Provide either this OR pf_annual, not both."
+    )
+    variable_pay: Optional[float] = Field(default=None, ge=0)
+    uan_number: Optional[str] = None
+    pf_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    working_days_per_month: Optional[int] = Field(default=22, ge=1, le=31)
+    payment_mode: Optional[str] = Field(default="Bank Transfer")
+
+    @validator("uan_number", pre=True, always=False)
+    def validate_uan_number_manual_full_update(cls, v):
+        if v is None:
+            return v
+        digits = re.sub(r'[^0-9]', '', str(v))
+        if len(digits) != 12:
+            raise ValueError("UAN must be exactly 12 digits")
+        return digits
+
+    @validator("pf_no", pre=True, always=False)
+    def validate_pf_no_manual_full_update(cls, v):
+        return _validate_pf_no(v)
+
+    @validator("ifsc_code", pre=True, always=False)
+    def validate_ifsc_manual_full_update(cls, v):
+        if v is None:
+            return v
+        code = str(v).strip().upper()
+        if len(code) != 11:
+            raise ValueError("IFSC must be exactly 11 characters")
+        if not re.fullmatch(r'[A-Z]{4}0[A-Z0-9]{6}', code):
+            raise ValueError("Invalid IFSC format. Expected 4 letters, '0', then 6 alphanumeric characters (uppercase)")
+        return code
+
+    @validator("pf_annual", always=True)
+    def validate_pf_input_mode_manual_full_update(cls, v, values):
+        pct = values.get("employer_pf_percentage")
+        if pct is not None and v is not None:
+            raise ValueError("Provide either employer_pf_percentage or pf_annual, not both.")
+        return v
+
 
 class EmployeeSalaryStatusUpdate(BaseModel):
     """Schema for updating salary active status"""
@@ -201,9 +304,11 @@ class EmployeeSalaryCTCUpdate(BaseModel):
     variable_pay_type: Optional[VariablePayType] = None
     variable_pay_value: Optional[float] = Field(default=None, ge=0)
     employer_pf_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Employer PF percentage (editable)")
-    variable_pay_type: Optional[VariablePayType] = None
-    variable_pay_value: Optional[float] = Field(default=None, ge=0)
-    employer_pf_percentage: Optional[float] = Field(default=None, ge=0, le=100, description="Employer PF percentage (editable)")
+    pf_annual: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="PF annual amount (optional). Provide either this OR employer_pf_percentage, not both."
+    )
     
     @validator('variable_pay_value')
     def validate_variable_pay_value(cls, v, values):
@@ -211,6 +316,15 @@ class EmployeeSalaryCTCUpdate(BaseModel):
             vp_type = values['variable_pay_type']
             if vp_type == VariablePayType.PERCENTAGE and not (0 <= v <= 100):
                 raise ValueError('Variable pay percentage must be between 0 and 100')
+        return v
+
+    @validator("pf_annual", always=True)
+    def validate_pf_input_mode_ctc_update(cls, v, values):
+        pct = values.get("employer_pf_percentage")
+        if pct is not None and v is not None:
+            raise ValueError(
+                "Provide either employer_pf_percentage or pf_annual, not both."
+            )
         return v
 
 
