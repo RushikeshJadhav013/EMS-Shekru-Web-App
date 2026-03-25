@@ -366,6 +366,7 @@ class EmployeeSalaryOut(BaseModel):
     monthly_ctc: float  # Calculated monthly CTC
     display_monthly_ctc: float  # Monthly CTC to display
     monthly_in_hand: float
+    monthly_professional_tax: float  # Month-specific PT when month/year provided, else annual-average
     
     class Config:
         from_attributes = True

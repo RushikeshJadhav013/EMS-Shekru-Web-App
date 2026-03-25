@@ -179,7 +179,9 @@ class SalaryCalculator:
             # Monthly CTC should be based on computed CTC (model definition):
             # ctc_annual = total_gross + pf_annual + professional_tax_annual + other_deduction_annual
             "monthly_ctc": round(
-                (total_gross + employer_pf + professional_tax + other_tax) / 12,
+                # Keep this consistent with auto salary APIs where `monthly_ctc`
+                # comes directly from `package_ctc_annual` (i.e., offered CTC).
+                annual_ctc / 12,
                 2
             ),
             "monthly_gross": round(total_gross / 12, 2),

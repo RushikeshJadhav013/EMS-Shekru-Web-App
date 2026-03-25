@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Tuple
 from datetime import datetime
 import logging
 import traceback
@@ -51,6 +51,19 @@ from app.utils.timezone import now_ist
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/salary", tags=["Salary Management"])
+
+
+def _enforce_hr_non_privileged_target(current_user: User, target_user: User, action: str) -> None:
+    """HR can manage salary only for non-Admin and non-HR users."""
+    # Allow HR to view/read their own salary record.
+    # For other actions (create/update/status), HR is still restricted.
+    if current_user.user_id == target_user.user_id and action.startswith("view"):
+        return
+    if current_user.role == RoleEnum.HR and target_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"HR can only {action} for non-Admin and non-HR users",
+        )
 
 
 # Helper to attach variable pay info from the current salary record
@@ -99,7 +112,7 @@ def preview_ctc_calculation(
     """
     try:
         return preview_salary_calculation(
-            annual_ctc=package_ctc_annual,
+            package_ctc_annual=package_ctc_annual,
             variable_pay_type=variable_pay_type.value,
             variable_pay_value=variable_pay_value,
             employer_pf_percentage=employer_pf_percentage
@@ -111,23 +124,23 @@ def preview_ctc_calculation(
         )
 
 
-@router.get("/minimum-ctc")
-def get_minimum_ctc(
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
-):
-    """Get minimum CTC required for fixed components"""
-    min_ctc = SalaryCalculator.get_minimum_ctc()
-    return {
-        "minimum_ctc": min_ctc,
-        "formatted": f"₹{min_ctc:,.2f}",
-        "components": {
-            "medical_annual": SalaryCalculator.MEDICAL_ALLOWANCE_ANNUAL,
-            "conveyance_annual": SalaryCalculator.CONVEYANCE_ALLOWANCE_ANNUAL,
-            "other_annual": SalaryCalculator.OTHER_ALLOWANCE_ANNUAL,
-            "basic_percentage": f"{SalaryCalculator.BASIC_PERCENTAGE * 100}%",
-            "hra_percentage": f"{SalaryCalculator.HRA_PERCENTAGE * 100}% of Basic"
-        }
-    }
+# @router.get("/minimum-ctc")
+# def get_minimum_ctc(
+#     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+# ):
+#     """Get minimum CTC required for fixed components"""
+#     min_ctc = SalaryCalculator.get_minimum_ctc()
+#     return {
+#         "minimum_ctc": min_ctc,
+#         "formatted": f"₹{min_ctc:,.2f}",
+#         "components": {
+#             "medical_annual": SalaryCalculator.MEDICAL_ALLOWANCE_ANNUAL,
+#             "conveyance_annual": SalaryCalculator.CONVEYANCE_ALLOWANCE_ANNUAL,
+#             "other_annual": SalaryCalculator.OTHER_ALLOWANCE_ANNUAL,
+#             "basic_percentage": f"{SalaryCalculator.BASIC_PERCENTAGE * 100}%",
+#             "hra_percentage": f"{SalaryCalculator.HRA_PERCENTAGE * 100}% of Basic"
+#         }
+#     }
 
 
 @router.post("/employee/from-ctc", response_model=EmployeeSalaryOut, status_code=status.HTTP_201_CREATED)
@@ -147,6 +160,7 @@ def create_salary_from_ctc(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User with id {salary_data.user_id} not found"
         )
+    _enforce_hr_non_privileged_target(current_user, user, "create salary")
     
     try:
         salary = create_employee_salary_from_ctc(db, salary_data)
@@ -174,6 +188,14 @@ def update_salary_from_ctc(
     """
     Update salary by changing CTC - recalculates all components automatically.
     """
+    user = get_user(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
+    _enforce_hr_non_privileged_target(current_user, user, "update salary")
+
     try:
         salary = update_employee_salary_from_ctc(db, user_id, ctc_update)
         if not salary:
@@ -214,6 +236,7 @@ def create_salary_record(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User with id {salary_data.user_id} not found"
         )
+    _enforce_hr_non_privileged_target(current_user, user, "create salary")
     
     try:
         salary = create_employee_salary(db, salary_data)
@@ -254,6 +277,14 @@ def get_salary_record(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view your own salary information"
         )
+    if current_user.role == RoleEnum.HR:
+        target_user = get_user(db, user_id)
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {user_id} not found"
+            )
+        _enforce_hr_non_privileged_target(current_user, target_user, "view salary")
     
     # Fetch salary regardless of active status (include inactive too)
     salary = db.query(EmployeeSalary).filter(EmployeeSalary.user_id == user_id).first()
@@ -265,7 +296,13 @@ def get_salary_record(
     
     response = _salary_to_response(salary)
 
-    # Month-specific monthly_in_hand override (Option A on same endpoint).
+    # Month-specific monthly_professional_tax override.
+    # (Professional Tax depends on month only; year is not required for this.)
+    if month is not None:
+        pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
+        response["monthly_professional_tax"] = round(pt_monthly, 2)
+
+    # Month-specific monthly_in_hand override (requires both month and year).
     if month is not None or year is not None:
         if month is None or year is None:
             raise HTTPException(
@@ -281,6 +318,7 @@ def get_salary_record(
             monthly_gross - pt_monthly - other_ded_monthly - pf_monthly,
             2
         )
+        response["monthly_professional_tax"] = round(pt_monthly, 2)
 
     return response
 
@@ -296,6 +334,14 @@ def update_salary_record(
     Update salary record (only non-calculated fields like bank details, variable pay).
     Use /employee/{user_id}/update-ctc to change CTC and recalculate components.
     """
+    user = get_user(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
+    _enforce_hr_non_privileged_target(current_user, user, "update salary")
+
     salary = update_employee_salary(db, user_id, salary_update)
     if not salary:
         raise HTTPException(
@@ -318,6 +364,14 @@ def update_salary_record_manual_full(
     Allows direct editing of component amounts (basic/hra/special/conveyance/medical/other etc.)
     without triggering automatic CTC-based recomputation.
     """
+    user = get_user(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
+    _enforce_hr_non_privileged_target(current_user, user, "update salary")
+
     try:
         salary = update_employee_salary_manual_full(db, user_id, salary_update)
         if not salary:
@@ -368,6 +422,13 @@ def update_salary_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Salary record not found for this employee",
         )
+    target_user = get_user(db, user_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
+    _enforce_hr_non_privileged_target(current_user, target_user, "update salary status")
 
     salary.is_active = status_update.is_active
     salary.updated_at = now_ist()
@@ -420,6 +481,14 @@ def list_salaries(
         departments = [name for (name,) in rows]
 
     salaries = list_employee_salaries(db, departments, skip, limit)
+    if current_user.role == RoleEnum.HR and salaries:
+        user_ids = [s.user_id for s in salaries]
+        disallowed_ids = {
+            uid for (uid,) in db.query(User.user_id)
+            .filter(User.user_id.in_(user_ids), User.role.in_([RoleEnum.ADMIN, RoleEnum.HR]))
+            .all()
+        }
+        salaries = [s for s in salaries if s.user_id not in disallowed_ids]
     return [_salary_to_response(s) for s in salaries]
 
 
@@ -453,6 +522,7 @@ def create_increment(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User with id {increment_data.user_id} not found"
         )
+    _enforce_hr_non_privileged_target(current_user, user, "create increment")
     
     try:
         increment = create_salary_increment(db, increment_data, current_user.user_id)
@@ -506,6 +576,14 @@ def get_increment(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view your own increment records"
         )
+    if current_user.role == RoleEnum.HR:
+        target_user = get_user(db, increment.user_id)
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {increment.user_id} not found"
+            )
+        _enforce_hr_non_privileged_target(current_user, target_user, "view increment")
     
     return _increment_to_out(increment, db)
 
@@ -525,6 +603,14 @@ def get_user_increment_history(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view your own increment history"
         )
+    if current_user.role == RoleEnum.HR:
+        target_user = get_user(db, user_id)
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {user_id} not found"
+            )
+        _enforce_hr_non_privileged_target(current_user, target_user, "view increment history")
     
     increments = get_user_increments(db, user_id)
     return [_increment_to_out(inc, db) for inc in increments]
@@ -532,11 +618,50 @@ def get_user_increment_history(
 
 # ==================== PDF GENERATION ENDPOINTS ====================
 
+
+def _parse_slip_optional_custom_deductions(
+    label_1: Optional[str],
+    amount_1: Optional[float],
+    label_2: Optional[str],
+    amount_2: Optional[float],
+    label_3: Optional[str],
+    amount_3: Optional[float],
+) -> Tuple[List[Tuple[str, float]], float]:
+    """
+    Up to three optional manual deductions for the slip (label + monthly amount).
+    If amount > 0, a non-empty label is required for that slot.
+    Label with no positive amount is ignored.
+    """
+    slots = [(label_1, amount_1), (label_2, amount_2), (label_3, amount_3)]
+    out: List[Tuple[str, float]] = []
+    total = 0.0
+    for idx, (lab, amt) in enumerate(slots, start=1):
+        lab_s = (lab or "").strip() if lab is not None else ""
+        if amt is not None and float(amt) > 0 and not lab_s:
+            raise ValueError(
+                f"optional_deduction_{idx}_label is required when optional_deduction_{idx}_amount is provided."
+            )
+        if not lab_s or amt is None:
+            continue
+        a = round(float(amt), 2)
+        if a <= 0:
+            continue
+        out.append((lab_s, a))
+        total += a
+    return out, total
+
+
 @router.get("/slip/download/{user_id}")
 def download_salary_slip(
     user_id: int,
     month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., ge=2000, le=2100, description="Year"),
+    optional_deduction_1_label: Optional[str] = Query(None, description="Optional deduction 1 label (e.g. Insurance)"),
+    optional_deduction_1_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 1 amount (monthly)"),
+    optional_deduction_2_label: Optional[str] = Query(None, description="Optional deduction 2 label"),
+    optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
+    optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
+    optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -548,6 +673,7 @@ def download_salary_slip(
     The salary slip uses the current salary-structure logic:
     - Monthly Gross = total_earnings_annual / 12
     - Deductions = Professional Tax (₹200/month, Feb ₹300) + Other Tax (other_deduction_annual/12) + PF (pf_annual/12)
+      + up to 3 optional manual deductions (optional_deduction_N_label + optional_deduction_N_amount)
     - Net Payable = (Monthly Gross + Variable Pay Monthly) - Deductions
     """
     # Check permissions
@@ -565,6 +691,10 @@ def download_salary_slip(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+
+        # HR restriction: HR can only download PDFs for non-Admin and non-HR users.
+        # HR is allowed to download their own (target == current_user) slip.
+        _enforce_hr_non_privileged_target(current_user, user, "view salary slip")
         
         salary = get_employee_salary(db, user_id)
         if not salary:
@@ -573,19 +703,32 @@ def download_salary_slip(
                 detail="Salary record not found for this employee"
             )
         
+        custom_deductions, custom_deductions_total = _parse_slip_optional_custom_deductions(
+            optional_deduction_1_label,
+            optional_deduction_1_amount,
+            optional_deduction_2_label,
+            optional_deduction_2_amount,
+            optional_deduction_3_label,
+            optional_deduction_3_amount,
+        )
+
         # Generate PDF (PF No is taken from salary record)
-        pdf_buffer = _generate_salary_slip(user, salary, month, year)
+        pdf_buffer = _generate_salary_slip(
+            user, salary, month, year, custom_deductions=custom_deductions
+        )
         
         # Record in history using slip calculation values
         gross = salary.total_earnings_annual / 12
         variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
         
-        # Employee deductions = Professional Tax (month-specific) + Other Tax + PF
+        # Employee deductions = Professional Tax (month-specific) + Other Tax + PF + optional manual
         pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
         pf_monthly = round((salary.pf_annual or 0) / 12, 2)
-        employee_deductions = pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly
+        employee_deductions = (
+            pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly + custom_deductions_total
+        )
         
-        # Net = Gross + variable pay - employee deductions (Professional Tax + Other Tax + PF)
+        # Net = Gross + variable pay - employee deductions
         net = (gross + variable_pay_monthly) - employee_deductions
         
         create_salary_slip_history(
@@ -602,6 +745,8 @@ def download_salary_slip(
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
         
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -618,6 +763,12 @@ def send_salary_slip(
     user_id: int,
     month: int = Query(..., ge=1, le=12, description="Month (1-12)"),
     year: int = Query(..., ge=2000, le=2100, description="Year"),
+    optional_deduction_1_label: Optional[str] = Query(None, description="Optional deduction 1 label"),
+    optional_deduction_1_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 1 amount (monthly)"),
+    optional_deduction_2_label: Optional[str] = Query(None, description="Optional deduction 2 label"),
+    optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
+    optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
+    optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
@@ -625,7 +776,9 @@ def send_salary_slip(
     """
     Generate and send salary slip via email.
     Admin/HR only. Requires employee email to be verified.
-    
+
+    Optional query params: optional_deduction_1/2/3 _label and _amount (monthly),
+    same rules as GET slip/download.
     """
     try:
         # Get user and salary info
@@ -635,6 +788,10 @@ def send_salary_slip(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+
+        # HR restriction: HR cannot send salary slips for Admin/HR targets,
+        # including themselves (target == current_user).
+        _enforce_hr_non_privileged_target(current_user, user, "send salary slip")
         
         if not user.email:
             raise HTTPException(
@@ -656,16 +813,28 @@ def send_salary_slip(
                 detail="Salary record not found for this employee"
             )
         
+        custom_deductions, custom_deductions_total = _parse_slip_optional_custom_deductions(
+            optional_deduction_1_label,
+            optional_deduction_1_amount,
+            optional_deduction_2_label,
+            optional_deduction_2_amount,
+            optional_deduction_3_label,
+            optional_deduction_3_amount,
+        )
+
         # Generate PDF (PF No is taken from salary record)
-        pdf_buffer = _generate_salary_slip(user, salary, month, year)
+        pdf_buffer = _generate_salary_slip(
+            user, salary, month, year, custom_deductions=custom_deductions
+        )
         
         # Calculate net salary using slip logic (include variable pay when present)
-        # Net = Total Gross - Employee Deductions (Professional Tax + Other Tax + PF)
         gross = salary.total_earnings_annual / 12
         variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
         pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
         pf_monthly = round((salary.pf_annual or 0) / 12, 2)
-        employee_deductions = pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly
+        employee_deductions = (
+            pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly + custom_deductions_total
+        )
         net_salary = (gross + variable_pay_monthly) - employee_deductions
         
         # Send email
@@ -705,6 +874,8 @@ def send_salary_slip(
                 message="Failed to send salary slip email"
             )
         
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -740,6 +911,10 @@ def download_salary_annexure(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+
+        # HR restriction: HR can only download PDFs for non-Admin and non-HR users.
+        # HR is allowed to download their own (target == current_user) annexure.
+        _enforce_hr_non_privileged_target(current_user, user, "view salary annexure")
         
         salary = get_employee_salary(db, user_id)
         if not salary:
@@ -800,6 +975,10 @@ def send_salary_annexure(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+
+        # HR restriction: HR cannot send salary annexures for Admin/HR targets,
+        # including themselves (target == current_user).
+        _enforce_hr_non_privileged_target(current_user, user, "send salary annexure")
         
         if not user.email:
             raise HTTPException(
@@ -912,6 +1091,10 @@ def download_increment_letter(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+
+        # HR restriction: HR can only download PDFs for non-Admin and non-HR users.
+        # HR is allowed to download their own (target == current_user) increment letter.
+        _enforce_hr_non_privileged_target(current_user, user, "view increment letter")
         
         # Fetch employee salary record for annexure details
         salary = get_employee_salary(db, increment.user_id)
@@ -996,6 +1179,7 @@ def send_increment_letter(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+        _enforce_hr_non_privileged_target(current_user, user, "send increment letter")
         
         if not user.email:
             raise HTTPException(
@@ -1115,6 +1299,10 @@ def download_offer_letter(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found"
             )
+
+        # HR restriction:
+        # HR cannot download offer letters for Admins, other HRs, or even themselves.
+        _enforce_hr_non_privileged_target(current_user, user, "download offer letter")
         
         salary = get_employee_salary(db, user_id)
         if not salary:
@@ -1192,6 +1380,16 @@ def get_slip_history(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view your own salary slip history"
         )
+
+    # HR restriction: HR cannot view Admin/other-HR details.
+    # HR can view their own history (handled inside the helper).
+    target_user = get_user(db, user_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Employee not found"
+        )
+    _enforce_hr_non_privileged_target(current_user, target_user, "view salary slip history")
     
     history = get_user_salary_slip_history(db, user_id, year)
     return {"history": history}
@@ -1307,11 +1505,21 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "display_ctc_annual": salary.display_ctc_annual,  # CTC to display (package if set, else calculated)
         "monthly_ctc": salary.monthly_ctc,  # Calculated monthly CTC
         "display_monthly_ctc": salary.display_monthly_ctc,  # Monthly CTC to display
-        "monthly_in_hand": salary.monthly_in_hand
+        "monthly_in_hand": salary.monthly_in_hand,
+        # Default monthly professional tax is annual-average; will be
+        # overridden when month/year are provided.
+        "monthly_professional_tax": round((salary.professional_tax_annual or 0.0) / 12, 2),
     }
 
 
-def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: int, pf_no: Optional[str] = None):
+def _generate_salary_slip(
+    user: User,
+    salary: EmployeeSalary,
+    month: int,
+    year: int,
+    pf_no: Optional[str] = None,
+    custom_deductions: Optional[List[Tuple[str, float]]] = None,
+):
     """
     Generate salary slip PDF for user using CTC-based calculation logic.
     
@@ -1380,6 +1588,7 @@ def _generate_salary_slip(user: User, salary: EmployeeSalary, month: int, year: 
         payment_mode=salary.payment_mode,
         bank_name=salary.bank_name or "",
         bank_account=salary.bank_account or "",
+        custom_deductions=custom_deductions,
     )
 
 

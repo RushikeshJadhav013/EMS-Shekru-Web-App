@@ -12,7 +12,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak, BaseDocTemplate, PageTemplate, Frame, KeepTogether
 from reportlab.pdfgen import canvas
-from typing import Optional
+from typing import List, Optional, Tuple
 import os
 
 # Company configuration
@@ -97,7 +97,8 @@ def generate_salary_slip_pdf(
     pf_no: str = "",
     payment_mode: str = "Bank Transfer",
     bank_name: str = "",
-    bank_account: str = ""
+    bank_account: str = "",
+    custom_deductions: Optional[List[Tuple[str, float]]] = None,
 ) -> io.BytesIO:
     """
     Generate Salary Slip PDF matching the exact sample format
@@ -133,9 +134,21 @@ def generate_salary_slip_pdf(
     if not show_pf:
         pf_numeric = 0.0
 
+    custom_extra = 0.0
+    custom_rows: List[Tuple[str, float]] = []
+    if custom_deductions:
+        for raw_label, raw_amt in custom_deductions:
+            lbl = str(raw_label).strip()
+            if not lbl or raw_amt is None or float(raw_amt) <= 0:
+                continue
+            amt = round(float(raw_amt), 2)
+            custom_extra += amt
+            # Plain-text cell; truncate very long labels
+            custom_rows.append((lbl[:120], amt))
+
     # Employee deductions for "Net Payable"
-    employee_total_deductions = professional_tax + other_deduction + pf_numeric
-    total_deductions = professional_tax + other_deduction + pf_numeric
+    employee_total_deductions = professional_tax + other_deduction + pf_numeric + custom_extra
+    total_deductions = professional_tax + other_deduction + pf_numeric + custom_extra
     # Variable pay should only affect "Total Net Payable" when it has a value.
     variable_pay_amount = float(variable_pay) if variable_pay else 0.0
     net_payable = (total_earnings + variable_pay_amount) - employee_total_deductions
@@ -347,8 +360,8 @@ def generate_salary_slip_pdf(
     # Header row
     earnings_header = [["Earnings", "Amount(Rs)", "Deductions", "Amount(Rs)"]]
     
-    # Data rows - align earnings and deductions side by side
-    # Prepare a display string for PF only when PF No exists.
+    # Data rows - align earnings and deductions side by side (no blank rows in either column).
+    # PF label/amount only when PF No exists and amount > 0
     if show_pf and pf_numeric and pf_numeric > 0:
         pf_display = format_currency(pf_numeric)
         pf_label = "PF"
@@ -356,15 +369,61 @@ def generate_salary_slip_pdf(
         pf_display = ""
         pf_label = ""
 
-    earnings_deductions_data = [
-        ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
-        ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
-        # Put PF in the same row as Special Allowance (deductions columns)
-        ["Special Allowance", format_currency(special_allowance), pf_label, pf_display],
-        ["Medical Allowance", format_currency(medical_allowance), "", ""],
-        ["Conveyance Allowance", format_currency(conveyance), "", ""],
-        ["Other Allowance", format_currency(other_allowance), "", ""],
-    ]
+    def _pair_optional_deduction(idx: int) -> Tuple[str, str]:
+        """Return (label, formatted amount) for optional deduction slot idx, or empty strings."""
+        if idx >= len(custom_rows):
+            return "", ""
+        lbl, amt = custom_rows[idx]
+        lbl = str(lbl).strip()
+        if not lbl or amt is None or float(amt) <= 0:
+            return "", ""
+        return lbl[:120], format_currency(float(amt))
+
+    # Pair optional deductions with fixed earnings rows so the earnings column has no gaps:
+    # - With PF: optional[0..2] sit on Medical / Conveyance / Other Allowance rows (under PF).
+    # - Without PF: optional[0] on Special row (under Other), optional[1..2] on Medical / Conveyance.
+    if show_pf:
+        earnings_deductions_data = [
+            ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
+            ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
+            ["Special Allowance", format_currency(special_allowance), pf_label, pf_display],
+            [
+                "Medical Allowance",
+                format_currency(medical_allowance),
+                *_pair_optional_deduction(0),
+            ],
+            [
+                "Conveyance Allowance",
+                format_currency(conveyance),
+                *_pair_optional_deduction(1),
+            ],
+            [
+                "Other Allowance",
+                format_currency(other_allowance),
+                *_pair_optional_deduction(2),
+            ],
+        ]
+    else:
+        earnings_deductions_data = [
+            ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
+            ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
+            [
+                "Special Allowance",
+                format_currency(special_allowance),
+                *_pair_optional_deduction(0),
+            ],
+            [
+                "Medical Allowance",
+                format_currency(medical_allowance),
+                *_pair_optional_deduction(1),
+            ],
+            [
+                "Conveyance Allowance",
+                format_currency(conveyance),
+                *_pair_optional_deduction(2),
+            ],
+            ["Other Allowance", format_currency(other_allowance), "", ""],
+        ]
     
     # Total row
     total_row = [["Total Earnings", format_currency(total_earnings), "Total Deductions", format_currency(total_deductions)]]
