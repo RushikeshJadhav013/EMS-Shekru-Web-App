@@ -367,6 +367,10 @@ class EmployeeSalaryOut(BaseModel):
     display_monthly_ctc: float  # Monthly CTC to display
     monthly_in_hand: float
     monthly_professional_tax: float  # Month-specific PT when month/year provided, else annual-average
+    feb_monthly_in_hand: float  # In-hand for Feb (PT = 300)
+    other_monthly_in_hand: float  # In-hand for other months (PT = 200)
+    feb_monthly_prof_tax: float  # Professional tax for Feb
+    other_monthly_prof_tax: float  # Professional tax for other months
     
     class Config:
         from_attributes = True
