@@ -29,6 +29,7 @@ from app.db.models import (  # noqa: F401
     project,
     project_member,
     meeting,
+    company,
 )
 from app.routes import (
     user_routes,
@@ -46,6 +47,7 @@ from app.routes import (
     report_routes,
     super_admin_routes,
     subscription_routes,
+    company_routes,
     chat_routes,
     wfh_routes,
     salary_routes,  # Salary slip and increment letter routes
@@ -217,6 +219,7 @@ app.include_router(department_routes.router)
 app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
+app.include_router(company_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(wfh_routes.router)
 app.include_router(salary_routes.router)  # Salary slip and increment letter routes
