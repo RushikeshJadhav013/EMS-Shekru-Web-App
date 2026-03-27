@@ -2,6 +2,8 @@ from datetime import datetime
 import re
 from pydantic import BaseModel, EmailStr, validator
 
+GSTIN_REGEX = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[0-9A-Z]{1}Z[0-9]{1}$")
+
 
 class CompanyBase(BaseModel):
     company_name: str
@@ -42,7 +44,13 @@ class CompanyBase(BaseModel):
         if v is None:
             return None
         value = v.strip().upper()
-        return value or None
+        if not value:
+            return None
+        if not GSTIN_REGEX.fullmatch(value):
+            raise ValueError(
+                "Invalid GST number format. Expected 15 chars like '27ABCDE1234F1Z5'."
+            )
+        return value
 
     @validator("company_logo")
     def normalize_company_logo(cls, v: str | None) -> str | None:
@@ -103,7 +111,13 @@ class CompanyUpdate(BaseModel):
         if v is None:
             return None
         value = v.strip().upper()
-        return value or None
+        if not value:
+            return None
+        if not GSTIN_REGEX.fullmatch(value):
+            raise ValueError(
+                "Invalid GST number format. Expected 15 chars like '27ABCDE1234F1Z5'."
+            )
+        return value
 
     @validator("company_logo")
     def normalize_company_logo(cls, v: str | None) -> str | None:
@@ -117,8 +131,15 @@ class CompanyStatusUpdate(BaseModel):
     status: bool
 
 
-class CompanyOut(CompanyBase):
+class CompanyOut(BaseModel):
     company_id: int
+    company_name: str
+    company_email: EmailStr
+    contact_number: str
+    address: str
+    gst_no: str | None = None
+    company_logo: str | None = None
+    status: bool = True
     is_deleted: bool
     created_at: datetime | None = None
     created_by: int | None = None

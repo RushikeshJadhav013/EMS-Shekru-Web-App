@@ -16,7 +16,9 @@ from app.schemas.company_schema import (
 from app.crud.company_crud import (
     create_company,
     get_company,
+    get_company_by_contact_number,
     get_company_by_email,
+    get_company_by_gst_no,
     list_companies,
     update_company,
     set_company_status,
@@ -33,6 +35,21 @@ def create_company_route(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
+    existing_contact = get_company_by_contact_number(db, company.contact_number, include_deleted=True)
+    if existing_contact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Company contact number already exists",
+        )
+
+    if company.gst_no:
+        existing_gst = get_company_by_gst_no(db, company.gst_no, include_deleted=True)
+        if existing_gst:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company GST number already exists",
+            )
+
     existing = get_company_by_email(db, company.company_email, include_deleted=True)
     if existing and not existing.is_deleted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Company email already exists")
@@ -87,6 +104,36 @@ def update_company_route(
         )
         if existing:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Company email already exists")
+
+    if company_update.contact_number:
+        existing_contact = (
+            db.query(Company)
+            .filter(
+                Company.contact_number == company_update.contact_number.strip(),
+                Company.company_id != company_id,
+            )
+            .first()
+        )
+        if existing_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company contact number already exists",
+            )
+
+    if company_update.gst_no:
+        existing_gst = (
+            db.query(Company)
+            .filter(
+                Company.gst_no == company_update.gst_no.strip().upper(),
+                Company.company_id != company_id,
+            )
+            .first()
+        )
+        if existing_gst:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company GST number already exists",
+            )
 
     updated = update_company(db, company_id, company_update, updated_by=current_super_admin.super_admin_id)
     if not updated:

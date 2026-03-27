@@ -33,6 +33,32 @@ def get_company_by_email(db: Session, company_email: str, include_deleted: bool 
     return q.first()
 
 
+def get_company_by_contact_number(
+    db: Session,
+    contact_number: str,
+    include_deleted: bool = False,
+) -> Company | None:
+    normalized = (contact_number or "").strip()
+    q = db.query(Company).filter(Company.contact_number == normalized)
+    if not include_deleted:
+        q = q.filter(Company.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
+def get_company_by_gst_no(
+    db: Session,
+    gst_no: str | None,
+    include_deleted: bool = False,
+) -> Company | None:
+    if gst_no is None:
+        return None
+    normalized = gst_no.strip().upper()
+    q = db.query(Company).filter(Company.gst_no == normalized)
+    if not include_deleted:
+        q = q.filter(Company.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
 def list_companies(
     db: Session,
     include_deleted: bool = False,
