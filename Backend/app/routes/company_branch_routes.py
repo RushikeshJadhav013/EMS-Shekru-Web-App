@@ -46,7 +46,7 @@ def create_branch_route(
 
     existing_contact = get_branch_by_contact_number(
         db=db,
-        company_id=branch.company_id,
+        company_id=None,
         contact_number=branch.contact_number,
         include_deleted=True,
     )
@@ -111,7 +111,7 @@ def update_branch_route(
     if branch_update.contact_number is not None:
         existing_contact = get_branch_by_contact_number(
             db=db,
-            company_id=branch.company_id,
+            company_id=None,
             contact_number=branch_update.contact_number,
             include_deleted=True,
         )

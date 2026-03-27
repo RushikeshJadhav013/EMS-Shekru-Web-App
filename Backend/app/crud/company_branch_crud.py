@@ -44,15 +44,13 @@ def get_branch_by_name(
 
 def get_branch_by_contact_number(
     db: Session,
-    company_id: int,
+    company_id: int | None,
     contact_number: str,
     include_deleted: bool = False,
 ) -> CompanyBranch | None:
     normalized_contact = contact_number.strip()
-    q = db.query(CompanyBranch).filter(
-        CompanyBranch.company_id == company_id,
-        CompanyBranch.contact_number == normalized_contact,
-    )
+    # Global uniqueness: ignore company_id when looking up contact_number conflicts.
+    q = db.query(CompanyBranch).filter(CompanyBranch.contact_number == normalized_contact)
     if not include_deleted:
         q = q.filter(CompanyBranch.is_deleted == False)  # noqa: E712
     return q.first()

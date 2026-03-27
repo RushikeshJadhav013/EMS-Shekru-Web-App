@@ -16,7 +16,8 @@ class CompanyBranch(Base):
     __tablename__ = "company_branches"
     __table_args__ = (
         UniqueConstraint("company_id", "branch_name", name="uq_company_branch_name"),
-        UniqueConstraint("company_id", "contact_number", name="uq_company_branch_contact"),
+        # Global uniqueness: same contact number cannot exist in multiple companies/branches.
+        UniqueConstraint("contact_number", name="uq_company_branch_contact_global"),
     )
 
     branch_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
