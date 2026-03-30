@@ -701,42 +701,67 @@ def list_decided_by_approver(db: Session, approver_id: int):
 def _get_leave_notification_recipients(db: Session, requester: User) -> List[User]:
     """
     Get notification recipients based on requester's role and department:
-    - Employee/TeamLead → notify Manager & HR from same department ONLY
+    - Employee → notify Manager, HR, and TeamLead from same department(s) ONLY
+    - TeamLead → notify Manager & HR from same department(s) ONLY
     - Manager/HR → notify Admin only
     """
     role_value = getattr(requester.role, "value", str(requester.role))
     requester_role = role_value
-    requester_department = requester.department
+    requester_tokens = department_tokens_lower(requester.department)
     
-    # Employee or TeamLead: notify Manager & HR from same department ONLY
-    if role_value in (RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value):
-        if not requester.department:
+    # Employee: notify Manager + HR + TeamLead from same department(s) ONLY
+    if requester_role == RoleEnum.EMPLOYEE.value:
+        if not requester_tokens:
             return []
 
-        
-        # Normalize department for comparison (trim whitespace)
-        requester_dept = requester.department.strip() if requester.department else None
-        if not requester_dept:
-            return []
-        
-        # Get Manager and HR from the same department tokens.
-        # A manager may have multiple comma-separated departments (e.g. "Engineering, Marketing").
-        all_managers_hr = (
+        roles_to_notify = [RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.TEAM_LEAD]
+        candidates = (
             db.query(User)
             .filter(
                 User.department.isnot(None),
-                User.role.in_([RoleEnum.MANAGER, RoleEnum.HR]),
-                User.is_active == True
+                User.role.in_(roles_to_notify),
+                User.is_active == True,
             )
             .all()
         )
 
-        recipients = []
-        for user in all_managers_hr:
+        recipients: List[User] = []
+        for user in candidates:
             if not user.department:
                 continue
+            if user.user_id == requester.user_id:
+                continue
+
             user_tokens = department_tokens_lower(user.department)
-            if requester_dept.lower() in user_tokens and user.user_id != requester.user_id:
+            if user_tokens and set(user_tokens).intersection(requester_tokens):
+                recipients.append(user)
+        return recipients
+
+    # TeamLead request: keep existing behavior (notify Manager + HR only)
+    if requester_role == RoleEnum.TEAM_LEAD.value:
+        if not requester_tokens:
+            return []
+
+        roles_to_notify = [RoleEnum.MANAGER, RoleEnum.HR]
+        candidates = (
+            db.query(User)
+            .filter(
+                User.department.isnot(None),
+                User.role.in_(roles_to_notify),
+                User.is_active == True,
+            )
+            .all()
+        )
+
+        recipients: List[User] = []
+        for user in candidates:
+            if not user.department:
+                continue
+            if user.user_id == requester.user_id:
+                continue
+
+            user_tokens = department_tokens_lower(user.department)
+            if user_tokens and set(user_tokens).intersection(requester_tokens):
                 recipients.append(user)
         return recipients
 

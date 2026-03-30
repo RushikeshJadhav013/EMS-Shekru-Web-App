@@ -30,6 +30,7 @@ from app.utils.timezone import now_ist
 import uuid
 import os
 import shutil
+import re
 from pathlib import Path
 
 router = APIRouter(prefix="/chats", tags=["Chat"])
@@ -37,6 +38,31 @@ router = APIRouter(prefix="/chats", tags=["Chat"])
 
 CHAT_UPLOAD_DIR = Path("static/chat_documents")
 CHAT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+MAX_CHAT_CONTENT_BYTES = 100_000
+BASE64_DATA_URL_PATTERN = re.compile(r"^\s*data:[^;]+;base64,", re.IGNORECASE)
+
+
+def validate_chat_content(content: Optional[str]) -> str:
+    """
+    Keep message text small and block accidental base64 payloads in content.
+    """
+    if content is None:
+        return ""
+
+    if BASE64_DATA_URL_PATTERN.match(content):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Message content appears to be base64 data. Upload files using multipart file upload.",
+        )
+
+    content_bytes = len(content.encode("utf-8"))
+    if content_bytes > MAX_CHAT_CONTENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Message content exceeds {MAX_CHAT_CONTENT_BYTES} bytes. Send large data as file attachment.",
+        )
+
+    return content
 
 
 def save_chat_document(user_id: int, chat_id: str, document: UploadFile):
@@ -308,11 +334,12 @@ def send_message(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    validated_content = validate_chat_content(payload.content)
     is_group = chat_type == "group"
     msg = {
         "id": str(uuid.uuid4()),
         "sender_id": current.user_id,
-        "content": payload.content,
+        "content": validated_content,
         "timestamp": datetime.utcnow().timestamp(),
         "read_by": [current.user_id]
     }
@@ -356,7 +383,9 @@ async def send_message_with_file(
     Send a chat message with a document attachment.
     The document is stored on the server and referenced from the Firestore message.
     """
-    if not content and not file:
+    validated_content = validate_chat_content(content)
+
+    if not validated_content and not file:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Either content or file must be provided",
@@ -386,7 +415,7 @@ async def send_message_with_file(
     msg = {
         "id": msg_id,
         "sender_id": current.user_id,
-        "content": content or "",
+        "content": validated_content,
         "timestamp": datetime.utcnow().timestamp(),
         "read_by": [current.user_id],
         "file_url": file_url,

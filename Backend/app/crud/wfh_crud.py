@@ -75,6 +75,7 @@ def get_all_wfh_requests(
     - Admin: Can see all requests except Admins and self
     - HR: Can see all requests except Admins, HRs, and self
     - Manager: Can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
+    - TeamLead: Can see requests from their department(s) only, excluding Admins, HRs, Managers, TeamLeads, and self
     
     Returns: (list of requests with user details, pending count)
     """
@@ -157,6 +158,17 @@ def get_all_wfh_requests(
                 User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
                 User.user_id != requester_user.user_id
             )
+        elif requester_user.role == RoleEnum.TEAM_LEAD:
+            # TeamLead can see Employee requests from their department(s) only, excluding self
+            if requester_user.department:
+                lead_tokens = department_tokens_lower(requester_user.department)
+                if lead_tokens:
+                    token_filters = [func.lower(User.department).like(f'%{t}%') for t in lead_tokens]
+                    query = query.filter(or_(*token_filters))
+            query = query.filter(
+                User.role == RoleEnum.EMPLOYEE,
+                User.user_id != requester_user.user_id
+            )
     
     # Status filter (for non-Admin callers, or when Admin fallback above used status_filter directly)
     if status_filter and (not requester_user or requester_user.role != RoleEnum.ADMIN):
@@ -207,6 +219,17 @@ def get_all_wfh_requests(
                     pending_query = pending_query.filter(or_(*token_filters))
             pending_query = pending_query.filter(
                 User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
+                User.user_id != requester_user.user_id
+            )
+        elif requester_user.role == RoleEnum.TEAM_LEAD:
+            # TeamLead can see pending Employee requests from their department(s) only, excluding self
+            if requester_user.department:
+                lead_tokens = department_tokens_lower(requester_user.department)
+                if lead_tokens:
+                    token_filters = [func.lower(User.department).like(f'%{t}%') for t in lead_tokens]
+                    pending_query = pending_query.filter(or_(*token_filters))
+            pending_query = pending_query.filter(
+                User.role == RoleEnum.EMPLOYEE,
                 User.user_id != requester_user.user_id
             )
 
@@ -371,6 +394,18 @@ def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
                     User, WFHRequest.user_id == User.user_id
                 ).filter(
                     or_(*token_filters)
+                )
+    elif requester_user.role == RoleEnum.TEAM_LEAD:
+        if requester_user.department:
+            lead_tokens = department_tokens_lower(requester_user.department)
+            if lead_tokens:
+                token_filters = [func.lower(User.department).like(f'%{t}%') for t in lead_tokens]
+                query = query.join(
+                    User, WFHRequest.user_id == User.user_id
+                ).filter(
+                    or_(*token_filters),
+                    User.role == RoleEnum.EMPLOYEE,
+                    User.user_id != requester_user.user_id,
                 )
     
     return query.scalar() or 0

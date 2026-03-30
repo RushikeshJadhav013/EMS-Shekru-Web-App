@@ -98,30 +98,30 @@ def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncremen
 
 # ==================== CTC-BASED PAYROLL ENDPOINTS ====================
 
-@router.post("/calculate-preview", response_model=SalaryCalculationPreview)
-def preview_ctc_calculation(
-    package_ctc_annual: float = Query(..., gt=0, description="Package Annual CTC amount"),
-    variable_pay_type: VariablePayType = Query(default=VariablePayType.NONE),
-    variable_pay_value: float = Query(default=0.0, ge=0),
-    employer_pf_percentage: float = Query(default=12.0, ge=0, le=100, description="Employer PF percentage"),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
-):
-    """
-    Preview salary calculation from CTC without saving.
-    Shows breakdown of all components for HR review.
-    """
-    try:
-        return preview_salary_calculation(
-            package_ctc_annual=package_ctc_annual,
-            variable_pay_type=variable_pay_type.value,
-            variable_pay_value=variable_pay_value,
-            employer_pf_percentage=employer_pf_percentage
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+# @router.post("/calculate-preview", response_model=SalaryCalculationPreview)
+# def preview_ctc_calculation(
+#     package_ctc_annual: float = Query(..., gt=0, description="Package Annual CTC amount"),
+#     variable_pay_type: VariablePayType = Query(default=VariablePayType.NONE),
+#     variable_pay_value: float = Query(default=0.0, ge=0),
+#     employer_pf_percentage: float = Query(default=12.0, ge=0, le=100, description="Employer PF percentage"),
+#     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+# ):
+#     """
+#     Preview salary calculation from CTC without saving.
+#     Shows breakdown of all components for HR review.
+#     """
+#     try:
+#         return preview_salary_calculation(
+#             package_ctc_annual=package_ctc_annual,
+#             variable_pay_type=variable_pay_type.value,
+#             variable_pay_value=variable_pay_value,
+#             employer_pf_percentage=employer_pf_percentage
+#         )
+#     except ValueError as e:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail=str(e)
+#         )
 
 
 # @router.get("/minimum-ctc")
@@ -1475,6 +1475,27 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         if getattr(salary, "package_ctc_annual", None) is not None
         else salary.ctc_annual
     )
+
+    monthly_gross = round(salary.total_earnings_annual / 12, 2)
+    other_ded_monthly = round((salary.other_deduction_annual or 0) / 12, 2)
+    pf_monthly = round((salary.pf_annual or 0) / 12, 2)
+
+    # Professional Tax rules: Feb = 300, other months = 200 (if PT is enabled on the salary record).
+    if (salary.professional_tax_annual or 0) <= 0:
+        feb_monthly_prof_tax = 0.0
+        other_monthly_prof_tax = 0.0
+    else:
+        feb_monthly_prof_tax = 300.0
+        other_monthly_prof_tax = 200.0
+
+    feb_monthly_in_hand = round(
+        monthly_gross - feb_monthly_prof_tax - other_ded_monthly - pf_monthly,
+        2,
+    )
+    other_monthly_in_hand = round(
+        monthly_gross - other_monthly_prof_tax - other_ded_monthly - pf_monthly,
+        2,
+    )
     return {
         "id": salary.id,
         "user_id": salary.user_id,
@@ -1509,6 +1530,10 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         # Default monthly professional tax is annual-average; will be
         # overridden when month/year are provided.
         "monthly_professional_tax": round((salary.professional_tax_annual or 0.0) / 12, 2),
+        "feb_monthly_in_hand": feb_monthly_in_hand,
+        "other_monthly_in_hand": other_monthly_in_hand,
+        "feb_monthly_prof_tax": round(feb_monthly_prof_tax, 2),
+        "other_monthly_prof_tax": round(other_monthly_prof_tax, 2),
     }
 
 
