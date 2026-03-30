@@ -62,6 +62,14 @@ def _can_approver_handle_target(approver: User, target: User) -> bool:
         target_tokens = set(department_tokens_lower(target.department))
         return bool(approver_tokens.intersection(target_tokens))
 
+    # TeamLead: can approve Employee within overlapping departments
+    if approver.role == RoleEnum.TEAM_LEAD:
+        if target.role != RoleEnum.EMPLOYEE:
+            return False
+        approver_tokens = set(department_tokens_lower(approver.department))
+        target_tokens = set(department_tokens_lower(target.department))
+        return bool(approver_tokens.intersection(target_tokens))
+
     # Default: no permission
     return False
 
@@ -428,15 +436,16 @@ def get_all_requests(
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     role_filter: Optional[Literal["ADMIN", "HR", "MANAGER", "TEAM_LEAD", "EMPLOYEE"]] = Query(None, description="Filter by requester role"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
 ):
     """
-    Get all WFH requests (for Manager/HR/Admin).
+    Get all WFH requests (for TeamLead/Manager/HR/Admin).
     
     Role-based hierarchy validation:
     - Admin: Can see all requests except Admins and self
     - HR: Can see all requests except Admins, HRs, and self
     - Manager: Can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
+    - TeamLead: Can see requests from their department(s) only, excluding Admins, HRs, Managers, TeamLeads, and self
     
     Supports filtering by status, department, date range, and role.
     """
@@ -553,6 +562,11 @@ def get_all_requests(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Managers cannot view Admin/HR/Manager WFH requests via this endpoint",
                 )
+            if current_user.role == RoleEnum.TEAM_LEAD and actual_role_value in {RoleEnum.ADMIN.value, RoleEnum.HR.value, RoleEnum.MANAGER.value, RoleEnum.TEAM_LEAD.value}:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="TeamLeads can only view Employee WFH requests via this endpoint",
+                )
 
             requests = [req for req in requests if req.get("role") == actual_role_value]
     
@@ -570,10 +584,10 @@ def get_all_requests(
 def get_request_detail(
     wfh_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
 ):
     """
-    Get details of a specific WFH request (for Manager/HR/Admin).
+    Get details of a specific WFH request (for TeamLead/Manager/HR/Admin).
     """
     wfh_request = get_wfh_request_by_id(db, wfh_id)
     
@@ -629,6 +643,19 @@ def get_request_detail(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only view requests from your department(s)"
             )
+
+    # TeamLead can only see Employee requests from their department(s)
+    if current_user.role == RoleEnum.TEAM_LEAD:
+        if user.role != RoleEnum.EMPLOYEE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="TeamLeads can only view Employee WFH requests via this endpoint",
+            )
+        if not _can_approver_handle_target(current_user, user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view requests from your department(s)"
+            )
     
     # Get approver name if exists
     approver_name = None
@@ -662,12 +689,13 @@ def approve_or_reject_request(
     wfh_id: int,
     payload: WFHRequestApprove,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
 ):
     """
-    Approve or reject a WFH request (for Manager/HR/Admin).
+    Approve or reject a WFH request (for TeamLead/Manager/HR/Admin).
     
     - Manager: Can approve/reject requests from their department only
+    - TeamLead: Can approve/reject Employee requests from their department only
     - HR/Admin: Can approve/reject all requests
     """
     wfh_request = get_wfh_request_by_id(db, wfh_id)
@@ -746,10 +774,10 @@ def approve_or_reject_request(
 @router.get("/pending-count")
 def get_pending_count(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
 ):
     """
-    Get count of pending WFH requests (for Manager/HR/Admin).
+    Get count of pending WFH requests (for TeamLead/Manager/HR/Admin).
     Useful for showing notification badges.
     """
     count = get_pending_wfh_count_for_user(db, current_user)
