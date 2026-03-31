@@ -9,7 +9,9 @@ class CompanyBranchBase(BaseModel):
     branch_email: EmailStr | None = None
     contact_number: str
     address: str
-    status: bool = True
+    # Branches are created as inactive by default because admins are assigned after
+    # branch creation in the superadmin flow.
+    status: bool = False
 
     @validator("branch_name")
     def validate_branch_name(cls, v: str) -> str:

@@ -18,6 +18,7 @@ from app.crud.company_branch_crud import (
     set_branch_status,
     soft_delete_branch,
 )
+from app.crud.branch_admin_assignment_crud import get_active_admin_assignments_count
 from app.schemas.company_branch_schema import (
     CompanyBranchCreate,
     CompanyBranchUpdate,
@@ -34,6 +35,9 @@ def create_branch_route(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
+    # Create branch as inactive initially; admins will be assigned next.
+    branch.status = False
+
     # Uniqueness (superadmin only)
     existing_name = get_branch_by_name(
         db=db,
@@ -133,6 +137,15 @@ def set_branch_status_route(
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
+    # Enforce rule: an active branch must always have at least one active admin assignment.
+    if payload.status:
+        active_admins = get_active_admin_assignments_count(db, branch_id)
+        if active_admins <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot activate branch without at least one active admin",
+            )
+
     updated = set_branch_status(
         db, branch_id, payload.status, updated_by=current_super_admin.super_admin_id
     )
