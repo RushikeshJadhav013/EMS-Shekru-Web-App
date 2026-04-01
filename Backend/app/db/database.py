@@ -6,9 +6,9 @@ engine = create_engine(
     settings.DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=5,
-    pool_timeout=15,
+    pool_size=8,
+    max_overflow=8,
+    pool_timeout=20,
     pool_recycle=1800,
     pool_use_lifo=True,
     pool_reset_on_return="rollback"
