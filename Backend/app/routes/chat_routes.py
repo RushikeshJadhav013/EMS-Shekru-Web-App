@@ -84,6 +84,16 @@ def _fs_delete(doc_ref):
         )
 
 
+def _fs_stream(query):
+    try:
+        return query.stream(timeout=FIRESTORE_TIMEOUT_SECONDS)
+    except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat service temporarily unavailable (Firestore): {e}",
+        )
+
+
 def validate_chat_content(content: Optional[str]) -> str:
     """
     Keep message text small and block accidental base64 payloads in content.
@@ -488,14 +498,14 @@ def fetch_messages(chat_type: str, chat_id: str, limit: int = Query(20, ge=1, le
     q = col.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit)
     if before:
         q = q.where("timestamp", "<", before)
-    docs = q.stream()
+    docs = _fs_stream(q)
     msgs = [doc.to_dict() for doc in docs]
     if is_group:
-        group = get_group_ref(chat_id).get()
+        group = _fs_get(get_group_ref(chat_id))
         if not group.exists or current.user_id not in group.to_dict()["members"]:
             raise HTTPException(403, "Not a group member")
     else:
-        priv = get_private_chat_ref(chat_id).get()
+        priv = _fs_get(get_private_chat_ref(chat_id))
         if not priv.exists or current.user_id not in priv.to_dict()["members"]:
             raise HTTPException(403, "Not a chat member")
     return msgs
@@ -505,12 +515,12 @@ def mark_message_read(chat_type: str, chat_id: str, msg_id: str, current: User =
     is_group = chat_type == "group"
     col = get_message_collection(is_group, chat_id)
     msg_ref = col.document(msg_id)
-    msg = msg_ref.get()
+    msg = _fs_get(msg_ref)
     if msg.exists:
         data = msg.to_dict()
         if current.user_id not in data["read_by"]:
             data["read_by"].append(current.user_id)
-            msg_ref.update({"read_by": data["read_by"]})
+            _fs_update(msg_ref, {"read_by": data["read_by"]})
         return {"read_by": data["read_by"]}
     else:
         raise HTTPException(404, "Message not found")
@@ -528,8 +538,7 @@ def typing_indicator(
         if is_group
         else db.collection("private_chats").document(chat_id).collection("typing")
     )
-    typing_collection.document(str(current.user_id)).set(
-        {
+    _fs_set(typing_collection.document(str(current.user_id)), {
             "user_id": current.user_id,
             "is_typing": payload.is_typing,
             "timestamp": datetime.utcnow().timestamp(),
