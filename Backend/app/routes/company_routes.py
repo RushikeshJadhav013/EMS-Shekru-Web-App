@@ -13,6 +13,8 @@ from app.schemas.company_schema import (
     CompanyOut,
     CompanyStatusUpdate,
 )
+from app.schemas.company_branch_schema import CompanyBranchOut
+from app.schemas.user_schema import UserOut
 from app.crud.company_crud import (
     create_company,
     get_company,
@@ -23,6 +25,11 @@ from app.crud.company_crud import (
     update_company,
     set_company_status,
     soft_delete_company,
+)
+from app.crud.company_branch_crud import list_branches
+from app.crud.branch_admin_assignment_crud import (
+    list_company_assigned_admins,
+    get_company_admin_summary,
 )
 
 
@@ -82,6 +89,49 @@ def get_company_route(
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return company
+
+
+@router.get("/{company_id}/branches", response_model=List[CompanyBranchOut])
+def list_company_branches_route(
+    company_id: int,
+    include_deleted: bool = False,
+    status_filter: bool | None = None,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    company = get_company(db, company_id, include_deleted=include_deleted)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    return list_branches(
+        db=db,
+        company_id=company_id,
+        include_deleted=include_deleted,
+        status=status_filter,
+    )
+
+
+@router.get("/{company_id}/admins", response_model=List[UserOut])
+def list_company_admins_route(
+    company_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    company = get_company(db, company_id)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    return list_company_assigned_admins(db, company_id)
+
+
+@router.get("/{company_id}/admin-summary")
+def get_company_admin_summary_route(
+    company_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    company = get_company(db, company_id)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    return get_company_admin_summary(db, company_id)
 
 
 @router.put("/{company_id}", response_model=CompanyOut)

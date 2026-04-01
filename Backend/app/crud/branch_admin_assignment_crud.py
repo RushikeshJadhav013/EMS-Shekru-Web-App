@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 
 from app.db.models.branch_admin_assignment import BranchAdminAssignment
+from app.db.models.company import Company
 from app.db.models.company_branch import CompanyBranch
 from app.db.models.user import User
 from app.enums import RoleEnum
@@ -162,4 +163,134 @@ def deactivate_admin_assignment(
     db.commit()
     db.refresh(assignment)
     return assignment
+
+
+def list_company_assigned_admins(db: Session, company_id: int) -> list[User]:
+    """
+    Distinct active admin users assigned to any branch of the company.
+    """
+    admins = (
+        db.query(User)
+        .join(BranchAdminAssignment, BranchAdminAssignment.admin_user_id == User.user_id)
+        .join(CompanyBranch, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .filter(
+            CompanyBranch.company_id == company_id,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+        )
+        .distinct(User.user_id)
+        .order_by(User.user_id.asc())
+        .all()
+    )
+    return admins
+
+
+def get_company_admin_summary(db: Session, company_id: int) -> dict:
+    """
+    Summary for a company's branches/admin assignments.
+    """
+    total_branches = (
+        db.query(func.count(CompanyBranch.branch_id))
+        .filter(
+            CompanyBranch.company_id == company_id,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+        )
+        .scalar()
+        or 0
+    )
+    active_branches = (
+        db.query(func.count(CompanyBranch.branch_id))
+        .filter(
+            CompanyBranch.company_id == company_id,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            CompanyBranch.status == True,  # noqa: E712
+        )
+        .scalar()
+        or 0
+    )
+    branches_with_admin = (
+        db.query(func.count(func.distinct(CompanyBranch.branch_id)))
+        .join(BranchAdminAssignment, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .join(User, BranchAdminAssignment.admin_user_id == User.user_id)
+        .filter(
+            CompanyBranch.company_id == company_id,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+        )
+        .scalar()
+        or 0
+    )
+    total_assigned_admins = (
+        db.query(func.count(func.distinct(User.user_id)))
+        .join(BranchAdminAssignment, BranchAdminAssignment.admin_user_id == User.user_id)
+        .join(CompanyBranch, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .filter(
+            CompanyBranch.company_id == company_id,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+        )
+        .scalar()
+        or 0
+    )
+    branches_without_admin = max(int(total_branches) - int(branches_with_admin), 0)
+    return {
+        "company_id": company_id,
+        "total_branches": int(total_branches),
+        "active_branches": int(active_branches),
+        "branches_with_admin": int(branches_with_admin),
+        "branches_without_admin": int(branches_without_admin),
+        "total_assigned_admins": int(total_assigned_admins),
+    }
+
+
+def list_branches_for_admin(db: Session, admin_user_id: int) -> list[CompanyBranch]:
+    """
+    Active/non-deleted branches assigned to an admin.
+    """
+    branches = (
+        db.query(CompanyBranch)
+        .join(BranchAdminAssignment, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .join(User, BranchAdminAssignment.admin_user_id == User.user_id)
+        .filter(
+            BranchAdminAssignment.admin_user_id == admin_user_id,
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+        )
+        .distinct(CompanyBranch.branch_id)
+        .order_by(CompanyBranch.created_at.desc())
+        .all()
+    )
+    return branches
+
+
+def list_companies_for_admin(db: Session, admin_user_id: int) -> list[Company]:
+    """
+    Distinct companies derived from branch assignments for an admin.
+    """
+    companies = (
+        db.query(Company)
+        .join(CompanyBranch, CompanyBranch.company_id == Company.company_id)
+        .join(BranchAdminAssignment, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .join(User, BranchAdminAssignment.admin_user_id == User.user_id)
+        .filter(
+            BranchAdminAssignment.admin_user_id == admin_user_id,
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            Company.is_deleted == False,  # noqa: E712
+        )
+        .distinct(Company.company_id)
+        .order_by(Company.created_at.desc())
+        .all()
+    )
+    return companies
 
