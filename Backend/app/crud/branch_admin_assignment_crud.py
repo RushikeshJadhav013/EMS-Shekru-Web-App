@@ -99,6 +99,10 @@ def assign_admin_to_branch(
             raise ValueError("Admin is already assigned to this branch")
         existing.is_active = True
         existing.updated_by = created_by
+        # Option A: auto-activate branch when an admin is assigned (or re-activated).
+        if not branch.status:
+            branch.status = True
+            branch.updated_by = created_by
         db.commit()
         db.refresh(existing)
         return existing
@@ -109,6 +113,10 @@ def assign_admin_to_branch(
         is_active=True,
         created_by=created_by,
     )
+    # Option A: auto-activate branch when an admin is assigned.
+    if not branch.status:
+        branch.status = True
+        branch.updated_by = created_by
     db.add(db_assignment)
     db.commit()
     db.refresh(db_assignment)
