@@ -22,18 +22,23 @@ def get_current_user(token: str = Depends(api_key_header), db: Session = Depends
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
-    # ✅ Check if user is still active (in case they were deactivated after login)
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Account is inactive. Please contact your administrator."
-        )
-    
-    return user
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+        # ✅ Check if user is still active (in case they were deactivated after login)
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Account is inactive. Please contact your administrator."
+            )
+
+        # Detach authenticated user object so the pooled connection can be released early.
+        db.expunge(user)
+        return user
+    finally:
+        db.close()
 
 def get_current_super_admin(token: str = Depends(api_key_header), db: Session = Depends(get_db)) -> SuperAdmin:
     """Verify JWT token and return authenticated super admin"""
@@ -57,14 +62,18 @@ def get_current_super_admin(token: str = Depends(api_key_header), db: Session = 
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
-    super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
-    if not super_admin:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Super Admin not found")
-    
-    if not super_admin.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin account is inactive")
-    
-    return super_admin
+    try:
+        super_admin = db.query(SuperAdmin).filter(SuperAdmin.email == email).first()
+        if not super_admin:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Super Admin not found")
+        
+        if not super_admin.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin account is inactive")
+
+        db.expunge(super_admin)
+        return super_admin
+    finally:
+        db.close()
 
 def require_roles(*roles: RoleEnum):
     """
