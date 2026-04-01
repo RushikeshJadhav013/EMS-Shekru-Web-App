@@ -256,7 +256,7 @@ def create_group_chat(
             db.rollback()
             # Best-effort rollback of Firestore group document
             try:
-            _fs_delete(get_group_ref(group_id))
+                _fs_delete(get_group_ref(group_id))
             except Exception:
                 pass
             raise HTTPException(
