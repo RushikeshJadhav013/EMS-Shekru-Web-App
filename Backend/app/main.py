@@ -140,7 +140,7 @@ except Exception as _e:
 
 # Initialize FastAPI
 app = FastAPI(
-    title="Employee Management System",
+    title="Testing Employee Management System",
     version="1.0"
 )
 
@@ -161,7 +161,7 @@ def create_initial_super_admin():
         # Create default Super Admin
         default_admin = SuperAdmin(
             name="Default Super Admin",
-            email="shirishb258@gmail.com",
+            email="superadmin@example.com",
             contact_no="9999999999",
             # if you add a password field later, set hashed_password here
         )
@@ -188,11 +188,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Allowed origins for CORS
 origins = [
-    "https://staffly.space",    # Direct backend access
-    "https://stafflyhrms.netlify.app",  # Production deployment
+    # "https://staffly.space",    # Direct backend access
+    # "https://stafflyhrms.netlify.app",  # Production deployment
     # "http://localhost:8080",
-    # "https://testing.staffly.space",           # Allow all origins (for development)
-    # "https://stafflytesting.netlify.app"       # Testing deployment
+    "https://testing.staffly.space",           # Allow all origins (for development)
+    "https://stafflytesting.netlify.app"       # Testing deployment
 ]
 
 # Configure CORS middleware with detailed settings
@@ -310,7 +310,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 async def home():
-    return {"message": "Employee Management System API is running"}
+    return {"message": "Testing Employee Management System API is running"}
 
 @app.get("/test-cors", tags=["Test"], include_in_schema=False)
 async def test_cors():
