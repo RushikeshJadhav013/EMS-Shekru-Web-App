@@ -33,6 +33,7 @@ import shutil
 import re
 from pathlib import Path
 from google.api_core.exceptions import GoogleAPICallError, RetryError, DeadlineExceeded
+from google.api_core import retry as api_retry
 
 router = APIRouter(prefix="/chats", tags=["Chat"])
 
@@ -41,12 +42,18 @@ CHAT_UPLOAD_DIR = Path("static/chat_documents")
 CHAT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_CHAT_CONTENT_BYTES = 100_000
 BASE64_DATA_URL_PATTERN = re.compile(r"^\s*data:[^;]+;base64,", re.IGNORECASE)
-FIRESTORE_TIMEOUT_SECONDS = 8
+FIRESTORE_TIMEOUT_SECONDS = int(os.getenv("FIRESTORE_TIMEOUT_SECONDS", "8"))
+# Per-RPC timeout does not cap total client retry budget (~300s default). Short deadline here does.
+_FIRESTORE_RETRY_DEADLINE = float(os.getenv("FIRESTORE_RETRY_DEADLINE", "15"))
+_FS_RETRY = api_retry.Retry(deadline=_FIRESTORE_RETRY_DEADLINE)
 
 
 def _fs_get(doc_ref):
     try:
-        return doc_ref.get(timeout=FIRESTORE_TIMEOUT_SECONDS)
+        return doc_ref.get(
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
     except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -56,7 +63,11 @@ def _fs_get(doc_ref):
 
 def _fs_set(doc_ref, payload: dict):
     try:
-        doc_ref.set(payload, timeout=FIRESTORE_TIMEOUT_SECONDS)
+        doc_ref.set(
+            payload,
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
     except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -66,7 +77,11 @@ def _fs_set(doc_ref, payload: dict):
 
 def _fs_update(doc_ref, payload: dict):
     try:
-        doc_ref.update(payload, timeout=FIRESTORE_TIMEOUT_SECONDS)
+        doc_ref.update(
+            payload,
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
     except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -76,7 +91,10 @@ def _fs_update(doc_ref, payload: dict):
 
 def _fs_delete(doc_ref):
     try:
-        doc_ref.delete(timeout=FIRESTORE_TIMEOUT_SECONDS)
+        doc_ref.delete(
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
     except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -84,9 +102,18 @@ def _fs_delete(doc_ref):
         )
 
 
-def _fs_stream(query):
+def _fs_query_documents(query):
+    """
+    Run a Firestore query and return document snapshots.
+    Materialize inside try so RetryError during stream iteration is not unhandled.
+    """
     try:
-        return query.stream(timeout=FIRESTORE_TIMEOUT_SECONDS)
+        return list(
+            query.stream(
+                timeout=FIRESTORE_TIMEOUT_SECONDS,
+                retry=_FS_RETRY,
+            )
+        )
     except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -498,7 +525,7 @@ def fetch_messages(chat_type: str, chat_id: str, limit: int = Query(20, ge=1, le
     q = col.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit)
     if before:
         q = q.where("timestamp", "<", before)
-    docs = _fs_stream(q)
+    docs = _fs_query_documents(q)
     msgs = [doc.to_dict() for doc in docs]
     if is_group:
         group = _fs_get(get_group_ref(chat_id))
