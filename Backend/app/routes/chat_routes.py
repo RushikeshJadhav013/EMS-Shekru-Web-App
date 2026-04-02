@@ -3,7 +3,7 @@ from typing import List, Optional
 from firebase_admin import firestore
 from app.dependencies import get_current_user, require_roles
 from sqlalchemy.orm import Session
-from app.db.database import get_db
+from app.db.database import get_db, SessionLocal
 from app.db.models.user import User
 from app.db.models.chat import ChatSession, ChatMember
 from app.schemas.chat_schema import (
@@ -32,6 +32,8 @@ import os
 import shutil
 import re
 from pathlib import Path
+from google.api_core.exceptions import GoogleAPICallError, RetryError, DeadlineExceeded
+from google.api_core import retry as api_retry
 
 router = APIRouter(prefix="/chats", tags=["Chat"])
 
@@ -40,6 +42,83 @@ CHAT_UPLOAD_DIR = Path("static/chat_documents")
 CHAT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_CHAT_CONTENT_BYTES = 100_000
 BASE64_DATA_URL_PATTERN = re.compile(r"^\s*data:[^;]+;base64,", re.IGNORECASE)
+FIRESTORE_TIMEOUT_SECONDS = int(os.getenv("FIRESTORE_TIMEOUT_SECONDS", "8"))
+# Per-RPC timeout does not cap total client retry budget (~300s default). Short deadline here does.
+_FIRESTORE_RETRY_DEADLINE = float(os.getenv("FIRESTORE_RETRY_DEADLINE", "15"))
+_FS_RETRY = api_retry.Retry(deadline=_FIRESTORE_RETRY_DEADLINE)
+
+
+def _fs_get(doc_ref):
+    try:
+        return doc_ref.get(
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
+    except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat service temporarily unavailable (Firestore): {e}",
+        )
+
+
+def _fs_set(doc_ref, payload: dict):
+    try:
+        doc_ref.set(
+            payload,
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
+    except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat service temporarily unavailable (Firestore): {e}",
+        )
+
+
+def _fs_update(doc_ref, payload: dict):
+    try:
+        doc_ref.update(
+            payload,
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
+    except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat service temporarily unavailable (Firestore): {e}",
+        )
+
+
+def _fs_delete(doc_ref):
+    try:
+        doc_ref.delete(
+            timeout=FIRESTORE_TIMEOUT_SECONDS,
+            retry=_FS_RETRY,
+        )
+    except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat service temporarily unavailable (Firestore): {e}",
+        )
+
+
+def _fs_query_documents(query):
+    """
+    Run a Firestore query and return document snapshots.
+    Materialize inside try so RetryError during stream iteration is not unhandled.
+    """
+    try:
+        return list(
+            query.stream(
+                timeout=FIRESTORE_TIMEOUT_SECONDS,
+                retry=_FS_RETRY,
+            )
+        )
+    except (RetryError, DeadlineExceeded, GoogleAPICallError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat service temporarily unavailable (Firestore): {e}",
+        )
 
 
 def validate_chat_content(content: Optional[str]) -> str:
@@ -109,53 +188,53 @@ def list_chat_eligible_users(
 def create_or_get_private_conversation(
     user_id: int,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    target_user = db.query(User).filter(User.user_id == user_id).first()
-    if not target_user:
-        raise HTTPException(404, "Target user not found")
+    with SessionLocal() as db:
+        target_user = db.query(User).filter(User.user_id == user_id).first()
+        if not target_user:
+            raise HTTPException(404, "Target user not found")
 
     conv_id = conversation_id(current.user_id, user_id)
 
     # Firestore: ensure private chat document exists
     chat_ref = get_private_chat_ref(conv_id)
-    conv = chat_ref.get()
+    conv = _fs_get(chat_ref)
     if not conv.exists:
-        chat_ref.set(
-            {
+        _fs_set(chat_ref, {
                 "members": [current.user_id, user_id],
                 "created_at": firestore.SERVER_TIMESTAMP,
             }
         )
 
     # MySQL: ensure chat session & membership metadata exist (best-effort)
-    try:
-        session_obj = (
-            db.query(ChatSession).filter(ChatSession.chat_id == conv_id).first()
-        )
-        if not session_obj:
-            member_ids = {current.user_id, user_id}
-            session_obj = ChatSession(
-                chat_id=conv_id,
-                chat_type="private",
-                created_by_id=current.user_id,
-                member_count=len(member_ids),
+    with SessionLocal() as db:
+        try:
+            session_obj = (
+                db.query(ChatSession).filter(ChatSession.chat_id == conv_id).first()
             )
-            db.add(session_obj)
-
-            for uid in member_ids:
-                # Ignore duplicate (chat_id, user_id) via unique index at DB level
-                db.add(
-                    ChatMember(
-                        chat_id=conv_id,
-                        user_id=uid,
-                        role=ChatMemberRoleEnum.MEMBER,
-                    )
+            if not session_obj:
+                member_ids = {current.user_id, user_id}
+                session_obj = ChatSession(
+                    chat_id=conv_id,
+                    chat_type="private",
+                    created_by_id=current.user_id,
+                    member_count=len(member_ids),
                 )
-        db.commit()
-    except Exception:
-        db.rollback()
-        # Firestore remains source of truth; do not fail the request on metadata issues
+                db.add(session_obj)
+
+                for uid in member_ids:
+                    # Ignore duplicate (chat_id, user_id) via unique index at DB level
+                    db.add(
+                        ChatMember(
+                            chat_id=conv_id,
+                            user_id=uid,
+                            role=ChatMemberRoleEnum.MEMBER,
+                        )
+                    )
+            db.commit()
+        except Exception:
+            db.rollback()
+            # Firestore remains source of truth; do not fail the request on metadata issues
 
     return {"chat_id": conv_id}
 
@@ -166,7 +245,6 @@ def create_group_chat(
     current: User = Depends(
         require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER)
     ),
-    db: Session = Depends(get_db),
 ):
     if current.user_id not in payload.member_ids:
         payload.member_ids.append(current.user_id)
@@ -175,8 +253,7 @@ def create_group_chat(
     group_id = str(uuid.uuid4())
 
     # First create group document in Firestore
-    get_group_ref(group_id).set(
-        {
+    _fs_set(get_group_ref(group_id), {
             "id": group_id,
             "name": payload.name,
             "members": member_ids,
@@ -186,42 +263,43 @@ def create_group_chat(
     )
 
     # Then create metadata in MySQL (chat_sessions + chat_members)
-    try:
-        session_obj = ChatSession(
-            chat_id=group_id,
-            chat_type="group",
-            name=payload.name,
-            created_by_id=current.user_id,
-            member_count=len(member_ids),
-        )
-        db.add(session_obj)
-
-        for uid in member_ids:
-            role = (
-                ChatMemberRoleEnum.ADMIN
-                if uid == current.user_id
-                else ChatMemberRoleEnum.MEMBER
-            )
-            db.add(
-                ChatMember(
-                    chat_id=group_id,
-                    user_id=uid,
-                    role=role,
-                )
-            )
-
-        db.commit()
-    except Exception:
-        db.rollback()
-        # Best-effort rollback of Firestore group document
+    with SessionLocal() as db:
         try:
-            get_group_ref(group_id).delete()
+            session_obj = ChatSession(
+                chat_id=group_id,
+                chat_type="group",
+                name=payload.name,
+                created_by_id=current.user_id,
+                member_count=len(member_ids),
+            )
+            db.add(session_obj)
+
+            for uid in member_ids:
+                role = (
+                    ChatMemberRoleEnum.ADMIN
+                    if uid == current.user_id
+                    else ChatMemberRoleEnum.MEMBER
+                )
+                db.add(
+                    ChatMember(
+                        chat_id=group_id,
+                        user_id=uid,
+                        role=role,
+                    )
+                )
+
+            db.commit()
         except Exception:
-            pass
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create group chat",
-        )
+            db.rollback()
+            # Best-effort rollback of Firestore group document
+            try:
+                _fs_delete(get_group_ref(group_id))
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create group chat",
+            )
 
     return {"group_id": group_id}
 
@@ -232,48 +310,48 @@ def add_group_member(
     current: User = Depends(
         require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER)
     ),
-    db: Session = Depends(get_db),
 ):
     group_ref = get_group_ref(group_id)
-    group = group_ref.get()
+    group = _fs_get(group_ref)
     if not group.exists:
         raise HTTPException(404, "Group not found")
 
     data = group.to_dict()
     if payload.user_id not in data["members"]:
         data["members"].append(payload.user_id)
-        group_ref.update({"members": data["members"]})
+        _fs_update(group_ref, {"members": data["members"]})
 
         # Update MySQL metadata (best-effort)
-        try:
-            session_obj = (
-                db.query(ChatSession)
-                .filter(ChatSession.chat_id == group_id)
-                .first()
-            )
-            if session_obj:
-                existing_member = (
-                    db.query(ChatMember)
-                    .filter(
-                        ChatMember.chat_id == group_id,
-                        ChatMember.user_id == payload.user_id,
-                    )
+        with SessionLocal() as db:
+            try:
+                session_obj = (
+                    db.query(ChatSession)
+                    .filter(ChatSession.chat_id == group_id)
                     .first()
                 )
-                if not existing_member:
-                    db.add(
-                        ChatMember(
-                            chat_id=group_id,
-                            user_id=payload.user_id,
-                            role=ChatMemberRoleEnum.MEMBER,
+                if session_obj:
+                    existing_member = (
+                        db.query(ChatMember)
+                        .filter(
+                            ChatMember.chat_id == group_id,
+                            ChatMember.user_id == payload.user_id,
                         )
+                        .first()
                     )
-                    if session_obj.member_count is None:
-                        session_obj.member_count = 0
-                    session_obj.member_count += 1
-                db.commit()
-        except Exception:
-            db.rollback()
+                    if not existing_member:
+                        db.add(
+                            ChatMember(
+                                chat_id=group_id,
+                                user_id=payload.user_id,
+                                role=ChatMemberRoleEnum.MEMBER,
+                            )
+                        )
+                        if session_obj.member_count is None:
+                            session_obj.member_count = 0
+                        session_obj.member_count += 1
+                    db.commit()
+            except Exception:
+                db.rollback()
 
     return {"members": data["members"]}
 
@@ -285,43 +363,43 @@ def remove_group_member(
     current: User = Depends(
         require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER)
     ),
-    db: Session = Depends(get_db),
 ):
     group_ref = get_group_ref(group_id)
-    group = group_ref.get()
+    group = _fs_get(group_ref)
     if not group.exists:
         raise HTTPException(404, "Group not found")
 
     data = group.to_dict()
     if payload.user_id in data["members"]:
         data["members"].remove(payload.user_id)
-        group_ref.update({"members": data["members"]})
+        _fs_update(group_ref, {"members": data["members"]})
 
         # Update MySQL metadata (best-effort)
-        try:
-            session_obj = (
-                db.query(ChatSession)
-                .filter(ChatSession.chat_id == group_id)
-                .first()
-            )
-            if session_obj:
-                member = (
-                    db.query(ChatMember)
-                    .filter(
-                        ChatMember.chat_id == group_id,
-                        ChatMember.user_id == payload.user_id,
-                    )
+        with SessionLocal() as db:
+            try:
+                session_obj = (
+                    db.query(ChatSession)
+                    .filter(ChatSession.chat_id == group_id)
                     .first()
                 )
-                if member:
-                    db.delete(member)
-                    if session_obj.member_count is not None:
-                        session_obj.member_count = max(
-                            0, session_obj.member_count - 1
+                if session_obj:
+                    member = (
+                        db.query(ChatMember)
+                        .filter(
+                            ChatMember.chat_id == group_id,
+                            ChatMember.user_id == payload.user_id,
                         )
-                db.commit()
-        except Exception:
-            db.rollback()
+                        .first()
+                    )
+                    if member:
+                        db.delete(member)
+                        if session_obj.member_count is not None:
+                            session_obj.member_count = max(
+                                0, session_obj.member_count - 1
+                            )
+                    db.commit()
+            except Exception:
+                db.rollback()
 
     return {"members": data["members"]}
 
@@ -332,7 +410,6 @@ def send_message(
     chat_id: str,
     payload: CreateMessagePayload,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     validated_content = validate_chat_content(payload.content)
     is_group = chat_type == "group"
@@ -345,27 +422,28 @@ def send_message(
     }
     col = get_message_collection(is_group, chat_id)
     if is_group:
-        group = get_group_ref(chat_id).get()
+        group = _fs_get(get_group_ref(chat_id))
         if not group.exists or current.user_id not in group.to_dict()["members"]:
             raise HTTPException(403, "Not a group member")
     else:
-        priv = get_private_chat_ref(chat_id).get()
+        priv = _fs_get(get_private_chat_ref(chat_id))
         if not priv.exists or current.user_id not in priv.to_dict()["members"]:
             raise HTTPException(403, "Not a chat member")
 
     # Persist message only in Firestore
-    col.document(msg["id"]).set(msg)
+    _fs_set(col.document(msg["id"]), msg)
 
     # Update last_message_at in MySQL metadata (best-effort, stored in IST)
-    try:
-        session_obj = (
-            db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
-        )
-        if session_obj:
-            session_obj.last_message_at = now_ist()
-            db.commit()
-    except Exception:
-        db.rollback()
+    with SessionLocal() as db:
+        try:
+            session_obj = (
+                db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
+            )
+            if session_obj:
+                session_obj.last_message_at = now_ist()
+                db.commit()
+        except Exception:
+            db.rollback()
 
     return msg
 
@@ -377,7 +455,6 @@ async def send_message_with_file(
     content: Optional[str] = Form(None),
     file: UploadFile = File(...),
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """
     Send a chat message with a document attachment.
@@ -395,11 +472,11 @@ async def send_message_with_file(
 
     # Permission checks (reuse logic from send_message)
     if is_group:
-        group = get_group_ref(chat_id).get()
+        group = _fs_get(get_group_ref(chat_id))
         if not group.exists or current.user_id not in group.to_dict().get("members", []):
             raise HTTPException(403, "Not a group member")
     else:
-        priv = get_private_chat_ref(chat_id).get()
+        priv = _fs_get(get_private_chat_ref(chat_id))
         if not priv.exists or current.user_id not in priv.to_dict().get("members", []):
             raise HTTPException(403, "Not a chat member")
 
@@ -425,18 +502,19 @@ async def send_message_with_file(
     }
 
     # Persist message only in Firestore
-    col.document(msg_id).set(msg)
+    _fs_set(col.document(msg_id), msg)
 
     # Update last_message_at in MySQL metadata (best-effort, stored in IST)
-    try:
-        session_obj = (
-            db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
-        )
-        if session_obj:
-            session_obj.last_message_at = now_ist()
-            db.commit()
-    except Exception:
-        db.rollback()
+    with SessionLocal() as db:
+        try:
+            session_obj = (
+                db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
+            )
+            if session_obj:
+                session_obj.last_message_at = now_ist()
+                db.commit()
+        except Exception:
+            db.rollback()
 
     return msg
 
@@ -447,14 +525,14 @@ def fetch_messages(chat_type: str, chat_id: str, limit: int = Query(20, ge=1, le
     q = col.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit)
     if before:
         q = q.where("timestamp", "<", before)
-    docs = q.stream()
+    docs = _fs_query_documents(q)
     msgs = [doc.to_dict() for doc in docs]
     if is_group:
-        group = get_group_ref(chat_id).get()
+        group = _fs_get(get_group_ref(chat_id))
         if not group.exists or current.user_id not in group.to_dict()["members"]:
             raise HTTPException(403, "Not a group member")
     else:
-        priv = get_private_chat_ref(chat_id).get()
+        priv = _fs_get(get_private_chat_ref(chat_id))
         if not priv.exists or current.user_id not in priv.to_dict()["members"]:
             raise HTTPException(403, "Not a chat member")
     return msgs
@@ -464,12 +542,12 @@ def mark_message_read(chat_type: str, chat_id: str, msg_id: str, current: User =
     is_group = chat_type == "group"
     col = get_message_collection(is_group, chat_id)
     msg_ref = col.document(msg_id)
-    msg = msg_ref.get()
+    msg = _fs_get(msg_ref)
     if msg.exists:
         data = msg.to_dict()
         if current.user_id not in data["read_by"]:
             data["read_by"].append(current.user_id)
-            msg_ref.update({"read_by": data["read_by"]})
+            _fs_update(msg_ref, {"read_by": data["read_by"]})
         return {"read_by": data["read_by"]}
     else:
         raise HTTPException(404, "Message not found")
@@ -487,8 +565,7 @@ def typing_indicator(
         if is_group
         else db.collection("private_chats").document(chat_id).collection("typing")
     )
-    typing_collection.document(str(current.user_id)).set(
-        {
+    _fs_set(typing_collection.document(str(current.user_id)), {
             "user_id": current.user_id,
             "is_typing": payload.is_typing,
             "timestamp": datetime.utcnow().timestamp(),
@@ -502,35 +579,33 @@ def change_group_name(
     group_id: str,
     payload: ChangeGroupNamePayload,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """
     Change the name of a group chat. Only group admin can perform this action.
     """
-    # Find the chat session
-    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
-    if not session_obj:
-        raise HTTPException(404, "Group chat not found")
+    with SessionLocal() as db:
+        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
+        if not session_obj:
+            raise HTTPException(404, "Group chat not found")
 
-    # Check admin role
-    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
-    if not member or member.role != ChatMemberRoleEnum.ADMIN:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can change name")
+        member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+        if not member or member.role != ChatMemberRoleEnum.ADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can change name")
 
-    # Update in MySQL
-    session_obj.name = payload.name
-    db.commit()
-
-    # Strictly require Firestore update to succeed
+    # Update Firestore without holding MySQL connection.
     group_ref = get_group_ref(group_id)
-    group = group_ref.get()
+    group = _fs_get(group_ref)
     if not group.exists:
         raise HTTPException(404, "Group chat (Firestore) not found")
-    try:
-        group_ref.update({"name": payload.name})
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to update group name in Firestore: {e}")
+    _fs_update(group_ref, {"name": payload.name})
+
+    with SessionLocal() as db:
+        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
+        if not session_obj:
+            raise HTTPException(404, "Group chat not found")
+
+        session_obj.name = payload.name
+        db.commit()
 
     return {"group_id": group_id, "name": payload.name}
 
@@ -538,34 +613,33 @@ def change_group_name(
 def soft_delete_group(
     group_id: str,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """
     Soft-delete a group chat (set is_deleted=True in MySQL, mark deleted in Firestore). Only group admin can do this.
     """
-    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
-    if not session_obj:
-        raise HTTPException(404, "Group chat not found")
+    with SessionLocal() as db:
+        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
+        if not session_obj:
+            raise HTTPException(404, "Group chat not found")
 
-    # Check admin role
-    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
-    if not member or member.role != ChatMemberRoleEnum.ADMIN:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can delete the group")
+        member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+        if not member or member.role != ChatMemberRoleEnum.ADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can delete the group")
 
-    # MySQL soft-delete
-    session_obj.is_deleted = True
-    db.commit()
-
-    # Firestore soft-delete (mark a deleted flag in doc)
+    # Firestore soft-delete (mark a deleted flag in doc) without DB session held.
     group_ref = get_group_ref(group_id)
-    group = group_ref.get()
+    group = _fs_get(group_ref)
     if not group.exists:
         raise HTTPException(404, "Group chat (Firestore) not found")
-    try:
-        group_ref.update({"is_deleted": True})
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to update soft delete in Firestore: {e}")
+    _fs_update(group_ref, {"is_deleted": True})
+
+    with SessionLocal() as db:
+        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group").first()
+        if not session_obj:
+            raise HTTPException(404, "Group chat not found")
+
+        session_obj.is_deleted = True
+        db.commit()
 
     return {"group_id": group_id, "deleted": True}
 
@@ -574,44 +648,48 @@ def bulk_add_group_members(
     group_id: str,
     payload: BulkMembersPayload,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
 ):
     """
     Add multiple members to a chat group. Only group admin can perform this action.
     """
-    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
-    if not session_obj:
-        raise HTTPException(404, "Group chat not found")
-    # Check admin
-    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
-    if not member or member.role != ChatMemberRoleEnum.ADMIN:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can add members")
+    with SessionLocal() as db:
+        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
+        if not session_obj:
+            raise HTTPException(404, "Group chat not found")
+        # Check admin
+        member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+        if not member or member.role != ChatMemberRoleEnum.ADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can add members")
     members_to_add = set(payload.user_ids)
     # Sync to Firestore first
     group_ref = get_group_ref(group_id)
-    group = group_ref.get()
+    group = _fs_get(group_ref)
     if not group.exists:
         raise HTTPException(404, "Group not found (Firestore)")
     data = group.to_dict()
     members_firestore = set(data.get("members", []))
     new_members_firestore = list(members_firestore.union(members_to_add))
     try:
-        group_ref.update({"members": new_members_firestore})
+        _fs_update(group_ref, {"members": new_members_firestore})
     except Exception as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to add members in Firestore: {e}")
     # Sync to MySQL
-    try:
-        added_count = 0
-        for uid in members_to_add:
-            existing = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == uid).first()
-            if not existing:
-                db.add(ChatMember(chat_id=group_id, user_id=uid, role=ChatMemberRoleEnum.MEMBER))
-                added_count += 1
-        session_obj.member_count = (session_obj.member_count or 0) + added_count
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to add members in MySQL: {e}")
+    with SessionLocal() as db:
+        try:
+            session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
+            if not session_obj:
+                raise HTTPException(404, "Group chat not found")
+            added_count = 0
+            for uid in members_to_add:
+                existing = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == uid).first()
+                if not existing:
+                    db.add(ChatMember(chat_id=group_id, user_id=uid, role=ChatMemberRoleEnum.MEMBER))
+                    added_count += 1
+            session_obj.member_count = (session_obj.member_count or 0) + added_count
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to add members in MySQL: {e}")
     return {"group_id": group_id, "added_count": added_count, "members": new_members_firestore}
 
 @router.post("/group/{group_id}/members/bulk_remove", status_code=200)
@@ -619,44 +697,48 @@ def bulk_remove_group_members(
     group_id: str,
     payload: BulkMembersPayload,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
 ):
     """
     Remove multiple members from a chat group. Only group admin can perform this action.
     """
-    session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
-    if not session_obj:
-        raise HTTPException(404, "Group chat not found")
-    # Check admin
-    member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
-    if not member or member.role != ChatMemberRoleEnum.ADMIN:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can remove members")
+    with SessionLocal() as db:
+        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
+        if not session_obj:
+            raise HTTPException(404, "Group chat not found")
+        # Check admin
+        member = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == current.user_id).first()
+        if not member or member.role != ChatMemberRoleEnum.ADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can remove members")
     members_to_remove = set(payload.user_ids)
     # Sync to Firestore first
     group_ref = get_group_ref(group_id)
-    group = group_ref.get()
+    group = _fs_get(group_ref)
     if not group.exists:
         raise HTTPException(404, "Group not found (Firestore)")
     data = group.to_dict()
     members_firestore = set(data.get("members", []))
     new_members_firestore = list(members_firestore - members_to_remove)
     try:
-        group_ref.update({"members": new_members_firestore})
+        _fs_update(group_ref, {"members": new_members_firestore})
     except Exception as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to remove members in Firestore: {e}")
     # Sync to MySQL
-    try:
-        removed_count = 0
-        for uid in members_to_remove:
-            cm = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == uid).first()
-            if cm:
-                db.delete(cm)
-                removed_count += 1
-        session_obj.member_count = max(0, (session_obj.member_count or 0) - removed_count)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to remove members in MySQL: {e}")
+    with SessionLocal() as db:
+        try:
+            session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group", ChatSession.is_deleted == False).first()
+            if not session_obj:
+                raise HTTPException(404, "Group chat not found")
+            removed_count = 0
+            for uid in members_to_remove:
+                cm = db.query(ChatMember).filter(ChatMember.chat_id == group_id, ChatMember.user_id == uid).first()
+                if cm:
+                    db.delete(cm)
+                    removed_count += 1
+            session_obj.member_count = max(0, (session_obj.member_count or 0) - removed_count)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to remove members in MySQL: {e}")
     return {"group_id": group_id, "removed_count": removed_count, "members": new_members_firestore}
 
 from datetime import datetime, timedelta
@@ -668,7 +750,6 @@ def edit_message(
     msg_id: str,
     payload: EditMessagePayload,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """
     Edit a chat message. Only sender can edit, and only within 2 minutes of sending.
@@ -676,7 +757,7 @@ def edit_message(
     is_group = chat_type == "group"
     col = get_message_collection(is_group, chat_id)
     msg_ref = col.document(msg_id)
-    msg = msg_ref.get()
+    msg = _fs_get(msg_ref)
     if not msg.exists:
         raise HTTPException(404, "Message not found")
     data = msg.to_dict()
@@ -686,7 +767,7 @@ def edit_message(
     if now_ts - float(data.get("timestamp", 0)) > 120:  # 120 seconds = 2 minutes
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot edit messages after 2 minutes of sending")
     try:
-        msg_ref.update({"content": payload.content})
+        _fs_update(msg_ref, {"content": payload.content})
     except Exception as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to edit message: {e}")
     return {"msg_id": msg_id, "edited": True}
@@ -698,7 +779,6 @@ def delete_message(
     chat_id: str,
     msg_id: str,
     current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """
     Delete a chat message. Only sender can delete, and only within 5 minutes of sending.
@@ -706,7 +786,7 @@ def delete_message(
     is_group = chat_type == "group"
     col = get_message_collection(is_group, chat_id)
     msg_ref = col.document(msg_id)
-    msg = msg_ref.get()
+    msg = _fs_get(msg_ref)
     if not msg.exists:
         raise HTTPException(404, "Message not found")
     data = msg.to_dict()
@@ -716,7 +796,7 @@ def delete_message(
     if now_ts - float(data.get("timestamp", 0)) > 300:  # 5 minutes = 300 seconds
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot delete messages after 5 minutes of sending")
     try:
-        msg_ref.delete()
+        _fs_delete(msg_ref)
     except Exception as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to delete message: {e}")
     return {"msg_id": msg_id, "deleted": True}
