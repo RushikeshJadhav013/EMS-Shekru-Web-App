@@ -13,6 +13,8 @@ class MessageSchema(BaseModel):
     content: str
     timestamp: float
     read_by: Optional[List[int]] = []
+    # Display-only: message time in IST (HH:MM:SS)
+    time_ist: Optional[str] = None
     # Optional attachment metadata for documents shared in chat
     file_url: Optional[str] = None
     file_name: Optional[str] = None

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Index, Enum
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Index, Enum, Text, JSON
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -14,7 +14,7 @@ def get_now_ist():
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
-    # Use Firestore conversation/group ID as primary key
+    # Private: sorted user ids joined by "_"; group: UUID string
     chat_id = Column(String(255), primary_key=True, index=True)
 
     # 'private' or 'group'
@@ -37,12 +37,17 @@ class ChatSession(Base):
     member_count = Column(Integer, nullable=True)
     last_message_at = Column(DateTime, nullable=True)
 
-    # Soft-delete flag for hiding chats without removing Firestore data
     is_deleted = Column(Boolean, default=False)
 
     created_by = relationship("User", back_populates="created_chat_sessions")
     members = relationship(
         "ChatMember",
+        back_populates="chat_session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    messages = relationship(
+        "ChatMessage",
         back_populates="chat_session",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -77,6 +82,38 @@ class ChatMember(Base):
     __table_args__ = (
         # Prevent duplicate membership rows
         Index("ix_chat_members_chat_id_user_id", "chat_id", "user_id", unique=True),
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    msg_id = Column(String(36), primary_key=True)
+    chat_id = Column(
+        String(255),
+        ForeignKey("chat_sessions.chat_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_id = Column(
+        Integer,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    content = Column(Text, nullable=False, default="")
+    # Stored as UTC naive datetime for correct ordering and precision
+    timestamp = Column(DateTime, nullable=False)
+    read_by = Column(JSON, nullable=False)
+    file_url = Column(String(1024), nullable=True)
+    file_name = Column(String(512), nullable=True)
+    file_type = Column(String(255), nullable=True)
+    file_size = Column(Integer, nullable=True)
+
+    chat_session = relationship("ChatSession", back_populates="messages")
+
+    __table_args__ = (
+        Index("ix_chat_messages_chat_id_timestamp", "chat_id", "timestamp"),
     )
 
 
