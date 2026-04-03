@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.database import engine, SessionLocal, Base
+from app.realtime.socketio_app import socket_app
 
 # Import models so SQLAlchemy knows about all tables before create_all
 from app.db.models import (  # noqa: F401
@@ -32,6 +33,7 @@ from app.db.models import (  # noqa: F401
     company,
     company_branch,
     branch_admin_assignment,
+    chat,
 )
 from app.routes import (
     user_routes,
@@ -143,6 +145,8 @@ app = FastAPI(
     title="Employee Management System",
     version="1.0"
 )
+
+app.mount("/socket.io", socket_app)
 
 # Note: If you get 413 Payload Too Large errors, configure your web server:
 # - nginx: client_max_body_size 50M;
