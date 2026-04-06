@@ -31,9 +31,13 @@ import shutil
 from datetime import datetime
 import re
 from pydantic import EmailStr
+from sqlalchemy import func
 from starlette.responses import Response
 from starlette.background import BackgroundTask
 from app.utils.department_utils import normalize_department_string, department_tokens_lower
+from app.db.models.super_admin import SuperAdmin
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -115,12 +119,23 @@ def register_employee(
             detail="HR users are not permitted to create Admin users"
         )
 
-    # Check for duplicate email
+    # Check for duplicate email in users table
     existing_user = get_user_by_email(db, email)
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Employee already exists with this email address",
+        )
+    # Enforce global email uniqueness across users and super admins
+    existing_super_admin = (
+        db.query(SuperAdmin)
+        .filter(func.lower(SuperAdmin.email) == email)
+        .first()
+    )
+    if existing_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email address is already used by a super admin",
         )
     
     # Check for duplicate employee_id
@@ -133,11 +148,42 @@ def register_employee(
 
     # Check for duplicate phone number
     if phone and phone.strip():
-        existing_phone = get_user_by_phone(db, phone.strip())
+        normalized_phone = re.sub(r'[^0-9]', '', phone.strip())
+        existing_phone = get_user_by_phone(db, normalized_phone)
         if existing_phone:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+        existing_super_admin_contact = (
+            db.query(SuperAdmin)
+            .filter(SuperAdmin.contact_no == normalized_phone)
+            .first()
+        )
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a super admin.",
+            )
+        existing_company_contact = (
+            db.query(Company)
+            .filter(Company.contact_number == normalized_phone)
+            .first()
+        )
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company.",
+            )
+        existing_branch_contact = (
+            db.query(CompanyBranch)
+            .filter(CompanyBranch.contact_number == normalized_phone)
+            .first()
+        )
+        if existing_branch_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company branch.",
             )
 
     if pan_card:
@@ -448,13 +494,25 @@ def update_employee(
             detail="HR users are not permitted to modify Admin profiles"
         )
 
-    # Check for duplicate email (excluding current user)
+    # Check for duplicate email in users table (excluding current user)
     if email and email.strip():
-        existing_user = get_user_by_email(db, email.strip().lower())
+        normalized_email = email.strip().lower()
+        existing_user = get_user_by_email(db, normalized_email)
         if existing_user and existing_user.user_id != user_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Employee already exists with this email address",
+            )
+        # Enforce global uniqueness against super admins as well
+        existing_super_admin = (
+            db.query(SuperAdmin)
+            .filter(func.lower(SuperAdmin.email) == normalized_email)
+            .first()
+        )
+        if existing_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email address is already used by a super admin",
             )
 
     # Check for duplicate employee_id (excluding current user)
@@ -480,6 +538,36 @@ def update_employee(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+        existing_super_admin_contact = (
+            db.query(SuperAdmin)
+            .filter(SuperAdmin.contact_no == digits)
+            .first()
+        )
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a super admin.",
+            )
+        existing_company_contact = (
+            db.query(Company)
+            .filter(Company.contact_number == digits)
+            .first()
+        )
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company.",
+            )
+        existing_branch_contact = (
+            db.query(CompanyBranch)
+            .filter(CompanyBranch.contact_number == digits)
+            .first()
+        )
+        if existing_branch_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company branch.",
             )
     # Validate address (no emojis)
     if address and address.strip():
@@ -1006,11 +1094,44 @@ def validate_phone_availability(
             "message": "Phone number must start with 6, 7, 8, or 9"
         }
     
-    existing_user = get_user_by_phone(db, phone)
+    existing_user = get_user_by_phone(db, digits)
     if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
         return {
             "available": False, 
             "message": "Phone number already exists. Please enter a unique phone number."
+        }
+
+    existing_super_admin_contact = (
+        db.query(SuperAdmin)
+        .filter(SuperAdmin.contact_no == digits)
+        .first()
+    )
+    if existing_super_admin_contact:
+        return {
+            "available": False,
+            "message": "Phone number is already used by a super admin.",
+        }
+
+    existing_company_contact = (
+        db.query(Company)
+        .filter(Company.contact_number == digits)
+        .first()
+    )
+    if existing_company_contact:
+        return {
+            "available": False,
+            "message": "Phone number is already used by a company.",
+        }
+
+    existing_branch_contact = (
+        db.query(CompanyBranch)
+        .filter(CompanyBranch.contact_number == digits)
+        .first()
+    )
+    if existing_branch_contact:
+        return {
+            "available": False,
+            "message": "Phone number is already used by a company branch.",
         }
     
     return {"available": True, "message": ""}

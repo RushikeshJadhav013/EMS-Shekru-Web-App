@@ -1,10 +1,11 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.db.database import get_db
-from app.db.models.company import Company  # noqa: F401
+from app.db.models.company import Company
 from app.db.models.company_branch import CompanyBranch
 from app.db.models.super_admin import SuperAdmin
 from app.dependencies import get_current_super_admin
@@ -19,6 +20,7 @@ from app.crud.company_branch_crud import (
     soft_delete_branch,
 )
 from app.crud.branch_admin_assignment_crud import get_active_admin_assignments_count
+from app.crud.user_crud import get_user_by_phone
 from app.schemas.company_branch_schema import (
     CompanyBranchCreate,
     CompanyBranchUpdate,
@@ -29,12 +31,31 @@ from app.schemas.company_branch_schema import (
 router = APIRouter(prefix="/company-branches", tags=["Company Branches"])
 
 
+def _format_validation_error(errors: list[dict]) -> str:
+    if not errors:
+        return "Invalid input."
+    first_error = errors[0]
+    field = first_error.get("loc", ["field"])[0]
+    message = first_error.get("msg", "Invalid value.")
+    if isinstance(message, str) and message.lower().startswith("value error, "):
+        message = message[len("Value error, ") :]
+    return f"Invalid {field}: {message}"
+
+
 @router.post("", response_model=CompanyBranchOut, status_code=status.HTTP_201_CREATED)
 def create_branch_route(
-    branch: CompanyBranchCreate,
+    payload: dict = Body(...),
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
+    try:
+        branch = CompanyBranchCreate(**payload)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_format_validation_error(e.errors()),
+        )
+
     # Create branch as inactive initially; admins will be assigned next.
     branch.status = False
 
@@ -57,6 +78,32 @@ def create_branch_route(
     if existing_contact:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Branch contact number already exists"
+        )
+    existing_user_contact = get_user_by_phone(db, branch.contact_number)
+    if existing_user_contact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Branch contact number is already used by a user/admin.",
+        )
+    existing_super_admin_contact = (
+        db.query(SuperAdmin)
+        .filter(SuperAdmin.contact_no == branch.contact_number)
+        .first()
+    )
+    if existing_super_admin_contact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Branch contact number is already used by a super admin.",
+        )
+    existing_company_contact = (
+        db.query(Company)
+        .filter(Company.contact_number == branch.contact_number)
+        .first()
+    )
+    if existing_company_contact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Branch contact number is already used by a company.",
         )
 
     return create_branch(db, branch, created_by=current_super_admin.super_admin_id)
@@ -93,10 +140,18 @@ def get_branch_route(
 @router.put("/{branch_id}", response_model=CompanyBranchOut)
 def update_branch_route(
     branch_id: int,
-    branch_update: CompanyBranchUpdate,
+    payload: dict = Body(...),
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
+    try:
+        branch_update = CompanyBranchUpdate(**payload)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_format_validation_error(e.errors()),
+        )
+
     branch = get_branch(db, branch_id)
     if not branch:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
@@ -113,15 +168,42 @@ def update_branch_route(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Branch name already exists")
 
     if branch_update.contact_number is not None:
+        normalized_contact = branch_update.contact_number.strip()
         existing_contact = get_branch_by_contact_number(
             db=db,
             company_id=None,
-            contact_number=branch_update.contact_number,
+            contact_number=normalized_contact,
             include_deleted=True,
         )
         if existing_contact and existing_contact.branch_id != branch_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="Branch contact number already exists"
+            )
+        existing_user_contact = get_user_by_phone(db, normalized_contact)
+        if existing_user_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch contact number is already used by a user/admin.",
+            )
+        existing_super_admin_contact = (
+            db.query(SuperAdmin)
+            .filter(SuperAdmin.contact_no == normalized_contact)
+            .first()
+        )
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch contact number is already used by a super admin.",
+            )
+        existing_company_contact = (
+            db.query(Company)
+            .filter(Company.contact_number == normalized_contact)
+            .first()
+        )
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch contact number is already used by a company.",
             )
 
     updated = update_branch(db, branch_id, branch_update, updated_by=current_super_admin.super_admin_id)

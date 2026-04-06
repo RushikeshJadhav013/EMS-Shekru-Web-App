@@ -23,8 +23,8 @@ class CompanyBranchBase(BaseModel):
     @validator("contact_number")
     def validate_contact_number(cls, v: str) -> str:
         value = v.strip()
-        if not re.fullmatch(r"\d{10}", value):
-            raise ValueError("Contact number must be exactly 10 digits")
+        if not re.fullmatch(r"[6-9]\d{9}", value):
+            raise ValueError("Contact number must be exactly 10 digits and start with 6, 7, 8, or 9")
         return value
 
     @validator("address")
@@ -60,8 +60,8 @@ class CompanyBranchUpdate(BaseModel):
         if v is None:
             return None
         value = v.strip()
-        if not re.fullmatch(r"\d{10}", value):
-            raise ValueError("Contact number must be exactly 10 digits")
+        if not re.fullmatch(r"[6-9]\d{9}", value):
+            raise ValueError("Contact number must be exactly 10 digits and start with 6, 7, 8, or 9")
         return value
 
     @validator("address")

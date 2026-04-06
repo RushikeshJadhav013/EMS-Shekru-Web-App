@@ -1,3 +1,4 @@
+static/
 # Bytecode and cache
 __pycache__/
 *.py[cod]
