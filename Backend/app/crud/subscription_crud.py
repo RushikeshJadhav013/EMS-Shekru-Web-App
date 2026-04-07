@@ -131,10 +131,12 @@ def create_admin_subscription(
         current_end = existing.end_date
         scheduled_start = current_end if current_end and current_end > datetime.now() else datetime.now()
 
-        # Distinguish trial vs paid by duration (<=31 days treated as trial)
-        existing_duration = (existing.end_date - existing.start_date) if (existing.end_date and existing.start_date) else None
-        is_trial = bool(existing_duration and existing_duration.days <= 31)
-        default_duration = timedelta(days=30) if is_trial else timedelta(days=365)
+        existing_duration = (
+            (existing.end_date - existing.start_date)
+            if (existing.end_date and existing.start_date)
+            else None
+        )
+        default_duration = timedelta(days=365)
 
         existing.plan_id = subscription.plan_id
         existing.start_date = scheduled_start
@@ -142,7 +144,7 @@ def create_admin_subscription(
             # Use provided end date but ensure it isn't before the scheduled start
             existing.end_date = max(subscription.end_date, scheduled_start)
         else:
-            # Preserve the previous duration; fall back based on trial/paid heuristic
+            # Preserve the previous duration; fall back to 1 year
             preserved_duration = existing_duration or default_duration
             existing.end_date = scheduled_start + preserved_duration
         existing.is_active = True
@@ -151,11 +153,11 @@ def create_admin_subscription(
         db.refresh(existing)
         return existing
     
-    # If no subscription exists, do NOT auto-assign a trial here.
-    # A trial is assigned during admin creation; require explicit end_date when creating first subscription via this API.
+    # If no subscription exists, do NOT auto-assign any free trial.
+    # Require explicit end_date (or set end_date to NULL via DB if you intend "no expiry").
     scheduled_start = datetime.now()
     if subscription.end_date is None:
-        raise ValueError("No existing subscription found. Provide an explicit end_date for the new subscription (trials are assigned during admin creation).")
+        raise ValueError("No existing subscription found. Provide an explicit end_date for the new subscription.")
 
     db_subscription = AdminSubscription(
         admin_id=subscription.admin_id,
@@ -169,36 +171,6 @@ def create_admin_subscription(
     db.commit()
     db.refresh(db_subscription)
     return db_subscription
-
-
-def assign_trial_subscription_to_admin(
-    db: Session,
-    admin_id: int,
-    created_by: Optional[int] = None
-) -> Optional[AdminSubscription]:
-    """
-    Assign a 1-month trial subscription to the given admin.
-    Picks the first active subscription plan (oldest created) for the trial.
-    Returns None if no active plan exists.
-    """
-    plan = (
-        db.query(SubscriptionPlan)
-        .filter(SubscriptionPlan.is_active == True)
-        .order_by(SubscriptionPlan.created_on.asc())
-        .first()
-    )
-
-    if not plan:
-        return None
-
-    # Set trial end_date to 1 month (30 days) from now
-    trial_end_date = datetime.now() + timedelta(days=30)
-    trial_request = AdminSubscriptionCreate(
-        admin_id=admin_id,
-        plan_id=plan.plan_id,
-        end_date=trial_end_date
-    )
-    return create_admin_subscription(db, trial_request, created_by=created_by)
 
 
 def get_admin_subscription(
@@ -332,14 +304,6 @@ def get_admin_subscription_info(
 ) -> dict:
     """Get comprehensive subscription information for an admin"""
     subscription = get_admin_subscription(db, admin_id)
-    
-    def _is_trial(sub: AdminSubscription) -> bool:
-        """Heuristic: subscription created via trial helper (30-day window)."""
-        if not sub or not sub.start_date or not sub.end_date:
-            return False
-        duration = sub.end_date - sub.start_date
-        # Accept small drift (<= 31 days) as trial
-        return duration.days <= 31
 
     # Use check_admin_subscription_limit to get accurate limits (handles no subscription case)
     can_create, current_count, max_allowed = check_admin_subscription_limit(db, admin_id)
@@ -362,7 +326,8 @@ def get_admin_subscription_info(
         "can_create": can_create,
         "subscription": subscription,
         "plan": subscription.plan,
-        "is_trial": _is_trial(subscription),
-        "trial_ends_on": subscription.end_date,
+        # No free trial concept: keep fields for backwards compatibility but always false.
+        "is_trial": False,
+        "trial_ends_on": None,
     }
 
