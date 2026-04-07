@@ -1,12 +1,17 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func
 
 from app.db.models.branch_admin_assignment import BranchAdminAssignment
 from app.db.models.company import Company
+from app.db.models.company_admin_assignment import CompanyAdminAssignment
 from app.db.models.company_branch import CompanyBranch
 from app.db.models.user import User
 from app.enums import RoleEnum
 from app.schemas.branch_admin_assignment_schema import BranchAdminAssignmentCreate
+from app.crud.company_admin_assignment_crud import (
+    count_active_company_level_assignments,
+    list_active_company_level_admins,
+)
 
 
 def get_active_admin_assignments_count(db: Session, branch_id: int, exclude_admin_user_id: int | None = None) -> int:
@@ -167,9 +172,10 @@ def deactivate_admin_assignment(
 
 def list_company_assigned_admins(db: Session, company_id: int) -> list[User]:
     """
-    Distinct active admin users assigned to any branch of the company.
+    Distinct active admin users assigned to the company:
+    via any branch and/or via direct company-level assignment.
     """
-    admins = (
+    branch_admins = (
         db.query(User)
         .join(BranchAdminAssignment, BranchAdminAssignment.admin_user_id == User.user_id)
         .join(CompanyBranch, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
@@ -184,7 +190,15 @@ def list_company_assigned_admins(db: Session, company_id: int) -> list[User]:
         .order_by(User.user_id.asc())
         .all()
     )
-    return admins
+    company_level = list_active_company_level_admins(db, company_id)
+    seen = {u.user_id for u in branch_admins}
+    merged: list[User] = list(branch_admins)
+    for u in company_level:
+        if u.user_id not in seen:
+            seen.add(u.user_id)
+            merged.append(u)
+    merged.sort(key=lambda x: x.user_id)
+    return merged
 
 
 def get_company_admin_summary(db: Session, company_id: int) -> dict:
@@ -224,8 +238,8 @@ def get_company_admin_summary(db: Session, company_id: int) -> dict:
         .scalar()
         or 0
     )
-    total_assigned_admins = (
-        db.query(func.count(func.distinct(User.user_id)))
+    branch_admin_user_ids = (
+        db.query(User.user_id)
         .join(BranchAdminAssignment, BranchAdminAssignment.admin_user_id == User.user_id)
         .join(CompanyBranch, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
         .filter(
@@ -235,9 +249,25 @@ def get_company_admin_summary(db: Session, company_id: int) -> dict:
             User.is_active == True,  # noqa: E712
             User.role == RoleEnum.ADMIN,
         )
-        .scalar()
-        or 0
+        .distinct()
+        .all()
     )
+    company_level_user_ids = (
+        db.query(User.user_id)
+        .join(CompanyAdminAssignment, CompanyAdminAssignment.admin_user_id == User.user_id)
+        .filter(
+            CompanyAdminAssignment.company_id == company_id,
+            CompanyAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+        )
+        .distinct()
+        .all()
+    )
+    total_assigned_admins = len(
+        {uid for (uid,) in branch_admin_user_ids} | {uid for (uid,) in company_level_user_ids}
+    )
+    company_level_active_assignments = count_active_company_level_assignments(db, company_id)
     branches_without_admin = max(int(total_branches) - int(branches_with_admin), 0)
     return {
         "company_id": company_id,
@@ -246,6 +276,7 @@ def get_company_admin_summary(db: Session, company_id: int) -> dict:
         "branches_with_admin": int(branches_with_admin),
         "branches_without_admin": int(branches_without_admin),
         "total_assigned_admins": int(total_assigned_admins),
+        "active_company_level_admin_assignments": int(company_level_active_assignments),
     }
 
 
@@ -273,9 +304,9 @@ def list_branches_for_admin(db: Session, admin_user_id: int) -> list[CompanyBran
 
 def list_companies_for_admin(db: Session, admin_user_id: int) -> list[Company]:
     """
-    Distinct companies derived from branch assignments for an admin.
+    Distinct companies the admin can access via branch assignments and/or direct company assignment.
     """
-    companies = (
+    from_branch = (
         db.query(Company)
         .join(CompanyBranch, CompanyBranch.company_id == Company.company_id)
         .join(BranchAdminAssignment, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
@@ -289,8 +320,25 @@ def list_companies_for_admin(db: Session, admin_user_id: int) -> list[Company]:
             Company.is_deleted == False,  # noqa: E712
         )
         .distinct(Company.company_id)
-        .order_by(Company.created_at.desc())
         .all()
     )
-    return companies
+    from_company = (
+        db.query(Company)
+        .join(CompanyAdminAssignment, CompanyAdminAssignment.company_id == Company.company_id)
+        .join(User, CompanyAdminAssignment.admin_user_id == User.user_id)
+        .filter(
+            CompanyAdminAssignment.admin_user_id == admin_user_id,
+            CompanyAdminAssignment.is_active == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+            User.role == RoleEnum.ADMIN,
+            Company.is_deleted == False,  # noqa: E712
+        )
+        .distinct(Company.company_id)
+        .all()
+    )
+    by_id: dict[int, Company] = {c.company_id: c for c in from_branch}
+    for c in from_company:
+        if c.company_id not in by_id:
+            by_id[c.company_id] = c
+    return sorted(by_id.values(), key=lambda c: c.company_id, reverse=True)
 

@@ -33,6 +33,7 @@ from app.db.models import (  # noqa: F401
     company,
     company_branch,
     branch_admin_assignment,
+    company_admin_assignment,
     chat,
 )
 from app.routes import (

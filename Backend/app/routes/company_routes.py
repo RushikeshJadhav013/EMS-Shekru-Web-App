@@ -21,6 +21,10 @@ from app.schemas.company_schema import (
 )
 from app.schemas.company_branch_schema import CompanyBranchOut
 from app.schemas.user_schema import UserOut
+from app.schemas.company_admin_assignment_schema import (
+    CompanyAdminAssignmentCreate,
+    CompanyAdminAssignmentOut,
+)
 from app.crud.company_crud import (
     create_company,
     get_company,
@@ -37,6 +41,10 @@ from app.crud.user_crud import get_user_by_phone
 from app.crud.branch_admin_assignment_crud import (
     list_company_assigned_admins,
     get_company_admin_summary,
+)
+from app.crud.company_admin_assignment_crud import (
+    assign_admin_to_company,
+    deactivate_company_admin_assignment,
 )
 
 
@@ -228,6 +236,57 @@ def list_company_admins_route(
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return list_company_assigned_admins(db, company_id)
+
+
+@router.post(
+    "/{company_id}/admins",
+    response_model=CompanyAdminAssignmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def assign_company_admin_route(
+    company_id: int,
+    payload: CompanyAdminAssignmentCreate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    """Assign an admin to the company directly (works even when the company has no branches)."""
+    company = get_company(db, company_id)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    try:
+        return assign_admin_to_company(
+            db=db,
+            company_id=company_id,
+            admin=payload,
+            created_by=current_super_admin.super_admin_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.delete(
+    "/{company_id}/admins/{admin_user_id}",
+    response_model=CompanyAdminAssignmentOut,
+)
+def remove_company_admin_route(
+    company_id: int,
+    admin_user_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    """Remove direct company-level admin assignment (does not remove branch assignments)."""
+    company = get_company(db, company_id)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    try:
+        return deactivate_company_admin_assignment(
+            db=db,
+            company_id=company_id,
+            admin_user_id=admin_user_id,
+            updated_by=current_super_admin.super_admin_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
 @router.get("/{company_id}/admin-summary")
