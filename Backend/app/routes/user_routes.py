@@ -8,6 +8,7 @@ from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, Updat
 from app.crud.user_crud import (
     create_user,
     list_users,
+    list_users_scoped,
     update_user_role,
     update_user_status,
     update_users_status_bulk,
@@ -18,11 +19,12 @@ from app.crud.user_crud import (
     get_user_by_pan_card,
     get_user_by_aadhar_card,
     get_user,
+    get_user_scoped,
     export_users_pdf,
     export_users_csv,
 )
 from app.db.database import get_db
-from app.dependencies import require_roles, get_current_user
+from app.dependencies import require_roles, get_current_user, get_tenant_scope
 from app.enums import GenderEnum, RoleEnum
 from app.db.models.user import User
 from app.crud.subscription_crud import check_admin_subscription_limit
@@ -88,7 +90,8 @@ def register_employee(
     manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
 
     email = email.strip().lower()
@@ -248,7 +251,9 @@ def register_employee(
         shift_type=shift_type,
         employee_type=employee_type,
         manager_id=manager_id,  # ✅ Added
-        profile_photo=profile_photo_path
+        profile_photo=profile_photo_path,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     try:
@@ -299,6 +304,7 @@ def register_employee(
 def get_all_employees_public(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[RoleEnum] = Query(None, description="Filter by role"),
@@ -314,7 +320,7 @@ def get_all_employees_public(
     - TeamLead: Can view Employees of their assigned teams only
     - Employee: Cannot access this endpoint
     """
-    employees = list_users(db)
+    employees = list_users_scoped(db, scope["company_id"], scope.get("branch_id"))
     
     # Apply role-based visibility filtering
     if current_user.role == RoleEnum.ADMIN:
@@ -474,7 +480,8 @@ def update_employee(
     manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Check permissions: User can update their own profile OR must be Admin/HR to update others
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -483,7 +490,7 @@ def update_employee(
             detail="Operation not permitted. You can only update your own profile."
         )
     
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -693,7 +700,8 @@ def update_role_public(
     user_id: int,
     role_data: UpdateRoleSchema,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Update a user's role.
@@ -706,7 +714,7 @@ def update_role_public(
     - Others: forbidden
     """
     # Load target user
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -736,7 +744,8 @@ def update_employee_status(
     user_id: int,
     status_data: UpdateStatusSchema,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Activate or deactivate an employee
@@ -744,7 +753,7 @@ def update_employee_status(
     - **is_active**: True to activate, False to deactivate
     """
     # Load target user for validation
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -788,7 +797,8 @@ def download_users_pdf(
     designation: Optional[str] = Query(None, description="Filter by designation"),
     active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export employee directory as PDF with optional filters.
@@ -860,7 +870,9 @@ def download_users_pdf(
             designation=designation,
             status=active_status,
             exclude_user_ids=exclude_user_ids,
-            exclude_roles=exclude_roles
+            exclude_roles=exclude_roles,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
         )
         
         # Build filename based on filters
@@ -899,7 +911,8 @@ def download_users_csv(
     role: Optional[str] = Query(None, description="Filter by role"),
     active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export employee directory as CSV with optional filters.
@@ -966,7 +979,9 @@ def download_users_csv(
         role=role,
         status=active_status,
         exclude_user_ids=exclude_user_ids,
-        exclude_roles=exclude_roles
+        exclude_roles=exclude_roles,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     # Build filename based on filters
@@ -994,7 +1009,8 @@ def download_users_csv(
 def remove_employee(
     user_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # ✅ Only requires login, no role check
+    current_user: User = Depends(get_current_user),  # ✅ Only requires login, no role check
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Optional: Allow users to delete only themselves, or Admin/HR to delete anyone
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -1003,6 +1019,10 @@ def remove_employee(
             detail="Operation not permitted. Only Admin/HR can delete other employees."
         )
     
+    # Ensure the target is in-scope before deleting.
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     employee = delete_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -1013,10 +1033,11 @@ def remove_employee(
 def get_single_employee(
     user_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Load the employee first
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -1052,20 +1073,20 @@ def get_single_employee(
 
 
 # ✅ Admin: Check subscription status
-@router.get("/subscription/status")
-def get_subscription_status(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Get subscription status for the current admin user"""
-    if current_user.role != RoleEnum.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can check subscription status"
-        )
+# @router.get("/subscription/status")
+# def get_subscription_status(
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user)
+# ):
+#     """Get subscription status for the current admin user"""
+#     if current_user.role != RoleEnum.ADMIN:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="Only admins can check subscription status"
+#         )
     
-    from app.crud.subscription_crud import get_admin_subscription_info
-    return get_admin_subscription_info(db, current_user.user_id)
+#     from app.crud.subscription_crud import get_admin_subscription_info
+#     return get_admin_subscription_info(db, current_user.user_id)
 
 
 # ✅ Real-time validation endpoints for form fields

@@ -185,6 +185,9 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     employee_id: constr(min_length=1, max_length=50, strip_whitespace=True) = Field(..., description="Unique employee ID")
     profile_photo: Optional[str] = Field(None, description="Profile photo URL or path")
+    # Tenant scope is set server-side based on admin assignment (or current_user scope).
+    company_id: Optional[int] = Field(None, description="Company ID (set by server)")
+    branch_id: Optional[int] = Field(None, description="Branch ID (set by server, optional)")
 
     @field_validator('employee_id')
     @classmethod
@@ -267,6 +270,8 @@ class UserOut(UserBase):
     is_active: bool
     profile_photo: Optional[str] = None
     created_at: datetime
+    company_id: Optional[int] = None
+    branch_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
 

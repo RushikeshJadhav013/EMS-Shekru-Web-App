@@ -126,6 +126,8 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
         email=user.email,
         password_hash=None,
         role=user.role,
+        company_id=getattr(user, "company_id", None),
+        branch_id=getattr(user, "branch_id", None),
         department=normalize_department_string(user.department),
         designation=user.designation,
         resignation_date=user.resignation_date,
@@ -144,6 +146,20 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
 
 def list_users(db: Session):
     return db.query(User).all()
+
+
+def list_users_scoped(db: Session, company_id: int, branch_id: Optional[int] = None) -> list[User]:
+    q = db.query(User).filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
+
+
+def get_user_scoped(db: Session, user_id: int, company_id: int, branch_id: Optional[int] = None) -> Optional[User]:
+    q = db.query(User).filter(User.user_id == user_id, User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.first()
 
 def get_employees(db: Session, search: str = None, department: str = None, role: RoleEnum = None):
     query = db.query(User)
@@ -306,6 +322,8 @@ def export_users_pdf(
     role: Optional[str] = None,
     designation: Optional[str] = None,
     status: Optional[bool] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
     exclude_user_ids: Optional[list[int]] = None,
     exclude_roles: Optional[list[RoleEnum]] = None
 ):
@@ -461,6 +479,12 @@ def export_users_pdf(
     
     # Filter logic
     query = db.query(User)
+
+    # Tenant scope filter
+    if company_id is not None:
+        query = query.filter(User.company_id == int(company_id))
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
 
     # Department filter: user has at least one of the requested departments (token-based)
     # Supports users with multiple comma-separated departments (e.g. "Sales, HR")
@@ -619,6 +643,8 @@ def export_users_csv(
     departments: Optional[List[str]] = None,
     role: Optional[str] = None,
     status: Optional[bool] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
     exclude_user_ids: Optional[list[int]] = None,
     exclude_roles: Optional[list[RoleEnum]] = None
 ):
@@ -627,6 +653,12 @@ def export_users_csv(
 
     # Filter logic
     query = db.query(User)
+
+    # Tenant scope filter
+    if company_id is not None:
+        query = query.filter(User.company_id == int(company_id))
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
 
     # Department filter: user has at least one of the requested departments (token-based)
     # Supports users with multiple comma-separated departments (e.g. "Sales, HR")

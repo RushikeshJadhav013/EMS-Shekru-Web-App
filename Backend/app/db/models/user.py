@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 from app.enums import RoleEnum
@@ -17,6 +17,21 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=True)
     role = Column(Enum(RoleEnum), default=RoleEnum.EMPLOYEE)
+
+    # Tenant scope (company/branch)
+    # NOTE: kept nullable for backward compatibility; enforce in API layer.
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    branch_id = Column(
+        Integer,
+        ForeignKey("company_branches.branch_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Optional Info
     department = Column(String(255), nullable=True)
