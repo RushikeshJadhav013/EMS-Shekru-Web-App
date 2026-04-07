@@ -4,7 +4,7 @@ from app.db.models.user import User
 from app.enums import RoleEnum
 from passlib.context import CryptContext
 from app.schemas.user_schema import UserCreate, AdminCreate, AdminUpdate
-from app.crud.subscription_crud import check_admin_subscription_limit
+from app.crud.subscription_crud import check_company_branch_subscription_limit
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, letter
@@ -111,7 +111,16 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
     if created_by is not None:
         creator = db.query(User).filter(User.user_id == created_by).first()
         if creator and creator.role == RoleEnum.ADMIN:
-            can_create, current_count, max_allowed = check_admin_subscription_limit(db, created_by)
+            # Enforce subscription limits based on the tenant scope being created into.
+            company_id = getattr(user, "company_id", None)
+            branch_id = getattr(user, "branch_id", None)
+            if company_id is not None:
+                can_create, current_count, max_allowed = check_company_branch_subscription_limit(
+                    db, int(company_id), int(branch_id) if branch_id is not None else None
+                )
+            else:
+                # No tenant scope on the user -> skip subscription enforcement (shouldn't happen)
+                can_create, current_count, max_allowed = (True, 0, float("inf"))
             if not can_create:
                 raise ValueError(
                     f"Subscription limit reached. You have created {current_count} out of {max_allowed} allowed users. "

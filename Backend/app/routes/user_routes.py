@@ -27,7 +27,7 @@ from app.db.database import get_db
 from app.dependencies import require_roles, get_current_user, get_tenant_scope
 from app.enums import GenderEnum, RoleEnum
 from app.db.models.user import User
-from app.crud.subscription_crud import check_admin_subscription_limit
+# Subscription enforcement is done inside create_user() using company/branch scope.
 import os
 import shutil
 from datetime import datetime
