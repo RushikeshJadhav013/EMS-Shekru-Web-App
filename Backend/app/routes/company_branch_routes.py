@@ -13,6 +13,7 @@ from app.crud.company_branch_crud import (
     create_branch,
     get_branch,
     get_branch_by_contact_number,
+    get_branch_by_email,
     get_branch_by_name,
     list_branches,
     update_branch,
@@ -44,17 +45,11 @@ def _format_validation_error(errors: list[dict]) -> str:
 
 @router.post("", response_model=CompanyBranchOut, status_code=status.HTTP_201_CREATED)
 def create_branch_route(
-    payload: dict = Body(...),
+    payload: CompanyBranchCreate = Body(...),
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    try:
-        branch = CompanyBranchCreate(**payload)
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=_format_validation_error(e.errors()),
-        )
+    branch = payload
 
     # Create branch as inactive initially; admins will be assigned next.
     branch.status = False
@@ -68,6 +63,26 @@ def create_branch_route(
     )
     if existing_name:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Branch name already exists")
+
+    # Branch email must be globally unique and must not match any company email.
+    if branch.branch_email:
+        normalized_email = branch.branch_email.strip().lower()
+        existing_branch_email = get_branch_by_email(db, normalized_email, include_deleted=True)
+        if existing_branch_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email already exists",
+            )
+        existing_company_email = (
+            db.query(Company)
+            .filter(Company.company_email == normalized_email)
+            .first()
+        )
+        if existing_company_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email is already used by a company",
+            )
 
     existing_contact = get_branch_by_contact_number(
         db=db,
@@ -140,17 +155,11 @@ def get_branch_route(
 @router.put("/{branch_id}", response_model=CompanyBranchOut)
 def update_branch_route(
     branch_id: int,
-    payload: dict = Body(...),
+    payload: CompanyBranchUpdate = Body(...),
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    try:
-        branch_update = CompanyBranchUpdate(**payload)
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=_format_validation_error(e.errors()),
-        )
+    branch_update = payload
 
     branch = get_branch(db, branch_id)
     if not branch:
@@ -166,6 +175,27 @@ def update_branch_route(
         )
         if existing_name and existing_name.branch_id != branch_id:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Branch name already exists")
+
+    if branch_update.branch_email is not None:
+        normalized_email = branch_update.branch_email.strip().lower()
+        # Check against other branches (including deleted)
+        existing_branch_email = get_branch_by_email(db, normalized_email, include_deleted=True)
+        if existing_branch_email and existing_branch_email.branch_id != branch_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email already exists",
+            )
+        # Check against company emails
+        existing_company_email = (
+            db.query(Company)
+            .filter(Company.company_email == normalized_email)
+            .first()
+        )
+        if existing_company_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email is already used by a company",
+            )
 
     if branch_update.contact_number is not None:
         normalized_contact = branch_update.contact_number.strip()

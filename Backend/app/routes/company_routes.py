@@ -181,6 +181,17 @@ def create_company_route(
             status_code=status.HTTP_409_CONFLICT,
             detail="Company email exists for a deleted company. Use a different email.",
         )
+    # Company email must not match any branch email (including deleted branches).
+    existing_branch_email = (
+        db.query(CompanyBranch)
+        .filter(CompanyBranch.branch_email == company.company_email.strip().lower())
+        .first()
+    )
+    if existing_branch_email:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Company email is already used by a company branch.",
+        )
 
     return create_company(db, company, created_by=current_super_admin.super_admin_id)
 
@@ -356,6 +367,18 @@ def update_company_route(
         )
         if existing:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Company email already exists")
+        # Company email must not match any branch email (including deleted branches).
+        normalized_email = company_update.company_email.strip().lower()
+        existing_branch_email = (
+            db.query(CompanyBranch)
+            .filter(CompanyBranch.branch_email == normalized_email)
+            .first()
+        )
+        if existing_branch_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company email is already used by a company branch.",
+            )
 
     if company_update.contact_number:
         normalized_contact = company_update.contact_number.strip()
