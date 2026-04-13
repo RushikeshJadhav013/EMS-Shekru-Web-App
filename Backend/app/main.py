@@ -34,6 +34,7 @@ from app.db.models import (  # noqa: F401
     company_branch,
     branch_admin_assignment,
     company_admin_assignment,
+    company_salary_structure,
     chat,
 )
 from app.routes import (
@@ -53,6 +54,7 @@ from app.routes import (
     super_admin_routes,
     subscription_routes,
     company_routes,
+    company_salary_structure_routes,
     company_branch_routes,
     branch_admin_assignment_routes,
     chat_routes,
@@ -229,6 +231,7 @@ app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
 app.include_router(company_routes.router)
+app.include_router(company_salary_structure_routes.router)
 app.include_router(company_branch_routes.router)
 app.include_router(branch_admin_assignment_routes.router)
 app.include_router(chat_routes.router)
