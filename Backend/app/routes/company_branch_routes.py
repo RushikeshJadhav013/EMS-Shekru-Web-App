@@ -1,6 +1,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
@@ -21,7 +22,7 @@ from app.crud.company_branch_crud import (
     soft_delete_branch,
 )
 from app.crud.branch_admin_assignment_crud import get_active_admin_assignments_count
-from app.crud.user_crud import get_user_by_phone
+from app.crud.user_crud import get_user_by_phone, get_user_by_email
 from app.schemas.company_branch_schema import (
     CompanyBranchCreate,
     CompanyBranchUpdate,
@@ -64,7 +65,7 @@ def create_branch_route(
     if existing_name:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Branch name already exists")
 
-    # Branch email must be globally unique and must not match any company email.
+    # Branch email must be globally unique and must not clash with company, user/admin, or super admin emails.
     if branch.branch_email:
         normalized_email = branch.branch_email.strip().lower()
         existing_branch_email = get_branch_by_email(db, normalized_email, include_deleted=True)
@@ -75,13 +76,29 @@ def create_branch_route(
             )
         existing_company_email = (
             db.query(Company)
-            .filter(Company.company_email == normalized_email)
+            .filter(func.lower(Company.company_email) == normalized_email)
             .first()
         )
         if existing_company_email:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Branch email is already used by a company",
+            )
+        existing_user_email = get_user_by_email(db, normalized_email)
+        if existing_user_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email is already used by a user/admin.",
+            )
+        existing_super_admin_email = (
+            db.query(SuperAdmin)
+            .filter(func.lower(SuperAdmin.email) == normalized_email)
+            .first()
+        )
+        if existing_super_admin_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email is already used by a super admin.",
             )
 
     existing_contact = get_branch_by_contact_number(
@@ -188,13 +205,31 @@ def update_branch_route(
         # Check against company emails
         existing_company_email = (
             db.query(Company)
-            .filter(Company.company_email == normalized_email)
+            .filter(func.lower(Company.company_email) == normalized_email)
             .first()
         )
         if existing_company_email:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Branch email is already used by a company",
+            )
+        # Check against user/admin emails
+        existing_user_email = get_user_by_email(db, normalized_email)
+        if existing_user_email and existing_user_email.user_id != branch.created_by:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email is already used by a user/admin.",
+            )
+        # Check against super admin emails
+        existing_super_admin_email = (
+            db.query(SuperAdmin)
+            .filter(func.lower(SuperAdmin.email) == normalized_email)
+            .first()
+        )
+        if existing_super_admin_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch email is already used by a super admin.",
             )
 
     if branch_update.contact_number is not None:

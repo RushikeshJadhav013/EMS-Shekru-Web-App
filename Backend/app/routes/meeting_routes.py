@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -7,6 +8,7 @@ from app.db.database import get_db
 from app.db.models.meeting import Meeting, MeetingParticipant
 from app.db.models.user import User
 from app.dependencies import get_current_user
+from app.utils.timezone import now_ist
 from app.schemas.meeting_schema import (
     MeetingCreate,
     MeetingOut,
@@ -20,6 +22,38 @@ router = APIRouter(
     prefix="/meetings",
     tags=["Meetings"],
 )
+
+def _normalize_for_compare(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone().replace(tzinfo=None)
+
+
+def _validate_meeting_times(start_time, end_time) -> None:
+    """
+    Business rules:
+    - start_time cannot be in the past
+    - end_time cannot be earlier than start_time
+    """
+    normalized_start_time = _normalize_for_compare(start_time)
+    normalized_end_time = _normalize_for_compare(end_time)
+
+    if normalized_start_time is not None and normalized_start_time < now_ist():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_time cannot be a backdated date/time",
+        )
+    if (
+        normalized_start_time is not None
+        and normalized_end_time is not None
+        and normalized_end_time < normalized_start_time
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end_time cannot be earlier than start_time",
+        )
 
 
 def _get_meeting_or_404(db: Session, meeting_id: int) -> Meeting:
@@ -71,6 +105,7 @@ def create_meeting(
     current_user: User = Depends(get_current_user),
 ):
     """Create a meeting with an existing Google Meet / Zoom URL."""
+    _validate_meeting_times(payload.start_time, payload.end_time)
     meeting = Meeting(
         title=payload.title,
         description=payload.description,
@@ -163,6 +198,10 @@ def update_meeting(
 
     data = payload.model_dump(exclude_unset=True)
     participant_ids = data.pop("participant_ids", None)
+
+    effective_start_time = data.get("start_time", meeting.start_time)
+    effective_end_time = data.get("end_time", meeting.end_time)
+    _validate_meeting_times(effective_start_time, effective_end_time)
 
     for field, value in data.items():
         if field == "meeting_url" and value is not None:
