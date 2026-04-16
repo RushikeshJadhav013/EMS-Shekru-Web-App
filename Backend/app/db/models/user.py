@@ -78,6 +78,7 @@ class User(Base):
     shift_notifications = relationship("ShiftNotification", back_populates="user", cascade="all, delete-orphan")
     salary_notifications = relationship("SalaryNotification", back_populates="user", cascade="all, delete-orphan")
     wfh_notifications = relationship("WFHNotification", back_populates="user", cascade="all, delete-orphan")
+    project_notifications = relationship("ProjectNotification", back_populates="user", cascade="all, delete-orphan")
 
     # Chat-related relationships
     created_chat_sessions = relationship(

@@ -8,10 +8,17 @@ from app.db.database import get_db
 from app.db.models.project import Project
 from app.db.models.task import Task
 from app.db.models.project_member import ProjectMember
+from app.db.models.notification import ProjectNotification
 from app.db.models.user import User
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
-from app.schemas.project_schema import ProjectCreate, ProjectUpdate, ProjectOut, ProjectStatusUpdate
+from app.schemas.project_schema import (
+    ProjectCreate,
+    ProjectUpdate,
+    ProjectOut,
+    ProjectStatusUpdate,
+    ProjectNotificationOut,
+)
 from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut, ProjectMembersBulkAdd
 from app.utils.timezone import now_ist
 from app.utils.department_utils import department_tokens_lower
@@ -51,6 +58,101 @@ def _ensure_project_exists(db: Session, project_id: int) -> Project:
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
+
+
+def _active_project_members(db: Session, project_id: int, *, exclude_user_id: int | None = None) -> list[User]:
+    query = (
+        db.query(User)
+        .join(ProjectMember, ProjectMember.user_id == User.user_id)
+        .filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.is_active.is_(True),
+            User.is_active.is_(True),
+        )
+    )
+    if exclude_user_id is not None:
+        query = query.filter(User.user_id != exclude_user_id)
+    return query.all()
+
+
+def _create_project_notifications(
+    db: Session,
+    *,
+    recipients: list[User],
+    project_id: int | None,
+    notification_type: str,
+    title: str,
+    message: str,
+) -> list[ProjectNotification]:
+    notifications: list[ProjectNotification] = []
+    for recipient in recipients:
+        notification = ProjectNotification(
+            user_id=recipient.user_id,
+            project_id=project_id,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            is_read=False,
+        )
+        db.add(notification)
+        notifications.append(notification)
+    if notifications:
+        db.commit()
+        for notification in notifications:
+            db.refresh(notification)
+    return notifications
+
+
+def _notify_project_members(
+    db: Session,
+    *,
+    project: Project,
+    actor: User,
+    notification_type: str,
+    title: str,
+    message: str,
+) -> list[ProjectNotification]:
+    recipients = _active_project_members(db, project.project_id, exclude_user_id=actor.user_id)
+    return _create_project_notifications(
+        db,
+        recipients=recipients,
+        project_id=project.project_id,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+    )
+
+
+def _list_project_notifications(db: Session, user_id: int) -> list[ProjectNotification]:
+    return (
+        db.query(ProjectNotification)
+        .filter(ProjectNotification.user_id == user_id)
+        .order_by(ProjectNotification.created_at.desc())
+        .all()
+    )
+
+
+def _mark_project_notification_as_read(
+    db: Session,
+    *,
+    notification_id: int,
+    user_id: int,
+) -> ProjectNotification | None:
+    notification = (
+        db.query(ProjectNotification)
+        .filter(
+            ProjectNotification.notification_id == notification_id,
+            ProjectNotification.user_id == user_id,
+        )
+        .first()
+    )
+    if not notification:
+        return None
+    if not notification.is_read:
+        notification.is_read = True
+        db.commit()
+        db.refresh(notification)
+    return notification
 
 
 @router.post(
@@ -202,6 +304,30 @@ def list_projects(
     return results
 
 
+@router.get("/notifications", response_model=List[ProjectNotificationOut])
+def get_project_notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _list_project_notifications(db, current_user.user_id)
+
+
+@router.put("/notifications/{notification_id}/read", response_model=ProjectNotificationOut)
+def mark_project_notification_as_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notification = _mark_project_notification_as_read(
+        db,
+        notification_id=notification_id,
+        user_id=current_user.user_id,
+    )
+    if not notification:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+    return notification
+
+
 @router.get(
     "/{project_id}",
     response_model=ProjectOut,
@@ -330,6 +456,14 @@ def update_project(
 
     db.commit()
     db.refresh(project)
+    _notify_project_members(
+        db,
+        project=project,
+        actor=current_user,
+        notification_type="Project Updated",
+        title="Project Updated",
+        message=f"{current_user.name} updated project '{project.name}'.",
+    )
 
     member_count = (
         db.query(ProjectMember)
@@ -382,6 +516,15 @@ def update_project_status(
     project.is_active = payload.is_active
     db.commit()
     db.refresh(project)
+    action = "activated" if payload.is_active else "deactivated"
+    _notify_project_members(
+        db,
+        project=project,
+        actor=current_user,
+        notification_type="Project Status Changed",
+        title="Project Status Changed",
+        message=f"{current_user.name} {action} project '{project.name}'.",
+    )
 
     member_count = (
         db.query(ProjectMember)
@@ -429,6 +572,14 @@ def delete_project(
     Only Admin/HR can delete projects.
     """
     project = _ensure_project_exists(db, project_id)
+    _create_project_notifications(
+        db,
+        recipients=_active_project_members(db, project.project_id, exclude_user_id=current_user.user_id),
+        project_id=None,
+        notification_type="Project Deleted",
+        title="Project Deleted",
+        message=f"{current_user.name} deleted project '{project.name}'.",
+    )
 
     db.delete(project)
     db.commit()
@@ -516,6 +667,14 @@ def add_project_member(
 
     db.commit()
     db.refresh(member)
+    _create_project_notifications(
+        db,
+        recipients=[user],
+        project_id=project.project_id,
+        notification_type="Project Member Added",
+        title="Added To Project",
+        message=f"{current_user.name} added you to project '{project.name}' as {member.role}.",
+    )
 
     return ProjectMemberOut(
         id=member.id,
@@ -696,6 +855,15 @@ def add_project_members_bulk(
     for member, _ in created_or_updated:
         db.refresh(member)
 
+    _create_project_notifications(
+        db,
+        recipients=users,
+        project_id=project.project_id,
+        notification_type="Project Members Added",
+        title="Added To Project",
+        message=f"{current_user.name} added you to project '{project.name}' as {payload.role}.",
+    )
+
     return [
         ProjectMemberOut(
             id=member.id,
@@ -783,9 +951,22 @@ def remove_project_member(
             detail="Cannot remove the PIC from the project. Change PIC or archive project instead.",
         )
 
+    removed_user = db.query(User).filter(User.user_id == user_id).first()
+    if removed_user:
+        _create_project_notifications(
+            db,
+            recipients=[removed_user],
+            project_id=project_id,
+            notification_type="Project Member Removed",
+            title="Removed From Project",
+            message=f"{current_user.name} removed you from project '{project.name}'.",
+        )
+
     member.is_active = False
     member.removed_at = now_ist()
 
     db.commit()
     return None
+
+
 
