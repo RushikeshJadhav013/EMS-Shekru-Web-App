@@ -48,3 +48,16 @@ class ProjectStatusUpdate(BaseModel):
     """Schema for toggling project active status"""
     is_active: bool
 
+
+class ProjectNotificationOut(BaseModel):
+    notification_id: int = Field(..., gt=0)
+    user_id: int = Field(..., gt=0)
+    project_id: Optional[int] = Field(None, gt=0)
+    notification_type: str
+    title: constr(min_length=1, max_length=255)
+    message: constr(min_length=1, max_length=1000)
+    is_read: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
