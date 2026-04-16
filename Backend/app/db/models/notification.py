@@ -80,3 +80,20 @@ class ProjectNotification(Base):
 
     user = relationship("User", back_populates="project_notifications")
     project = relationship("Project", back_populates="notifications")
+
+
+class MeetingNotification(Base):
+    __tablename__ = "meeting_notifications"
+
+    notification_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    # Keep notification history even if meeting row is removed.
+    meeting_id = Column(Integer, ForeignKey("meetings.id", ondelete="SET NULL"), nullable=True)
+    notification_type = Column(String(100), nullable=False)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="meeting_notifications")
+    meeting = relationship("Meeting", back_populates="notifications")

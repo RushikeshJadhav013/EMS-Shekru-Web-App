@@ -45,6 +45,7 @@ class Meeting(Base):
         back_populates="meeting",
         cascade="all, delete-orphan",
     )
+    notifications = relationship("MeetingNotification", back_populates="meeting", cascade="all, delete-orphan")
 
 
 class MeetingParticipant(Base):

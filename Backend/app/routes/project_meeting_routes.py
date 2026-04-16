@@ -16,6 +16,7 @@ from app.schemas.meeting_schema import (
     MeetingParticipantOut,
     MeetingUpdate,
 )
+from app.crud.meeting_notifications_crud import create_meeting_notifications
 
 
 router = APIRouter(
@@ -206,6 +207,17 @@ def create_project_meeting(
 
     db.commit()
     db.refresh(meeting)
+    start_iso = meeting.start_time.isoformat() if meeting.start_time else ""
+    end_iso = meeting.end_time.isoformat() if meeting.end_time else ""
+    create_meeting_notifications(
+        db,
+        meeting=meeting,
+        actor=current_user,
+        notification_type="Project Meeting Scheduled",
+        title="Meeting Scheduled",
+        message=f"Project meeting '{meeting.title}' is scheduled {start_iso} - {end_iso}.",
+        store_meeting_id=meeting.id,
+    )
     return _serialize_meeting(db, meeting)
 
 
@@ -316,6 +328,17 @@ def update_project_meeting(
 
     db.commit()
     db.refresh(meeting)
+    start_iso = meeting.start_time.isoformat() if meeting.start_time else ""
+    end_iso = meeting.end_time.isoformat() if meeting.end_time else ""
+    create_meeting_notifications(
+        db,
+        meeting=meeting,
+        actor=current_user,
+        notification_type="Project Meeting Updated",
+        title="Meeting Updated",
+        message=f"Project meeting '{meeting.title}' was updated {start_iso} - {end_iso}.",
+        store_meeting_id=meeting.id,
+    )
     return _serialize_meeting(db, meeting)
 
 
@@ -336,6 +359,15 @@ def delete_project_meeting(
             detail="Only the meeting creator can delete this project meeting",
         )
 
+    create_meeting_notifications(
+        db,
+        meeting=meeting,
+        actor=current_user,
+        notification_type="Project Meeting Cancelled",
+        title="Meeting Cancelled",
+        message=f"Project meeting '{meeting.title}' was cancelled.",
+        store_meeting_id=None,
+    )
     db.delete(meeting)
     db.commit()
     return None
