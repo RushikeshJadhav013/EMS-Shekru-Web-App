@@ -2,7 +2,10 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session, joinedload
 
-from app.db.models.company_salary_structure import CompanySalaryStructure, CompanySalaryStructureComponent
+from app.db.models.company_salary_structure import (
+    CompanySalaryStructure,
+    CompanySalaryStructureComponent,
+)
 from app.schemas.company_salary_structure_schema import (
     CompanySalaryStructureCreate,
     CompanySalaryStructureOut,
@@ -132,6 +135,7 @@ def _to_out(structure: CompanySalaryStructure) -> CompanySalaryStructureOut:
     esic = by_code["ESIC"]
     tds = by_code["TDS"]
     special = by_code["SPECIAL_ALLOWANCE"]
+
     return CompanySalaryStructureOut(
         structure_id=structure.structure_id,
         company_id=structure.company_id,
@@ -140,7 +144,9 @@ def _to_out(structure: CompanySalaryStructure) -> CompanySalaryStructureOut:
         is_active=structure.is_active,
         is_default=structure.is_default,
         basic_type=basic.calculation_type,  # type: ignore[arg-type]
-        basic_value=Decimal(basic.percentage_value if basic.calculation_type == "PERCENTAGE" else basic.fixed_value or 0),
+        basic_value=Decimal(
+            basic.percentage_value if basic.calculation_type == "PERCENTAGE" else basic.fixed_value or 0
+        ),
         hra_percentage_of_basic=Decimal(by_code["HRA"].percentage_value or 0),
         special_allowance_type=special.calculation_type,  # type: ignore[arg-type]
         special_allowance_value=Decimal(special.fixed_value) if special.fixed_value is not None else None,
@@ -184,10 +190,10 @@ def create_company_salary_structure(
 
     for component in _to_component_rows(payload):
         db.add(CompanySalaryStructureComponent(structure_id=structure.structure_id, **component))
+
     db.commit()
-    db.refresh(structure)
-    structure = get_company_salary_structure_entity(db, structure.structure_id)
-    return _to_out(structure)
+    refreshed = get_company_salary_structure_entity(db, structure.structure_id)
+    return _to_out(refreshed)
 
 
 def list_company_salary_structures(db: Session, company_id: int) -> list[CompanySalaryStructureOut]:
@@ -258,11 +264,8 @@ def update_company_salary_structure(
     existing_by_code = {component.component_code: component for component in existing_components}
     incoming_codes = {component["component_code"] for component in incoming_components}
 
-    # Update existing component rows in place so SQLAlchemy emits UPDATE statements,
-    # allowing `onupdate` to set `updated_at`.
     for incoming in incoming_components:
-        code = incoming["component_code"]
-        existing = existing_by_code.get(code)
+        existing = existing_by_code.get(incoming["component_code"])
         if existing:
             existing.category = incoming["category"]
             existing.calculation_type = incoming["calculation_type"]
@@ -274,7 +277,6 @@ def update_company_salary_structure(
         else:
             db.add(CompanySalaryStructureComponent(structure_id=structure.structure_id, **incoming))
 
-    # Keep structure consistent with the generated payload.
     for existing in existing_components:
         if existing.component_code not in incoming_codes:
             db.delete(existing)
@@ -291,3 +293,80 @@ def delete_company_salary_structure(db: Session, structure_id: int) -> bool:
     db.delete(structure)
     db.commit()
     return True
+
+
+def set_company_salary_structure_active_status(
+    db: Session,
+    structure_id: int,
+    is_active: bool,
+    updated_by: int | None = None,
+) -> CompanySalaryStructureOut | None:
+    structure = db.query(CompanySalaryStructure).filter(CompanySalaryStructure.structure_id == structure_id).first()
+    if not structure:
+        return None
+    structure.is_active = is_active
+    structure.updated_by = updated_by
+    db.commit()
+    refreshed = get_company_salary_structure_entity(db, structure.structure_id)
+    return _to_out(refreshed)
+
+
+def set_company_salary_structure_default_status(
+    db: Session,
+    company_id: int,
+    structure_id: int,
+    is_default: bool,
+    updated_by: int | None = None,
+) -> CompanySalaryStructureOut | None:
+    structure = db.query(CompanySalaryStructure).filter(CompanySalaryStructure.structure_id == structure_id).first()
+    if not structure or structure.company_id != company_id:
+        return None
+
+    if is_default:
+        db.query(CompanySalaryStructure).filter(
+            CompanySalaryStructure.company_id == company_id,
+            CompanySalaryStructure.structure_id != structure_id,
+        ).update({"is_default": False})
+
+    structure.is_default = is_default
+    structure.updated_by = updated_by
+    db.commit()
+    refreshed = get_company_salary_structure_entity(db, structure.structure_id)
+    return _to_out(refreshed)
+
+
+def bulk_set_company_salary_structure_active_status(
+    db: Session,
+    company_id: int,
+    structure_ids: list[int],
+    is_active: bool,
+    updated_by: int | None = None,
+) -> list[CompanySalaryStructureOut]:
+    structures = (
+        db.query(CompanySalaryStructure)
+        .filter(
+            CompanySalaryStructure.company_id == company_id,
+            CompanySalaryStructure.structure_id.in_(structure_ids),
+        )
+        .all()
+    )
+    if not structures:
+        return []
+
+    for structure in structures:
+        structure.is_active = is_active
+        structure.updated_by = updated_by
+
+    db.commit()
+
+    refreshed = (
+        db.query(CompanySalaryStructure)
+        .options(joinedload(CompanySalaryStructure.components))
+        .filter(
+            CompanySalaryStructure.company_id == company_id,
+            CompanySalaryStructure.structure_id.in_(structure_ids),
+        )
+        .order_by(CompanySalaryStructure.structure_id.desc())
+        .all()
+    )
+    return [_to_out(item) for item in refreshed]

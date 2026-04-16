@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -155,6 +155,31 @@ class CompanySalaryStructurePatch(BaseModel):
         if v < 0:
             raise ValueError("Value must be greater than or equal to 0")
         return v
+
+
+class CompanySalaryStructureStatusUpdate(BaseModel):
+    is_active: bool
+
+
+class CompanySalaryStructureDefaultUpdate(BaseModel):
+    is_default: bool
+
+
+class CompanySalaryStructureBulkStatusUpdate(BaseModel):
+    structure_ids: List[int]
+    is_active: bool
+
+    @field_validator("structure_ids")
+    @classmethod
+    def validate_structure_ids(cls, v: List[int]) -> List[int]:
+        if not v:
+            raise ValueError("structure_ids must contain at least one id")
+        if len(set(v)) != len(v):
+            raise ValueError("structure_ids must not contain duplicates")
+        if any(item <= 0 for item in v):
+            raise ValueError("Each structure id must be a positive integer")
+        return v
+
 
 class CompanySalaryStructureOut(CompanySalaryStructureCreate):
     structure_id: int

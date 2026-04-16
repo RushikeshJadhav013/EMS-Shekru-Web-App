@@ -5,21 +5,28 @@ from sqlalchemy.orm import Session
 
 from app.crud.company_crud import get_company
 from app.crud.company_salary_structure_crud import (
+    bulk_set_company_salary_structure_active_status,
     create_company_salary_structure,
     delete_company_salary_structure,
     get_company_salary_structure,
     get_company_salary_structure_by_name,
     get_company_salary_structure_entity,
     list_company_salary_structures,
+    set_company_salary_structure_active_status,
+    set_company_salary_structure_default_status,
     update_company_salary_structure,
 )
 from app.db.database import get_db
+from app.db.models.company_salary_structure import CompanySalaryStructure
 from app.db.models.super_admin import SuperAdmin
 from app.dependencies import get_current_super_admin
 from app.schemas.company_salary_structure_schema import (
+    CompanySalaryStructureBulkStatusUpdate,
     CompanySalaryStructureCreate,
-    CompanySalaryStructurePatch,
+    CompanySalaryStructureDefaultUpdate,
     CompanySalaryStructureOut,
+    CompanySalaryStructurePatch,
+    CompanySalaryStructureStatusUpdate,
     CompanySalaryStructureUpdate,
 )
 
@@ -31,11 +38,7 @@ def _ensure_company_exists(db: Session, company_id: int) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
 
-@router.post(
-    "/{company_id}/salary-structures",
-    response_model=CompanySalaryStructureOut,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("/{company_id}/salary-structures", response_model=CompanySalaryStructureOut, status_code=status.HTTP_201_CREATED)
 def create_company_salary_structure_route(
     company_id: int,
     payload: CompanySalaryStructureCreate,
@@ -45,10 +48,7 @@ def create_company_salary_structure_route(
     _ensure_company_exists(db, company_id)
     duplicate = get_company_salary_structure_by_name(db, company_id, payload.structure_name)
     if duplicate:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Salary structure name already exists for this company",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Salary structure name already exists for this company")
     return create_company_salary_structure(db, company_id, payload, current_super_admin.super_admin_id)
 
 
@@ -99,10 +99,7 @@ def update_company_salary_structure_route(
         exclude_structure_id=structure_id,
     )
     if duplicate:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Salary structure name already exists for this company",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Salary structure name already exists for this company")
 
     updated = update_company_salary_structure(db, structure_id, payload, current_super_admin.super_admin_id)
     if not updated:
@@ -133,7 +130,6 @@ def patch_company_salary_structure_route(
 
     merged = current.model_dump()
     merged.update(patch_data)
-
     validated_update = CompanySalaryStructureUpdate(**merged)
 
     duplicate = get_company_salary_structure_by_name(
@@ -143,16 +139,90 @@ def patch_company_salary_structure_route(
         exclude_structure_id=structure_id,
     )
     if duplicate:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Salary structure name already exists for this company")
+
+    updated = update_company_salary_structure(db, structure_id, validated_update, current_super_admin.super_admin_id)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salary structure not found")
+    return updated
+
+
+@router.post("/{company_id}/salary-structures/{structure_id}/activate", response_model=CompanySalaryStructureOut)
+def set_company_salary_structure_active_status_route(
+    company_id: int,
+    structure_id: int,
+    payload: CompanySalaryStructureStatusUpdate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    _ensure_company_exists(db, company_id)
+    structure = get_company_salary_structure_entity(db, structure_id)
+    if not structure or structure.company_id != company_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salary structure not found")
+
+    updated = set_company_salary_structure_active_status(
+        db=db,
+        structure_id=structure_id,
+        is_active=payload.is_active,
+        updated_by=current_super_admin.super_admin_id,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salary structure not found")
+    return updated
+
+
+@router.post("/{company_id}/salary-structures/bulk-activate", response_model=List[CompanySalaryStructureOut])
+def bulk_set_company_salary_structure_active_status_route(
+    company_id: int,
+    payload: CompanySalaryStructureBulkStatusUpdate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    _ensure_company_exists(db, company_id)
+
+    existing_ids = {
+        item.structure_id
+        for item in db.query(CompanySalaryStructure.structure_id).filter(
+            CompanySalaryStructure.company_id == company_id,
+            CompanySalaryStructure.structure_id.in_(payload.structure_ids),
+        ).all()
+    }
+    missing_ids = sorted(set(payload.structure_ids) - existing_ids)
+    if missing_ids:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Salary structure name already exists for this company",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Salary structures not found for this company: {missing_ids}",
         )
 
-    updated = update_company_salary_structure(
-        db,
-        structure_id,
-        validated_update,
-        current_super_admin.super_admin_id,
+    updated = bulk_set_company_salary_structure_active_status(
+        db=db,
+        company_id=company_id,
+        structure_ids=payload.structure_ids,
+        is_active=payload.is_active,
+        updated_by=current_super_admin.super_admin_id,
+    )
+    return updated
+
+
+@router.patch("/{company_id}/salary-structures/{structure_id}/default-status", response_model=CompanySalaryStructureOut)
+def set_company_salary_structure_default_status_route(
+    company_id: int,
+    structure_id: int,
+    payload: CompanySalaryStructureDefaultUpdate,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    _ensure_company_exists(db, company_id)
+    structure = get_company_salary_structure_entity(db, structure_id)
+    if not structure or structure.company_id != company_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salary structure not found")
+
+    updated = set_company_salary_structure_default_status(
+        db=db,
+        company_id=company_id,
+        structure_id=structure_id,
+        is_default=payload.is_default,
+        updated_by=current_super_admin.super_admin_id,
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salary structure not found")

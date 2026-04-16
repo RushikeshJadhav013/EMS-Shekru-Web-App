@@ -513,8 +513,8 @@ class AdminUpdate(BaseModel):
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    # For updates, gender is required and must not be null.
-    gender: str
+    # For updates, gender is optional.
+    gender: Optional[str] = None
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
@@ -524,7 +524,7 @@ class AdminUpdate(BaseModel):
     @validator("gender", pre=True, always=True)
     def validate_gender(cls, v):
         if v is None:
-            raise ValueError('Gender is required')
+            return None
         if isinstance(v, str):
             normalized = v.strip().lower()
             if normalized in ['male', 'm']:
