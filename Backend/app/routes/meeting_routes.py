@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models.meeting import Meeting, MeetingParticipant
+from app.db.models.notification import MeetingNotification
 from app.db.models.user import User
 from app.dependencies import get_current_user
 from app.utils.timezone import now_ist
@@ -15,6 +16,12 @@ from app.schemas.meeting_schema import (
     MeetingParticipantOut,
     MeetingUpdate,
     MeetingParticipantsAdd,
+    MeetingNotificationOut,
+)
+from app.crud.meeting_notifications_crud import (
+    create_meeting_notifications,
+    list_meeting_notifications,
+    mark_meeting_notification_as_read as mark_meeting_notification_as_read_crud,
 )
 
 
@@ -137,6 +144,17 @@ def create_meeting(
 
     db.commit()
     db.refresh(meeting)
+    start_iso = meeting.start_time.isoformat() if meeting.start_time else ""
+    end_iso = meeting.end_time.isoformat() if meeting.end_time else ""
+    create_meeting_notifications(
+        db,
+        meeting=meeting,
+        actor=current_user,
+        notification_type="Meeting Scheduled",
+        title="Meeting Scheduled",
+        message=f"Meeting '{meeting.title}' is scheduled {start_iso} - {end_iso}.",
+        store_meeting_id=meeting.id,
+    )
     return _serialize_meeting(db, meeting)
 
 
@@ -171,7 +189,7 @@ def list_my_meetings(
     return [_serialize_meeting(db, m) for m in meetings]
 
 
-@router.get("/{meeting_id}", response_model=MeetingOut)
+@router.get("/{meeting_id:int}", response_model=MeetingOut)
 def get_meeting(
     meeting_id: int,
     db: Session = Depends(get_db),
@@ -181,7 +199,7 @@ def get_meeting(
     return _serialize_meeting(db, meeting)
 
 
-@router.put("/{meeting_id}", response_model=MeetingOut)
+@router.put("/{meeting_id:int}", response_model=MeetingOut)
 def update_meeting(
     meeting_id: int,
     payload: MeetingUpdate,
@@ -233,6 +251,15 @@ def update_meeting(
 
     db.commit()
     db.refresh(meeting)
+    create_meeting_notifications(
+        db,
+        meeting=meeting,
+        actor=current_user,
+        notification_type="Meeting Updated",
+        title="Meeting Updated",
+        message=f"Meeting '{meeting.title}' was updated.",
+        store_meeting_id=meeting.id,
+    )
     return _serialize_meeting(db, meeting)
 
 
@@ -289,6 +316,28 @@ def add_meeting_participants(
 
     db.commit()
 
+    new_user_ids = [uid for uid in user_ids if uid not in existing_ids and uid != current_user.user_id]
+    if new_user_ids:
+        start_iso = meeting.start_time.isoformat() if meeting.start_time else ""
+        end_iso = meeting.end_time.isoformat() if meeting.end_time else ""
+        message = (
+            f"You were added to meeting '{meeting.title}'"
+            + (f" ({start_iso} - {end_iso})" if start_iso or end_iso else "")
+            + "."
+        )
+        for uid in new_user_ids:
+            db.add(
+                MeetingNotification(
+                    user_id=uid,
+                    meeting_id=meeting.id,
+                    notification_type="Meeting Participant Added",
+                    title="Added To Meeting",
+                    message=message,
+                    is_read=False,
+                )
+            )
+        db.commit()
+
     rows = (
         db.query(MeetingParticipant, User)
         .join(User, MeetingParticipant.user_id == User.user_id)
@@ -339,10 +388,29 @@ def remove_meeting_participant(
 
     db.delete(mp)
     db.commit()
+    if user_id != current_user.user_id:
+        start_iso = meeting.start_time.isoformat() if meeting.start_time else ""
+        end_iso = meeting.end_time.isoformat() if meeting.end_time else ""
+        message = (
+            f"You were removed from meeting '{meeting.title}'"
+            + (f" ({start_iso} - {end_iso})" if start_iso or end_iso else "")
+            + "."
+        )
+        db.add(
+            MeetingNotification(
+                user_id=user_id,
+                meeting_id=meeting.id,
+                notification_type="Meeting Participant Removed",
+                title="Removed From Meeting",
+                message=message,
+                is_read=False,
+            )
+        )
+        db.commit()
     return None
 
 
-@router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{meeting_id:int}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_meeting(
     meeting_id: int,
     db: Session = Depends(get_db),
@@ -356,7 +424,40 @@ def delete_meeting(
             detail="Only the meeting creator can delete this meeting",
         )
 
+    create_meeting_notifications(
+        db,
+        meeting=meeting,
+        actor=current_user,
+        notification_type="Meeting Cancelled",
+        title="Meeting Cancelled",
+        message=f"Meeting '{meeting.title}' was cancelled.",
+        store_meeting_id=None,
+    )
     db.delete(meeting)
     db.commit()
     return None
+
+
+@router.get("/notifications", response_model=List[MeetingNotificationOut])
+def get_meeting_notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return list_meeting_notifications(db, current_user.user_id)
+
+
+@router.put("/notifications/{notification_id}/read", response_model=MeetingNotificationOut)
+def mark_meeting_notification_as_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notification = mark_meeting_notification_as_read_crud(
+        db,
+        notification_id=notification_id,
+        user_id=current_user.user_id,
+    )
+    if not notification:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+    return notification
 

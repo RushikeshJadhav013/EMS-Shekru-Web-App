@@ -46,3 +46,16 @@ class MeetingOut(MeetingBase):
 
     model_config = {"from_attributes": True}
 
+
+class MeetingNotificationOut(BaseModel):
+    notification_id: int = Field(..., gt=0, description="Notification ID")
+    user_id: int = Field(..., gt=0, description="User ID")
+    meeting_id: Optional[int] = Field(None, gt=0, description="Meeting ID (nullable for deletions)")
+    notification_type: str = Field(..., min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=255)
+    message: str = Field(..., min_length=1, max_length=1000)
+    is_read: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
