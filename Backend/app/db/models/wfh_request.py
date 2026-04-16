@@ -47,4 +47,5 @@ class WFHRequest(Base):
     # Relationships
     user = relationship("User", foreign_keys=[user_id], backref="wfh_requests")
     approver = relationship("User", foreign_keys=[approved_by])
+    notifications = relationship("WFHNotification", back_populates="wfh_request", cascade="all, delete-orphan")
 

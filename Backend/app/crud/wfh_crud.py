@@ -9,6 +9,7 @@ from typing import Optional, List, Tuple
 
 from app.db.models.wfh_request import WFHRequest, WFHStatus
 from app.db.models.user import User
+from app.db.models.notification import WFHNotification
 from app.utils.timezone import now_ist
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
@@ -409,4 +410,257 @@ def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
                 )
     
     return query.scalar() or 0
+
+
+def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]:
+    """
+    Resolve approver-side recipients for WFH request notifications.
+
+    Rules mirror the WFH approval hierarchy:
+    - Employee -> TeamLead/Manager/HR (same department)
+    - TeamLead -> Manager/HR (same department)
+    - Manager -> HR + Admin
+    - HR -> Admin
+    - Admin/others -> no recipients
+    """
+    role_value = getattr(requester.role, "value", str(requester.role))
+    requester_tokens = set(department_tokens_lower(requester.department))
+
+    if role_value == RoleEnum.EMPLOYEE.value:
+        if not requester_tokens:
+            return []
+        roles_to_notify = [RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR]
+        candidates = (
+            db.query(User)
+            .filter(
+                User.role.in_(roles_to_notify),
+                User.department.isnot(None),
+                User.is_active == True,  # noqa: E712
+                User.user_id != requester.user_id,
+            )
+            .all()
+        )
+        return [
+            user
+            for user in candidates
+            if set(department_tokens_lower(user.department)).intersection(requester_tokens)
+        ]
+
+    if role_value == RoleEnum.TEAM_LEAD.value:
+        if not requester_tokens:
+            return []
+        roles_to_notify = [RoleEnum.MANAGER, RoleEnum.HR]
+        candidates = (
+            db.query(User)
+            .filter(
+                User.role.in_(roles_to_notify),
+                User.department.isnot(None),
+                User.is_active == True,  # noqa: E712
+                User.user_id != requester.user_id,
+            )
+            .all()
+        )
+        return [
+            user
+            for user in candidates
+            if set(department_tokens_lower(user.department)).intersection(requester_tokens)
+        ]
+
+    if role_value == RoleEnum.MANAGER.value:
+        return (
+            db.query(User)
+            .filter(
+                User.role.in_([RoleEnum.HR, RoleEnum.ADMIN]),
+                User.is_active == True,  # noqa: E712
+                User.user_id != requester.user_id,
+            )
+            .all()
+        )
+
+    if role_value == RoleEnum.HR.value:
+        return (
+            db.query(User)
+            .filter(
+                User.role == RoleEnum.ADMIN,
+                User.is_active == True,  # noqa: E712
+                User.user_id != requester.user_id,
+            )
+            .all()
+        )
+
+    return []
+
+
+def create_wfh_request_notifications(db: Session, wfh_request: WFHRequest, requester: User) -> List[WFHNotification]:
+    """Create approver notifications for a newly submitted WFH request."""
+    recipients = _get_wfh_notification_recipients(db, requester)
+    if not recipients:
+        return []
+
+    start_str = wfh_request.start_date.strftime("%d %b %Y")
+    end_str = wfh_request.end_date.strftime("%d %b %Y")
+    day_count = (wfh_request.end_date.date() - wfh_request.start_date.date()).days + 1
+    day_label = "day" if day_count == 1 else "days"
+
+    title = "WFH Request Submitted"
+    message = (
+        f"{requester.name} ({requester.employee_id or 'N/A'}) from {requester.department or 'N/A'} department "
+        f"has requested WFH from {start_str} to {end_str} ({day_count} {day_label})."
+    )
+
+    notifications: List[WFHNotification] = []
+    for recipient in recipients:
+        notification = WFHNotification(
+            user_id=recipient.user_id,
+            wfh_id=wfh_request.wfh_id,
+            notification_type="WFH Request",
+            title=title,
+            message=message,
+            is_read=False,
+        )
+        db.add(notification)
+        notifications.append(notification)
+
+    db.commit()
+    for notification in notifications:
+        db.refresh(notification)
+
+    return notifications
+
+
+def update_wfh_request_notifications(db: Session, wfh_request: WFHRequest, requester: User) -> int:
+    """Refresh existing approver notifications when a pending WFH request is edited."""
+    existing = (
+        db.query(WFHNotification)
+        .filter(
+            WFHNotification.wfh_id == wfh_request.wfh_id,
+            WFHNotification.notification_type == "WFH Request",
+        )
+        .all()
+    )
+    if not existing:
+        return 0
+
+    start_str = wfh_request.start_date.strftime("%d %b %Y")
+    end_str = wfh_request.end_date.strftime("%d %b %Y")
+    day_count = (wfh_request.end_date.date() - wfh_request.start_date.date()).days + 1
+    day_label = "day" if day_count == 1 else "days"
+
+    title = "WFH Request Updated"
+    message = (
+        f"{requester.name} ({requester.employee_id or 'N/A'}) from {requester.department or 'N/A'} department "
+        f"has updated their WFH request to {start_str} to {end_str} ({day_count} {day_label}) [{wfh_request.wfh_type}]."
+    )
+
+    bumped_at = now_ist()
+    for notification in existing:
+        notification.title = title
+        notification.message = message
+        notification.is_read = False
+        notification.created_at = bumped_at
+
+    db.commit()
+    return len(existing)
+
+
+def create_wfh_decision_notification(
+    db: Session,
+    *,
+    wfh_request: WFHRequest,
+    approver: User,
+    approved: bool,
+) -> Optional[WFHNotification]:
+    """Notify the requester that their WFH request was approved or rejected."""
+    requester = db.query(User).filter(User.user_id == wfh_request.user_id).first()
+    if not requester or requester.user_id == approver.user_id:
+        return None
+
+    decision = "approved" if approved else "rejected"
+    title = f"WFH Request {decision.capitalize()}"
+    start_str = wfh_request.start_date.strftime("%d %b %Y") if wfh_request.start_date else ""
+    end_str = wfh_request.end_date.strftime("%d %b %Y") if wfh_request.end_date else ""
+    message = (
+        f"Your WFH request from {start_str} to {end_str} has been {decision} by "
+        f"{approver.name or 'your approver'}."
+    )
+
+    notification = WFHNotification(
+        user_id=requester.user_id,
+        wfh_id=wfh_request.wfh_id,
+        notification_type=title,
+        title=title,
+        message=message,
+        is_read=False,
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+def create_wfh_deletion_notification(db: Session, wfh_request: WFHRequest, requester: User) -> List[WFHNotification]:
+    """Notify approvers when a pending WFH request is withdrawn/deleted."""
+    recipients = _get_wfh_notification_recipients(db, requester)
+    if not recipients:
+        return []
+
+    start_str = wfh_request.start_date.strftime("%d %b %Y")
+    end_str = wfh_request.end_date.strftime("%d %b %Y")
+    day_count = (wfh_request.end_date.date() - wfh_request.start_date.date()).days + 1
+    day_label = "day" if day_count == 1 else "days"
+
+    title = "WFH Request Withdrawn"
+    message = (
+        f"{requester.name} ({requester.employee_id or 'N/A'}) from {requester.department or 'N/A'} department "
+        f"has withdrawn their WFH request for {start_str} to {end_str} ({day_count} {day_label})."
+    )
+
+    notifications: List[WFHNotification] = []
+    for recipient in recipients:
+        notification = WFHNotification(
+            user_id=recipient.user_id,
+            wfh_id=None,
+            notification_type="WFH Withdrawal",
+            title=title,
+            message=message,
+            is_read=False,
+        )
+        db.add(notification)
+        notifications.append(notification)
+
+    db.commit()
+    for notification in notifications:
+        db.refresh(notification)
+
+    return notifications
+
+
+def list_wfh_notifications(db: Session, user_id: int) -> List[WFHNotification]:
+    """Get all WFH notifications for a user, most recent first."""
+    return (
+        db.query(WFHNotification)
+        .filter(WFHNotification.user_id == user_id)
+        .order_by(WFHNotification.created_at.desc())
+        .all()
+    )
+
+
+def mark_wfh_notification_as_read(db: Session, notification_id: int, user_id: int) -> Optional[WFHNotification]:
+    """Mark a WFH notification as read for the owning user."""
+    notification = (
+        db.query(WFHNotification)
+        .filter(
+            WFHNotification.notification_id == notification_id,
+            WFHNotification.user_id == user_id,
+        )
+        .first()
+    )
+    if not notification:
+        return None
+
+    if not notification.is_read:
+        notification.is_read = True
+        db.commit()
+        db.refresh(notification)
+    return notification
 

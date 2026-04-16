@@ -136,3 +136,17 @@ class WFHRequestListResponse(BaseModel):
     pending_count: int = Field(default=0, description="Number of pending requests")
     requests: list[WFHRequestWithUserOut] = Field(..., description="List of WFH requests")
 
+
+class WFHNotificationOut(BaseModel):
+    """Schema for WFH notification response"""
+    notification_id: int = Field(..., gt=0, description="Notification ID")
+    user_id: int = Field(..., gt=0, description="User ID")
+    wfh_id: Optional[int] = Field(None, gt=0, description="WFH request ID")
+    notification_type: str = Field(..., description="Notification type")
+    title: str = Field(..., min_length=1, max_length=255, description="Notification title")
+    message: str = Field(..., min_length=1, max_length=1000, description="Notification message")
+    is_read: bool = Field(..., description="Read status")
+    created_at: datetime = Field(..., description="Creation timestamp")
+
+    model_config = {"from_attributes": True}
+
