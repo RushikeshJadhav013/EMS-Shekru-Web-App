@@ -21,7 +21,8 @@ from app.schemas.wfh_schema import (
     WFHRequestWithUserOut,
     WFHRequestApprove,
     WFHRequestUpdate,
-    WFHRequestListResponse
+    WFHRequestListResponse,
+    WFHNotificationOut,
 )
 from app.crud.wfh_crud import (
     create_wfh_request,
@@ -32,7 +33,13 @@ from app.crud.wfh_crud import (
     update_wfh_request,
     delete_wfh_request,
     check_overlapping_wfh,
-    get_pending_wfh_count_for_user
+    get_pending_wfh_count_for_user,
+    create_wfh_request_notifications,
+    update_wfh_request_notifications,
+    create_wfh_decision_notification,
+    create_wfh_deletion_notification,
+    list_wfh_notifications,
+    mark_wfh_notification_as_read,
 )
 
 
@@ -131,6 +138,7 @@ def submit_wfh_request(
         reason=payload.reason,
         wfh_type=payload.wfh_type
     )
+    create_wfh_request_notifications(db, wfh_request, current_user)
     
     return WFHRequestOut(
         wfh_id=wfh_request.wfh_id,
@@ -366,6 +374,7 @@ def update_my_wfh_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to update WFH request"
         )
+    update_wfh_request_notifications(db, updated, current_user)
     
     return WFHRequestOut(
         wfh_id=updated.wfh_id,
@@ -411,7 +420,7 @@ def delete_my_wfh_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only pending requests can be deleted"
         )
-    
+    create_wfh_deletion_notification(db, wfh_request, current_user)
     deleted = delete_wfh_request(db, wfh_id, current_user.user_id)
     
     if not deleted:
@@ -749,6 +758,12 @@ def approve_or_reject_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to process the request"
         )
+    create_wfh_decision_notification(
+        db,
+        wfh_request=updated,
+        approver=current_user,
+        approved=payload.approved,
+    )
     
     return WFHRequestWithUserOut(
         wfh_id=updated.wfh_id,
@@ -782,4 +797,26 @@ def get_pending_count(
     """
     count = get_pending_wfh_count_for_user(db, current_user)
     return {"pending_count": count}
+
+
+@router.get("/notifications", response_model=list[WFHNotificationOut])
+def get_wfh_notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get all WFH notifications for the current user."""
+    return list_wfh_notifications(db, current_user.user_id)
+
+
+@router.put("/notifications/{notification_id}/read", response_model=WFHNotificationOut)
+def read_wfh_notification(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark a WFH notification as read."""
+    notification = mark_wfh_notification_as_read(db, notification_id, current_user.user_id)
+    if not notification:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+    return notification
 
