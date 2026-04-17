@@ -58,3 +58,17 @@ class CalendarEvent(BaseModel):
         from_attributes = True
 
 
+class CompanyHolidayNotificationOut(BaseModel):
+    notification_id: int
+    user_id: int
+    holiday_id: Optional[int] = None
+    notification_type: str
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
