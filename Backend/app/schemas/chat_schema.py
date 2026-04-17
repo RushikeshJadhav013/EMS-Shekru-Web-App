@@ -70,3 +70,19 @@ class ChatSessionSchema(BaseModel):
 
 class ChangeGroupNamePayload(BaseModel):
     name: constr(strip_whitespace=True, min_length=1)
+
+
+class ChatNotificationOut(BaseModel):
+    notification_id: int
+    user_id: int
+    chat_id: str
+    msg_id: Optional[str] = None
+    sender_id: Optional[int] = None
+    notification_type: str
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

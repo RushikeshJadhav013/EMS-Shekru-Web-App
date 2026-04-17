@@ -14,6 +14,7 @@ from app.dependencies import get_current_user, require_roles
 from app.db.database import get_db, SessionLocal
 from app.db.models.user import User
 from app.db.models.chat import ChatSession, ChatMember, ChatMessage
+from app.db.models.notification import ChatNotification
 from app.schemas.chat_schema import (
     ChatUserSchema,
     MessageSchema,
@@ -22,6 +23,7 @@ from app.schemas.chat_schema import (
     CreateMessagePayload,
     TypingStatusPayload,
     ChatSessionSchema,
+    ChatNotificationOut,
     ChangeGroupNamePayload,
     BulkMembersPayload,
     EditMessagePayload,
@@ -133,6 +135,52 @@ def _message_to_dict(m: ChatMessage) -> dict:
         d["file_type"] = m.file_type
         d["file_size"] = m.file_size
     return d
+
+
+def _create_chat_notifications(
+    db: Session,
+    *,
+    chat_id: str,
+    sender_id: int,
+    msg_id: str,
+    content: str,
+    has_attachment: bool = False,
+) -> None:
+    members = (
+        db.query(ChatMember.user_id)
+        .filter(ChatMember.chat_id == chat_id, ChatMember.user_id != sender_id)
+        .all()
+    )
+    if not members:
+        return
+
+    sender = db.query(User).filter(User.user_id == sender_id).first()
+    sender_name = sender.name if sender else "Someone"
+    text_preview = (content or "").strip()
+    if has_attachment and not text_preview:
+        text_preview = "sent an attachment."
+    elif text_preview:
+        text_preview = text_preview[:117] + "..." if len(text_preview) > 120 else text_preview
+    else:
+        text_preview = "sent a message."
+
+    notification_type = "new_file_message" if has_attachment else "new_message"
+    title = f"New message from {sender_name}"
+    message = text_preview
+
+    for row in members:
+        db.add(
+            ChatNotification(
+                user_id=row[0],
+                chat_id=chat_id,
+                msg_id=msg_id,
+                sender_id=sender_id,
+                notification_type=notification_type,
+                title=title,
+                message=message,
+                is_read=False,
+            )
+        )
 
 
 @router.get("/users", response_model=List[ChatUserSchema])
@@ -326,6 +374,16 @@ async def send_message(
             read_by=[current.user_id],
         )
         db.add(row)
+        # Ensure parent message row exists before child chat_notifications inserts.
+        db.flush()
+        _create_chat_notifications(
+            db,
+            chat_id=chat_id,
+            sender_id=current.user_id,
+            msg_id=msg_id,
+            content=validated_content,
+            has_attachment=False,
+        )
         session_obj = db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
         if session_obj:
             session_obj.last_message_at = now_ist()
@@ -375,6 +433,16 @@ async def send_message_with_file(
             file_size=file_size,
         )
         db.add(row)
+        # Ensure parent message row exists before child chat_notifications inserts.
+        db.flush()
+        _create_chat_notifications(
+            db,
+            chat_id=chat_id,
+            sender_id=current.user_id,
+            msg_id=msg_id,
+            content=validated_content,
+            has_attachment=True,
+        )
         session_obj = db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
         if session_obj:
             session_obj.last_message_at = now_ist()
@@ -680,3 +748,41 @@ def list_user_chat_sessions(
         .all()
     )
     return sessions
+
+
+@router.get("/notifications", response_model=List[ChatNotificationOut])
+def list_chat_notifications(
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(ChatNotification)
+        .filter(ChatNotification.user_id == current.user_id)
+        .order_by(ChatNotification.created_at.desc())
+        .all()
+    )
+
+
+@router.put("/notifications/{notification_id}/read", response_model=ChatNotificationOut)
+def mark_chat_notification_read(
+    notification_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    notification = (
+        db.query(ChatNotification)
+        .filter(
+            ChatNotification.notification_id == notification_id,
+            ChatNotification.user_id == current.user_id,
+        )
+        .first()
+    )
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    if not notification.is_read:
+        notification.is_read = True
+        db.commit()
+        db.refresh(notification)
+
+    return notification

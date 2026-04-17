@@ -99,6 +99,23 @@ class MeetingNotification(Base):
     meeting = relationship("Meeting", back_populates="notifications")
 
 
+class ChatNotification(Base):
+    __tablename__ = "chat_notifications"
+
+    notification_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    chat_id = Column(String(255), ForeignKey("chat_sessions.chat_id", ondelete="CASCADE"), nullable=False)
+    msg_id = Column(String(36), ForeignKey("chat_messages.msg_id", ondelete="SET NULL"), nullable=True)
+    sender_id = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    notification_type = Column(String(100), nullable=False)  # new_message, new_file_message
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", foreign_keys=[user_id], back_populates="chat_notifications")
+
+
 class CompanyHolidayNotification(Base):
     __tablename__ = "company_holiday_notifications"
 
