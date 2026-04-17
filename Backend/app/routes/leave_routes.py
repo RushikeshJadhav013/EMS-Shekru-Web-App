@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from typing import Optional, Literal
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from datetime import datetime, timedelta, time
 from app.db.database import get_db
 from app.utils.timezone import now_ist
@@ -50,11 +51,77 @@ from app.schemas.leave_config_schema import (
 )
 from app.db.models.user import User
 from app.db.models.leave import Leave
+from app.db.models.shift import Shift, ShiftAssignment
+from app.db.models.office_timing import OfficeTiming
 from fastapi import Body
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(prefix="/leave", tags=["Leave"])
+
+
+def _normalize_department_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _resolve_office_start_time(db: Session, department: Optional[str]) -> Optional[time]:
+    records = (
+        db.query(OfficeTiming)
+        .filter(OfficeTiming.is_active.is_(True))
+        .order_by(OfficeTiming.updated_at.desc())
+        .all()
+    )
+    dept_key = _normalize_department_value(department)
+    global_entry: Optional[OfficeTiming] = None
+    for record in records:
+        record_dept = _normalize_department_value(record.department)
+        if record_dept is None and global_entry is None:
+            global_entry = record
+        if dept_key and record_dept and record_dept.lower() == dept_key.lower():
+            return record.start_time
+    return global_entry.start_time if global_entry else None
+
+
+def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optional[time]:
+    # 1) Date-specific shift assignment has highest precedence.
+    assignment = (
+        db.query(ShiftAssignment)
+        .join(Shift, Shift.shift_id == ShiftAssignment.shift_id)
+        .filter(
+            ShiftAssignment.user_id == user.user_id,
+            ShiftAssignment.assignment_date == leave_date,
+            Shift.is_active.is_(True),
+        )
+        .order_by(ShiftAssignment.updated_at.desc(), ShiftAssignment.created_at.desc())
+        .first()
+    )
+    if assignment and assignment.shift:
+        return assignment.shift.start_time
+
+    # 2) Fallback to user's shift_type mapping (best-effort by shift name).
+    user_shift_type = (getattr(user, "shift_type", None) or "").strip().lower()
+    if user_shift_type:
+        normalized_name = func.lower(func.trim(Shift.name))
+        shift_by_type = (
+            db.query(Shift)
+            .filter(
+                Shift.is_active.is_(True),
+                (
+                    normalized_name == user_shift_type
+                )
+                | (normalized_name.like(f"%{user_shift_type}%")),
+            )
+            .order_by(Shift.department.isnot(None).desc(), Shift.start_time.asc())
+            .first()
+        )
+        if shift_by_type:
+            return shift_by_type.start_time
+
+    # 3) Final fallback to office timing (department-specific, then global).
+    return _resolve_office_start_time(db, getattr(user, "department", None))
 
 # Employee applies for leave
 @router.post("/", response_model=LeaveOut)
@@ -86,18 +153,27 @@ def request_leave(
     hours_difference = time_difference.total_seconds() / 3600
     
     if leave.leave_type.lower() == 'sick':
-        # Sick leave: cannot be for past dates; cannot be for future dates beyond 24 hrs; reject if within 2 hrs of start
-        if hours_difference < 0:
+        # Sick leave validation is anchored to user shift/office start time, not midnight.
+        shift_start_time = _resolve_user_shift_start_time(db, user, leave.start_date)
+        if shift_start_time is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave cannot be validated because office/shift start time is not configured."
+            )
+        shift_start_dt = datetime.combine(leave.start_date, shift_start_time)
+        shift_hours_difference = (shift_start_dt - now).total_seconds() / 3600
+
+        if shift_hours_difference < 0:
             raise HTTPException(
                 status_code=400,
                 detail="Sick leave cannot be applied for past dates."
             )
-        if hours_difference > 24:
+        if shift_hours_difference > 24:
             raise HTTPException(
                 status_code=400,
                 detail="Sick leave cannot be applied for future dates. It must be applied only within 24 hours of the start date."
             )
-        if hours_difference < 2:
+        if shift_hours_difference < 2:
             raise HTTPException(
                 status_code=400,
                 detail="Sick leave cannot be applied within 2 hours of the start date."
@@ -336,18 +412,27 @@ def update_leave_request(
     hours_difference = time_difference.total_seconds() / 3600
 
     if final_leave_type == 'sick':
-        # Sick leave: cannot be for past dates; cannot be for future dates beyond 24 hrs; reject if within 2 hrs of start
-        if hours_difference < 0:
+        # Sick leave validation is anchored to user shift/office start time, not midnight.
+        shift_start_time = _resolve_user_shift_start_time(db, user, final_start_date.date())
+        if shift_start_time is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Sick leave cannot be validated because office/shift start time is not configured."
+            )
+        shift_start_dt = datetime.combine(final_start_date.date(), shift_start_time)
+        shift_hours_difference = (shift_start_dt - now).total_seconds() / 3600
+
+        if shift_hours_difference < 0:
             raise HTTPException(
                 status_code=400,
                 detail="Sick leave cannot be applied for past dates."
             )
-        if hours_difference > 24:
+        if shift_hours_difference > 24:
             raise HTTPException(
                 status_code=400,
                 detail="Sick leave cannot be applied for future dates. It must be applied only within 24 hours of the start date."
             )
-        if hours_difference < 2:
+        if shift_hours_difference < 2:
             raise HTTPException(
                 status_code=400,
                 detail="Sick leave cannot be applied within 2 hours of the start date."
