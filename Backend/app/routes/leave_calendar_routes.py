@@ -12,14 +12,16 @@ from app.enums import RoleEnum
 from app.schemas.leave_calendar_schema import (
     CompanyHolidayCreate, CompanyHolidayOut,
     DeptWeekOffRuleCreate, DeptWeekOffRuleOut,
-    LeaveAllocationUpdate, CalendarEvent
+    LeaveAllocationUpdate, CalendarEvent, CompanyHolidayNotificationOut
 )
 from app.crud.leave_calendar_crud import (
     create_holiday, list_holidays, delete_holiday,
     upsert_weekoff_rule, list_weekoff_rules,
     get_leave_allocation, update_leave_allocation,
-    get_calendar_events
+    get_calendar_events, create_holiday_notifications,
+    list_holiday_notifications, mark_holiday_notification_as_read
 )
+from app.db.models.leave_calendar import CompanyHoliday
 
 router = APIRouter(prefix="/calendar", tags=["Calendar"])
 
@@ -28,6 +30,7 @@ router = APIRouter(prefix="/calendar", tags=["Calendar"])
 def add_holiday(payload: CompanyHolidayCreate, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))):
     try:
         h = create_holiday(db, holiday_date=payload.date, name=payload.name, description=payload.description, created_by=current_user.user_id, is_recurring=payload.is_recurring)
+        create_holiday_notifications(db, holiday=h, actor_user_id=current_user.user_id, action="created")
         return h
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -49,9 +52,14 @@ def get_holidays(start_date: Optional[str] = Query(None), end_date: Optional[str
 
 @router.delete("/holidays/{holiday_id}")
 def remove_holiday(holiday_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))):
+    holiday = db.query(CompanyHoliday).filter(CompanyHoliday.id == holiday_id).first()
+    if not holiday:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+
     ok = delete_holiday(db, holiday_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Holiday not found")
+    create_holiday_notifications(db, holiday=holiday, actor_user_id=current_user.user_id, action="deleted")
     return {"message": "Holiday deleted"}
 
 
@@ -133,5 +141,25 @@ def read_calendar(start_date: Optional[str] = Query(None), end_date: Optional[st
 
     events = get_calendar_events(db, start=start, end=end, department=department)
     return events
+
+
+@router.get("/notifications", response_model=list[CompanyHolidayNotificationOut])
+def get_holiday_notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return list_holiday_notifications(db, current_user.user_id)
+
+
+@router.put("/notifications/{notification_id}/read", response_model=CompanyHolidayNotificationOut)
+def mark_holiday_notification_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notification = mark_holiday_notification_as_read(db, notification_id, current_user.user_id)
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return notification
 
 

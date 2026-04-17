@@ -711,11 +711,12 @@ async def export_performance_report(
             )
         
         # Get employees (base query)
-        # Include only employees whose joining_date falls within the selected period
+        # Include employees whose employment overlaps the report window:
+        # - joined on/before period end, and
+        # - not resigned before period start.
         query = db.query(User).filter(
-            User.is_active == True,
-            User.joining_date >= start,
-            User.joining_date <= end,
+            or_(User.joining_date.is_(None), User.joining_date <= end),
+            or_(User.resignation_date.is_(None), User.resignation_date >= start),
         )
         if employee_id:
             query = query.filter(User.employee_id == employee_id)

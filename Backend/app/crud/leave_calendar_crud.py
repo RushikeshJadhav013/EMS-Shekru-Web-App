@@ -3,6 +3,7 @@ from datetime import datetime, date
 from typing import Optional, List
 
 from app.db.models.leave_calendar import CompanyHoliday, DeptWeekOffRule
+from app.db.models.notification import CompanyHolidayNotification
 from app.db.models.leave_config import LeaveAllocationConfig
 from app.db.models.leave import Leave
 from app.db.models.user import User
@@ -121,6 +122,87 @@ def delete_holiday(db: Session, holiday_id: int) -> bool:
     db.delete(h)
     db.commit()
     return True
+
+
+def create_holiday_notifications(
+    db: Session,
+    *,
+    holiday: CompanyHoliday,
+    actor_user_id: Optional[int],
+    action: str,
+) -> int:
+    users = db.query(User).filter(User.is_active.is_(True)).all()
+    if not users:
+        return 0
+
+    holiday_date = holiday.date.strftime("%d %b %Y")
+    action_key = action.strip().lower()
+    if action_key == "created":
+        notification_type = "holiday_created"
+        title = "New Company Holiday Announced"
+        message = f"{holiday.name} is marked as a company holiday on {holiday_date}."
+    elif action_key == "deleted":
+        notification_type = "holiday_deleted"
+        title = "Company Holiday Removed"
+        message = f"{holiday.name} holiday scheduled for {holiday_date} has been removed."
+    else:
+        notification_type = "holiday_update"
+        title = "Company Holiday Updated"
+        message = f"{holiday.name} holiday details for {holiday_date} have been updated."
+
+    notifications: list[CompanyHolidayNotification] = []
+    for user in users:
+        if actor_user_id is not None and user.user_id == actor_user_id:
+            continue
+        notification = CompanyHolidayNotification(
+            user_id=user.user_id,
+            holiday_id=holiday.id if action_key == "created" else None,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            is_read=False,
+        )
+        db.add(notification)
+        notifications.append(notification)
+
+    if not notifications:
+        return 0
+
+    db.commit()
+    return len(notifications)
+
+
+def list_holiday_notifications(db: Session, user_id: int) -> list[CompanyHolidayNotification]:
+    return (
+        db.query(CompanyHolidayNotification)
+        .filter(CompanyHolidayNotification.user_id == user_id)
+        .order_by(CompanyHolidayNotification.created_at.desc())
+        .all()
+    )
+
+
+def mark_holiday_notification_as_read(
+    db: Session,
+    notification_id: int,
+    user_id: int,
+) -> Optional[CompanyHolidayNotification]:
+    notification = (
+        db.query(CompanyHolidayNotification)
+        .filter(
+            CompanyHolidayNotification.notification_id == notification_id,
+            CompanyHolidayNotification.user_id == user_id,
+        )
+        .first()
+    )
+    if not notification:
+        return None
+
+    if not notification.is_read:
+        notification.is_read = True
+        db.commit()
+        db.refresh(notification)
+
+    return notification
 
 
 def upsert_weekoff_rule(db: Session, department: str, days: List[str], created_by: Optional[int]) -> DeptWeekOffRule:
