@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 from typing import List
 from pydantic import ValidationError
 from pathlib import Path
@@ -37,7 +37,7 @@ from app.crud.company_crud import (
     soft_delete_company,
 )
 from app.crud.company_branch_crud import list_branches
-from app.crud.user_crud import get_user_by_phone
+from app.crud.user_crud import get_user_by_phone, get_user_by_email
 from app.crud.branch_admin_assignment_crud import (
     list_company_assigned_admins,
     get_company_admin_summary,
@@ -193,17 +193,34 @@ def create_company_route(
             detail="Company email is already used by a company branch.",
         )
 
+    normalized_company_email = company.company_email.strip().lower()
+    existing_user_email = get_user_by_email(db, normalized_company_email)
+    if existing_user_email:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Company email is already used by a user/admin.",
+        )
+    existing_super_admin_email = (
+        db.query(SuperAdmin)
+        .filter(func.lower(SuperAdmin.email) == normalized_company_email)
+        .first()
+    )
+    if existing_super_admin_email:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Company email is already used by a super admin.",
+        )
+
     return create_company(db, company, created_by=current_super_admin.super_admin_id)
 
 
 @router.get("", response_model=List[CompanyOut])
 def list_companies_route(
-    include_deleted: bool = False,
     status_filter: bool | None = None,
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    return list_companies(db, include_deleted=include_deleted, status=status_filter)
+    return list_companies(db, include_deleted=False, status=status_filter)
 
 
 @router.get("/{company_id}", response_model=CompanyOut)
@@ -221,18 +238,17 @@ def get_company_route(
 @router.get("/{company_id}/branches", response_model=List[CompanyBranchOut])
 def list_company_branches_route(
     company_id: int,
-    include_deleted: bool = False,
     status_filter: bool | None = None,
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    company = get_company(db, company_id, include_deleted=include_deleted)
+    company = get_company(db, company_id)
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return list_branches(
         db=db,
         company_id=company_id,
-        include_deleted=include_deleted,
+        include_deleted=False,
         status=status_filter,
     )
 
@@ -378,6 +394,23 @@ def update_company_route(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Company email is already used by a company branch.",
+            )
+
+        existing_user_email = get_user_by_email(db, normalized_email)
+        if existing_user_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company email is already used by a user/admin.",
+            )
+        existing_super_admin_email = (
+            db.query(SuperAdmin)
+            .filter(func.lower(SuperAdmin.email) == normalized_email)
+            .first()
+        )
+        if existing_super_admin_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company email is already used by a super admin.",
             )
 
     if company_update.contact_number:
