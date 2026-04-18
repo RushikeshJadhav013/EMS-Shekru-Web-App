@@ -57,6 +57,16 @@ from app.crud.user_crud import (
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
 
 
+def _ensure_not_targeting_self_super_admin(
+    current: SuperAdmin, target_super_admin_id: int, action_phrase: str
+) -> None:
+    if current.super_admin_id == target_super_admin_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You cannot {action_phrase} your own super admin account.",
+        )
+
+
 def _get_super_admin_by_email(db: Session, email: str, exclude_super_admin_id: int | None = None):
     if not email:
         return None
@@ -165,6 +175,7 @@ def update_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Update a super admin - requires authentication"""
+    _ensure_not_targeting_self_super_admin(current_super_admin, super_admin_id, "edit")
     if super_admin.email:
         normalized_email = super_admin.email.strip().lower()
         existing_email = _get_super_admin_by_email(
@@ -221,6 +232,7 @@ def delete_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Delete a super admin - requires authentication"""
+    _ensure_not_targeting_self_super_admin(current_super_admin, super_admin_id, "delete")
     deleted_admin = delete_super_admin(db, super_admin_id)
     if not deleted_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
@@ -240,11 +252,12 @@ def get_super_admin_route(
 
 @router.get("/list", response_model=List[SuperAdminOut])
 def list_super_admins_route(
+    status_filter: bool | None = None,
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """List all super admins - requires authentication"""
-    return list_super_admins(db)
+    return list_super_admins(db, status=status_filter)
 
 
 @router.patch("/status/{super_admin_id}", response_model=SuperAdminOut)
@@ -255,6 +268,7 @@ def set_super_admin_status_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Enable/disable a super admin - requires authentication"""
+    _ensure_not_targeting_self_super_admin(current_super_admin, super_admin_id, "change the status of")
     updated_admin = set_super_admin_status(
         db,
         super_admin_id,
@@ -386,10 +400,11 @@ def create_admin_user_route(
 
 @router.get("/admins", response_model=List[UserOut])
 def list_admin_users_route(
+    status_filter: bool | None = None,
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    return list_admin_users(db)
+    return list_admin_users(db, status=status_filter)
 
 
 @router.get("/admins/{admin_id}", response_model=UserOut)

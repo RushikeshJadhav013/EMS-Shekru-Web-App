@@ -236,8 +236,11 @@ def create_admin_user(db: Session, admin: AdminCreate, created_by: int = None):
     return db_admin
 
 
-def list_admin_users(db: Session):
-    return db.query(User).filter(User.role == RoleEnum.ADMIN).all()
+def list_admin_users(db: Session, status: bool | None = None):
+    q = db.query(User).filter(User.role == RoleEnum.ADMIN)
+    if status is not None:
+        q = q.filter(User.is_active == status)
+    return q.all()
 
 
 def get_admin_user(db: Session, admin_id: int):
