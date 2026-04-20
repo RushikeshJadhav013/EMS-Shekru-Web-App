@@ -137,6 +137,7 @@ def export_leave_pdf(
         ('ALIGN', (1, 0), (1, -1), 'CENTER'),    # colon centered in narrow col
         ('ALIGN', (2, 0), (2, -1), 'LEFT'),      # values left
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica-Bold'),
         ('FONTNAME', (2, 0), (2, -1), 'Helvetica'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('LEFTPADDING', (0, 0), (0, -1), 6),
