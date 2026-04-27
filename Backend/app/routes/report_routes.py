@@ -997,6 +997,15 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     
     elements.append(info_table)
     elements.append(Spacer(1, 20))
+
+    # Period-wide counters used in the metrics table
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    total_days = (end_dt - start_dt).days + 1
+    total_working_days = sum(
+        1 for i in range(total_days)
+        if (start_dt + timedelta(days=i)).weekday() < 5  # Monday-Friday only
+    )
     
     # Employee performance summary
     for emp in data:
@@ -1051,6 +1060,7 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         metrics_data = [
             ['Metric', 'Value', 'Metric', 'Value'],
             ['Attendance Score', f"{emp['attendance_score']}%", 'Task Completion', f"{emp['task_completion_rate']}%"],
+            ['Total Days', str(total_days), 'Total Working Days', str(total_working_days)],
             ['Attendance Days', f"{emp['attendance_days']}/{emp['working_days']}", 'Completed Tasks', f"{emp['completed_tasks']}/{emp['total_tasks']}"],
             ['Late Arrivals', str(emp['late_arrivals']), 'Pending Tasks', str(emp['pending_tasks'])],
             ['Early Departures', str(emp['early_departures']), 'In Progress Tasks', str(emp['in_progress_tasks'])],
