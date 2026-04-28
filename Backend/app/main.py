@@ -197,15 +197,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 origins = [
     # "https://staffly.space",    # Direct backend access
     # "https://stafflyhrms.netlify.app",  # Production deployment
-    # "http://localhost:8080",
-    "https://testing.staffly.space",           # Allow all origins (for development)
-    "https://stafflytesting.netlify.app"       # Testing deployment
+    "https://testing.staffly.space",           # Frontend (new custom domain on Netlify)
+    "https://stafflytesting.netlify.app",       # Temporary fallback during migration
+    "https://api-testing.staffly.space",    # Optional: backend domain (Swagger/tests)
 ]
 
 # Configure CORS middleware with detailed settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=origins,  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
