@@ -74,7 +74,7 @@ def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str =
         return None
 
 
-def auto_checkout_overdue_attendances(db: Session) -> int:
+def auto_checkout_overdue_attendances(db: Session, scope: dict | None = None) -> int:
     """
     Automatically check out users who have not logged out for the day,
     once 1 hour has passed after their department's configured office
@@ -90,12 +90,19 @@ def auto_checkout_overdue_attendances(db: Session) -> int:
     timing_cache = _build_office_timing_cache(db)
 
     # Find all open attendances (no check_out yet)
-    open_records = (
+    q = (
         db.query(Attendance, User)
         .join(User, Attendance.user_id == User.user_id)
         .filter(Attendance.check_out.is_(None))
-        .all()
+        .filter(User.is_active.is_(True))
     )
+    if scope is not None:
+        q = q.filter(User.company_id == scope["company_id"])
+        branch_id = scope.get("branch_id")
+        if branch_id is not None:
+            q = q.filter(User.branch_id == branch_id)
+
+    open_records = q.all()
 
     updated_count = 0
 
@@ -539,6 +546,8 @@ def export_attendance_csv(
     end_date: datetime = None,
     employee_id: str = None,
     department: Optional[str] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ):
     output = io.StringIO()
     writer = csv.writer(output)
@@ -557,7 +566,15 @@ def export_attendance_csv(
     ])
 
     # Modify the query to join with User and fetch name, department, and employee_id
-    query = db.query(Attendance, User.name, User.department, User.employee_id).join(User, Attendance.user_id == User.user_id)
+    query = (
+        db.query(Attendance, User.name, User.department, User.employee_id)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(User.is_active.is_(True))
+    )
+    if company_id is not None:
+        query = query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        query = query.filter(User.branch_id == branch_id)
 
     # Pre-compute department filter tokens to support comma-separated multi-departments
     department_filter_tokens: Optional[set[str]] = None
@@ -618,6 +635,8 @@ def export_attendance_pdf(
     employee_id: str = None,
     department: Optional[str] = None,
     generated_by: Optional[str] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ):
     buffer = io.BytesIO()
     # Use A4 landscape and tight, even margins for a clean, unified look (like Leave Report)
@@ -773,7 +792,15 @@ def export_attendance_pdf(
         ]
     ]
     # Modify the query to join with User and fetch name, department, and employee_id
-    query = db.query(Attendance, User.name, User.department, User.employee_id).join(User, Attendance.user_id == User.user_id)
+    query = (
+        db.query(Attendance, User.name, User.department, User.employee_id)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(User.is_active.is_(True))
+    )
+    if company_id is not None:
+        query = query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        query = query.filter(User.branch_id == branch_id)
 
     # Pre-compute department filter tokens to support comma-separated multi-departments
     department_filter_tokens: Optional[set[str]] = None
@@ -944,6 +971,8 @@ def build_monthly_attendance_grid(
     year: int,
     department: str | None = None,
     current_user: User | None = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ):
     start_day, total_days = monthrange(year, month)
 
@@ -957,6 +986,10 @@ def build_monthly_attendance_grid(
         })
 
     user_query = db.query(User).filter(User.is_active.is_(True))
+    if company_id is not None:
+        user_query = user_query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        user_query = user_query.filter(User.branch_id == branch_id)
 
     # Apply role-based visibility if current_user is provided
     if current_user is not None:

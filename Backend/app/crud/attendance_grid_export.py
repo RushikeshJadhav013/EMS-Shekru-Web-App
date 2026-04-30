@@ -44,6 +44,8 @@ def export_monthly_grid_csv(
     employee_id=None,
     status=None,
     current_user=None,
+    company_id=None,
+    branch_id=None,
 ):
     """
     Export Monthly Attendance Grid to CSV (Excel-style layout exactly like image)
@@ -55,6 +57,8 @@ def export_monthly_grid_csv(
         year,
         department,
         current_user=current_user,
+        company_id=company_id,
+        branch_id=branch_id,
     )
     
     # Apply additional filters to rows
@@ -121,6 +125,8 @@ def export_monthly_grid_pdf(
     employee_id=None,
     status=None,
     current_user=None,
+    company_id=None,
+    branch_id=None,
 ):
     """
     Export Monthly Attendance Grid to PDF (Excel-like layout, landscape)
@@ -133,6 +139,8 @@ def export_monthly_grid_pdf(
         year,
         department,
         current_user=current_user,
+        company_id=company_id,
+        branch_id=branch_id,
     )
     
     # Apply additional filters to rows
@@ -306,6 +314,8 @@ def export_monthly_detailed_pdf(
     employee_id=None,
     status=None,
     current_user=None,
+    company_id=None,
+    branch_id=None,
 ):
     """
     Export Monthly Detailed Attendance Grid to PDF.
@@ -317,6 +327,10 @@ def export_monthly_detailed_pdf(
 
     # fetch users (respect role-based visibility and multi-department filtering)
     user_query = db.query(User).filter(User.is_active.is_(True))
+    if company_id is not None:
+        user_query = user_query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        user_query = user_query.filter(User.branch_id == branch_id)
 
     if current_user is not None:
         from app.enums import RoleEnum
