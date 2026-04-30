@@ -95,3 +95,17 @@ class CompanyBranchOut(BaseModel):
     class Config:
         from_attributes = True
 
+
+class AccessibleBranchOut(BaseModel):
+    """
+    Lightweight branch payload for tenant branch selection (admin multi-branch).
+    """
+
+    branch_id: int
+    company_id: int
+    branch_name: str
+    status: bool
+
+    class Config:
+        from_attributes = True
+

@@ -11,7 +11,12 @@ import logging
 from app.dependencies import get_current_user, require_roles
 from app.enums import RoleEnum
 from app.crud.branch_admin_assignment_crud import list_companies_for_admin
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
+from app.db.models.branch_admin_assignment import BranchAdminAssignment
+from app.db.models.company_admin_assignment import CompanyAdminAssignment
 from app.schemas.company_schema import AccessibleCompanyOut
+from app.schemas.company_branch_schema import AccessibleBranchOut
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +112,73 @@ def list_my_accessible_companies(
     """
     companies = list_companies_for_admin(db=db, admin_user_id=int(current_user.user_id))
     return companies
+
+
+@router.get("/me/companies/{company_slug}/branches")
+def list_my_accessible_branches_for_company(
+    company_slug: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    """
+    For the logged-in ADMIN:
+    - Verify they can access the company identified by `company_slug`
+    - Return whether they have company-level access
+    - Return the list of branches they are assigned to in that company
+
+    Frontend usage: after selecting a company (by slug), call this to decide
+    whether to prompt for `X-Branch-Id` or treat the admin as company-level.
+    """
+    slug_norm = (company_slug or "").strip().lower()
+    if not slug_norm:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="company_slug is required")
+
+    company: Company | None = (
+        db.query(Company)
+        .filter(Company.company_slug == slug_norm, Company.is_deleted == False)  # noqa: E712
+        .first()
+    )
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    admin_user_id = int(current_user.user_id)
+
+    has_company_level_access = (
+        db.query(CompanyAdminAssignment.assignment_id)
+        .filter(
+            CompanyAdminAssignment.admin_user_id == admin_user_id,
+            CompanyAdminAssignment.company_id == int(company.company_id),
+            CompanyAdminAssignment.is_active == True,  # noqa: E712
+        )
+        .first()
+        is not None
+    )
+
+    # Branches assigned to this admin within the selected company
+    branches = (
+        db.query(CompanyBranch)
+        .join(BranchAdminAssignment, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .filter(
+            CompanyBranch.company_id == int(company.company_id),
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            BranchAdminAssignment.admin_user_id == admin_user_id,
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+        )
+        .order_by(CompanyBranch.branch_name.asc())
+        .all()
+    )
+
+    # Access is granted if admin has company-level access OR at least one branch assignment in this company.
+    if not has_company_level_access and not branches:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied for this company")
+
+    return {
+        "company_id": int(company.company_id),
+        "company_slug": company.company_slug,
+        "company_name": company.company_name,
+        "has_company_level_access": bool(has_company_level_access),
+        "branches": [AccessibleBranchOut.model_validate(b).model_dump() for b in branches],
+    }
 
 # Development/Testing endpoints for debugging OTP
 @router.get("/debug/environment", include_in_schema=False)
