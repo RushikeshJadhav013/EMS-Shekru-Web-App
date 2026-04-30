@@ -33,7 +33,7 @@ from app.crud.leave_config_crud import (
     create_leave_config,
     update_leave_config,
 )
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.schemas.leave_schema import (
     LeaveCreate,
     LeaveOut,
@@ -58,6 +58,32 @@ from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(prefix="/leave", tags=["Leave"])
+
+# -------------------------------------------------------------------
+# Tenant scoping helpers (Option A: no DB-level company_id on leaves)
+# -------------------------------------------------------------------
+def _user_scope_filters(scope: dict) -> list:
+    """
+    Build SQLAlchemy filter clauses to restrict queries to the resolved tenant scope.
+    Scope comes from `get_tenant_scope()` and always includes company_id; branch_id may be None.
+    """
+    clauses = [User.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(User.branch_id == branch_id)
+    return clauses
+
+
+def _ensure_leave_in_scope(db: Session, leave_id: int, scope: dict) -> Leave:
+    leave = (
+        db.query(Leave)
+        .join(User, Leave.user_id == User.user_id)
+        .filter(Leave.leave_id == leave_id, *_user_scope_filters(scope))
+        .first()
+    )
+    if not leave:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Leave not found in this company scope")
+    return leave
 
 
 def _normalize_department_value(value: Optional[str]) -> Optional[str]:
@@ -128,7 +154,8 @@ def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optio
 def request_leave(
     leave: LeaveCreate,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     start_dt = datetime.combine(leave.start_date, datetime.min.time())
     end_dt = datetime.combine(leave.end_date, datetime.min.time())
@@ -235,17 +262,20 @@ def approve_leave_request(
     leave_id: int,
     approved: bool = Body(default=True, embed=True),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Load the leave and requester
-    leave = db.query(Leave).filter(Leave.leave_id == leave_id).first()
-    if not leave:
-        raise HTTPException(status_code=404, detail="Leave not found")
+    leave = _ensure_leave_in_scope(db, leave_id, scope)
 
     if leave.status != "Pending":
         raise HTTPException(status_code=400, detail="Only pending leave requests can be approved/rejected")
 
-    requester = db.query(User).filter(User.user_id == leave.user_id).first()
+    requester = (
+        db.query(User)
+        .filter(User.user_id == leave.user_id, *_user_scope_filters(scope))
+        .first()
+    )
     if not requester:
         raise HTTPException(status_code=404, detail="Requesting user not found")
 
@@ -319,7 +349,8 @@ def view_my_leave(
     from_date: Optional[str] = Query(None, description="Custom start date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, description="Custom end date (YYYY-MM-DD)"),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get user's leave history filtered by time period.
@@ -352,16 +383,31 @@ def view_my_leave(
              raise HTTPException(status_code=400, detail="from_date cannot be after to_date")
              
     if period in ["current_month", "last_3_months", "last_6_months", "last_1_year", "custom"]:
-        return list_leave_by_period(db, user.user_id, period, custom_start_date=custom_start, custom_end_date=custom_end)
+        return list_leave_by_period(
+            db,
+            user.user_id,
+            period,
+            custom_start_date=custom_start,
+            custom_end_date=custom_end,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
     else:
         # Default (all) when period omitted, blank, or invalid
-        return list_leave_by_period(db, user.user_id, "all")
+        return list_leave_by_period(
+            db,
+            user.user_id,
+            "all",
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
 
 
 @router.get("/balance", response_model=LeaveBalanceResponse)
 def leave_balance(
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     balances = get_leave_balance(db, user.user_id)
     return {"balances": balances}
@@ -372,7 +418,8 @@ def update_leave_request(
     leave_id: int,
     leave_update: LeaveUpdate,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Get the existing leave to check its type
     existing_leave = db.query(Leave).filter(Leave.leave_id == leave_id, Leave.user_id == user.user_id).first()
@@ -498,7 +545,8 @@ def update_leave_request(
 def delete_leave_request(
     leave_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     result = delete_leave_db(db, leave_id, user.user_id)
     if result is None:
@@ -512,7 +560,8 @@ def delete_leave_request(
 @router.get("/approvals", response_model=list[LeaveHistoryOut])
 def approvals_inbox(
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Pending approvals visibility:
@@ -531,12 +580,16 @@ def approvals_inbox(
         pending = list_pending_by_requester_roles(
             db,
             [RoleEnum.HR.value, RoleEnum.MANAGER.value],
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
         )
     elif role_value == RoleEnum.HR.value:
         # HR sees all pending requests from Managers, Team Leads, and Employees (any department)
         pending = list_pending_by_requester_roles(
             db,
             [RoleEnum.MANAGER.value, RoleEnum.TEAM_LEAD.value, RoleEnum.EMPLOYEE.value],
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
         )
     elif role_value == RoleEnum.MANAGER.value:
         # Managers see Team Lead / Employee requests from their own department(s)
@@ -547,6 +600,8 @@ def approvals_inbox(
         all_pending = list_pending_by_requester_roles(
             db,
             [RoleEnum.TEAM_LEAD.value, RoleEnum.EMPLOYEE.value],
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
         )
         pending = []
         for leave in all_pending:
@@ -565,7 +620,12 @@ def approvals_inbox(
             # Still allow self visibility even if department is missing
             lead_tokens = set()
 
-        all_pending_employees = list_pending_by_requester_roles(db, [RoleEnum.EMPLOYEE.value])
+        all_pending_employees = list_pending_by_requester_roles(
+            db,
+            [RoleEnum.EMPLOYEE.value],
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         pending = []
 
         # Include employee requests in intersecting departments
@@ -618,7 +678,8 @@ def approvals_history(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Return decided (non-pending) leave decisions visible to the current user:
@@ -638,12 +699,17 @@ def approvals_history(
     role_value = getattr(user.role, "value", str(user.role))
 
     # Base query for decided leaves
-    base_query = db.query(Leave).options(joinedload(Leave.user)).filter(Leave.status != "Pending")
+    base_query = (
+        db.query(Leave)
+        .options(joinedload(Leave.user))
+        .join(User, Leave.user_id == User.user_id)
+        .filter(Leave.status != "Pending", *_user_scope_filters(scope))
+    )
 
     if role_value == RoleEnum.ADMIN.value:
         # Admin: all users except Admins and self
         decided = (
-            base_query.join(User, Leave.user_id == User.user_id)
+            base_query
             .filter(User.role != RoleEnum.ADMIN)
             .filter(User.user_id != user.user_id)
             .order_by(Leave.end_date.desc())
@@ -652,7 +718,7 @@ def approvals_history(
     elif role_value == RoleEnum.HR.value:
         # HR: all users except Admins, HRs, and self
         decided = (
-            base_query.join(User, Leave.user_id == User.user_id)
+            base_query
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
             .filter(User.user_id != user.user_id)
             .order_by(Leave.end_date.desc())
@@ -668,7 +734,7 @@ def approvals_history(
 
         # Fetch candidate decided leaves for non-privileged roles, then apply token overlap filter.
         candidates = (
-            base_query.join(User, Leave.user_id == User.user_id)
+            base_query
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
             .filter(User.user_id != user.user_id)
             .order_by(Leave.end_date.desc())
@@ -813,7 +879,8 @@ def approvals_history(
 @router.get("/notifications", response_model=list[LeaveNotificationOut])
 def get_leave_notifications(
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get all leave notifications for the current user."""
     notifications = list_leave_notifications(db, user.user_id)
@@ -824,7 +891,8 @@ def get_leave_notifications(
 def mark_notification_as_read(
     notification_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Mark a leave notification as read."""
     notification = mark_leave_notification_as_read(db, notification_id, user.user_id)

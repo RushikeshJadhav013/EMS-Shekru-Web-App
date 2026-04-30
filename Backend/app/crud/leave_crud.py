@@ -25,6 +25,8 @@ def export_leave_csv(
     end_date: datetime = None,
     department: Optional[str] = None,
     requester: Optional["User"] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ):
     output = io.StringIO()
     writer = csv.writer(output)
@@ -38,7 +40,15 @@ def export_leave_csv(
     headers = ['Leave ID', 'Employee ID', 'Name', 'Department', 'Leave Type', 'Start Date', 'End Date', 'Total Days', 'Status', 'Reason']
     writer.writerow(headers)
 
-    query = db.query(Leave, User.employee_id, User.name, User.department).join(User, Leave.user_id == User.user_id)
+    query = (
+        db.query(Leave, User.employee_id, User.name, User.department)
+        .join(User, Leave.user_id == User.user_id)
+        .filter(User.is_active.is_(True))
+    )
+    if company_id is not None:
+        query = query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        query = query.filter(User.branch_id == branch_id)
     if department:
         # Allow matching users with multiple comma-separated departments by substring match
         dept_token = department.strip().lower()
@@ -88,6 +98,8 @@ def export_leave_pdf(
     department: Optional[str] = None,
     generated_by: Optional[str] = None,
     requester: Optional["User"] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ):
     buffer = io.BytesIO()
         # Use A4 landscape and tighter, consistent margins for managerial reports
@@ -149,7 +161,15 @@ def export_leave_pdf(
     elements.append(Spacer(1, 14))
 
     # Data query
-    query = db.query(Leave, User.employee_id, User.name, User.department).join(User, Leave.user_id == User.user_id)
+    query = (
+        db.query(Leave, User.employee_id, User.name, User.department)
+        .join(User, Leave.user_id == User.user_id)
+        .filter(User.is_active.is_(True))
+    )
+    if company_id is not None:
+        query = query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        query = query.filter(User.branch_id == branch_id)
     if department:
         # Allow matching users with multiple comma-separated departments by substring match
         dept_token = department.strip().lower()
@@ -576,7 +596,9 @@ def list_leave_by_period(
     user_id: int, 
     period: str = "current_month", 
     custom_start_date: Optional[datetime] = None, 
-    custom_end_date: Optional[datetime] = None
+    custom_end_date: Optional[datetime] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> List[Leave]:
     """
     Get leave history for a user filtered by time period.
@@ -584,6 +606,16 @@ def list_leave_by_period(
     period options: "current_month", "last_3_months", "last_6_months", "last_1_year", "custom"
     """
     now = now_ist()
+
+    # If tenant scope is provided, ensure the user belongs to that scope.
+    if company_id is not None or branch_id is not None:
+        uq = db.query(User.user_id).filter(User.user_id == user_id, User.is_active.is_(True))
+        if company_id is not None:
+            uq = uq.filter(User.company_id == company_id)
+        if branch_id is not None:
+            uq = uq.filter(User.branch_id == branch_id)
+        if uq.first() is None:
+            return []
     
     if period == "all":
         return db.query(Leave).filter(Leave.user_id == user_id).order_by(Leave.start_date.desc()).all()
@@ -651,52 +683,99 @@ def list_leave_by_period(
     )
 
 
-def list_pending_all(db: Session):
-    return db.query(Leave).filter(Leave.status == "Pending").all()
-
-
-def list_pending_by_department(db: Session, department: str):
-    return (
+def list_pending_all(db: Session, company_id: int | None = None, branch_id: int | None = None):
+    q = (
         db.query(Leave)
         .join(User, User.user_id == Leave.user_id)
-        .filter(Leave.status == "Pending", User.department == department)
-        .all()
+        .filter(Leave.status == "Pending", User.is_active.is_(True))
     )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
 
 
-def list_pending_by_requester_roles(db: Session, roles: list[str]):
+def list_pending_by_department(db: Session, department: str, company_id: int | None = None, branch_id: int | None = None):
+    q = (
+        db.query(Leave)
+        .join(User, User.user_id == Leave.user_id)
+        .filter(Leave.status == "Pending", User.is_active.is_(True), User.department == department)
+    )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
+
+
+def list_pending_by_requester_roles(
+    db: Session,
+    roles: list[str],
+    company_id: int | None = None,
+    branch_id: int | None = None,
+):
     from sqlalchemy.orm import joinedload
-    return (
+    q = (
         db.query(Leave)
         .options(joinedload(Leave.user))
         .join(User, User.user_id == Leave.user_id)
-        .filter(Leave.status == "Pending", User.role.in_(roles))
-        .all()
+        .filter(Leave.status == "Pending", User.is_active.is_(True), User.role.in_(roles))
     )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
 
 
-def list_pending_by_department_and_roles(db: Session, department: str, roles: list[str]):
+def list_pending_by_department_and_roles(
+    db: Session,
+    department: str,
+    roles: list[str],
+    company_id: int | None = None,
+    branch_id: int | None = None,
+):
     from sqlalchemy.orm import joinedload
-    return (
+    q = (
         db.query(Leave)
         .options(joinedload(Leave.user))
         .join(User, User.user_id == Leave.user_id)
-        .filter(Leave.status == "Pending", User.department == department, User.role.in_(roles))
-        .all()
+        .filter(
+            Leave.status == "Pending",
+            User.is_active.is_(True),
+            User.department == department,
+            User.role.in_(roles),
+        )
     )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
 
 
-def list_decided_by_approver(db: Session, approver_id: int):
+def list_decided_by_approver(
+    db: Session,
+    approver_id: int,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+):
     # Fallback implementation without approver tracking fields.
     # Returns all leaves that have been decided (not Pending) with user details.
     from sqlalchemy.orm import joinedload
-    return (
+    q = (
         db.query(Leave)
         .options(joinedload(Leave.user))
-        .filter(Leave.status != "Pending")
+        .join(User, User.user_id == Leave.user_id)
+        .filter(Leave.status != "Pending", User.is_active.is_(True))
         .order_by(Leave.end_date.desc())
-        .all()
     )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
 
 
 def _get_leave_notification_recipients(db: Session, requester: User) -> List[User]:
