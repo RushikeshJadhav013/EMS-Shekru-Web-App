@@ -46,6 +46,7 @@ from app.crud.company_admin_assignment_crud import (
     assign_admin_to_company,
     deactivate_company_admin_assignment,
 )
+from app.utils.slug import generate_unique_company_slug
 
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
@@ -115,10 +116,13 @@ def create_company_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
     logo_path = _save_company_logo(company_logo, company_name)
+    # Generate a stable URL-safe slug for tenant routing.
+    company_slug = generate_unique_company_slug(db, company_name)
 
     try:
         company = CompanyCreate(
             company_name=company_name,
+            company_slug=company_slug,
             company_email=company_email,
             contact_number=contact_number,
             address=address,

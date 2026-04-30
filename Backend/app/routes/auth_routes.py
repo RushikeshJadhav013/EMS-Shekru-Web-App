@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from app.db.database import SessionLocal, get_db
@@ -8,6 +8,10 @@ from app.services.email_service import send_otp_email, test_email_configuration
 from app.core.security import create_token
 from app.core.config import settings
 import logging
+from app.dependencies import get_current_user, require_roles
+from app.enums import RoleEnum
+from app.crud.branch_admin_assignment_crud import list_companies_for_admin
+from app.schemas.company_schema import AccessibleCompanyOut
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,20 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
         "profile_photo": user.profile_photo,
         "environment": settings.ENVIRONMENT
     }
+
+
+@router.get("/me/companies", response_model=list[AccessibleCompanyOut])
+def list_my_accessible_companies(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    """
+    List companies accessible to the currently authenticated ADMIN user.
+
+    This is intended for frontend tenant selection before navigating to `/{company_slug}/...`.
+    """
+    companies = list_companies_for_admin(db=db, admin_user_id=int(current_user.user_id))
+    return companies
 
 # Development/Testing endpoints for debugging OTP
 @router.get("/debug/environment", include_in_schema=False)

@@ -12,6 +12,7 @@ from typing import Optional
 from app.db.models.branch_admin_assignment import BranchAdminAssignment
 from app.db.models.company_admin_assignment import CompanyAdminAssignment
 from app.db.models.company_branch import CompanyBranch
+from app.crud.company_crud import get_company_by_slug
 
 api_key_header = APIKeyHeader(name="Authorization")
 
@@ -109,6 +110,7 @@ def get_tenant_scope(
     db: Session = Depends(get_db),
     x_branch_id: Optional[int] = Header(default=None, alias="X-Branch-Id"),
     x_company_id: Optional[int] = Header(default=None, alias="X-Company-Id"),
+    company_slug: Optional[str] = None,
 ) -> dict:
     """
     Resolve the effective tenant scope (company_id, optional branch_id) for the current request.
@@ -118,6 +120,18 @@ def get_tenant_scope(
       caller must provide X-Branch-Id or X-Company-Id.
     - Non-admin users: scope is taken from their own user row (company_id/branch_id).
     """
+    effective_company_id: Optional[int] = x_company_id
+
+    # If tenant routing uses /{company_slug}, resolve it to company_id here.
+    if effective_company_id is None and company_slug is not None:
+        resolved_company = get_company_by_slug(db, company_slug)
+        if not resolved_company:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Company not found for provided slug",
+            )
+        effective_company_id = int(resolved_company.company_id)
+
     # Non-admins must already be tied to a company in the users table.
     if getattr(current_user, "role", None) != RoleEnum.ADMIN:
         company_id = getattr(current_user, "company_id", None)
@@ -126,6 +140,11 @@ def get_tenant_scope(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User is not assigned to any company. Contact an administrator.",
+            )
+        if effective_company_id is not None and int(company_id) != effective_company_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to access this company (slug mismatch).",
             )
         return {"company_id": int(company_id), "branch_id": int(branch_id) if branch_id is not None else None}
 
@@ -152,8 +171,8 @@ def get_tenant_scope(
         return {"company_id": int(branch.company_id), "branch_id": int(branch.branch_id)}
 
     # Explicit company scope (company-level)
-    if x_company_id is not None:
-        company_id = int(x_company_id)
+    if effective_company_id is not None:
+        company_id = int(effective_company_id)
         has_company_assignment = (
             db.query(CompanyAdminAssignment.assignment_id)
             .filter(

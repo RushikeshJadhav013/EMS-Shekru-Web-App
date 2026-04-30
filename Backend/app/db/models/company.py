@@ -7,6 +7,8 @@ class Company(Base):
 
     company_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     company_name = Column(String(255), nullable=False)
+    # URL-safe identifier used for tenant routing, e.g. /{company_slug}/tasks
+    company_slug = Column(String(128), nullable=True, unique=True, index=True)
     company_email = Column(String(255), unique=True, index=True, nullable=False)
     contact_number = Column(String(10), nullable=False)
     address = Column(Text, nullable=False)
