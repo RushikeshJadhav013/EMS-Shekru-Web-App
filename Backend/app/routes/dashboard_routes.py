@@ -12,12 +12,24 @@ from app.db.models.task import Task
 from app.db.models.office_timing import OfficeTiming
 from app.db.models.department import Department
 from app.enums import RoleEnum, TaskStatus
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.utils.timezone import now_ist, get_today_bounds_ist
 from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+
+def _user_scope_filters(scope: dict) -> list:
+    """
+    Build SQLAlchemy filter clauses to restrict queries to the resolved tenant scope.
+    Scope comes from `get_tenant_scope()` and always includes company_id; branch_id may be None.
+    """
+    clauses = [User.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(User.branch_id == branch_id)
+    return clauses
 
 
 def _today_bounds():
@@ -28,12 +40,17 @@ def _today_bounds():
 @router.get("/admin")
 def admin_dashboard(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     today_start, today_end = _today_bounds()
 
     # Admin dashboard should not include self or any Admin users.
-    base_user_filter = and_(User.user_id != current_user.user_id, User.role != RoleEnum.ADMIN)
+    base_user_filter = and_(
+        User.user_id != current_user.user_id,
+        User.role != RoleEnum.ADMIN,
+        *_user_scope_filters(scope),
+    )
 
     total_employees = (
         db.query(func.count(User.user_id))
@@ -261,7 +278,8 @@ def admin_dashboard(
 @router.get("/hr")
 def hr_dashboard(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     today_start, today_end = _today_bounds()
 
@@ -269,6 +287,7 @@ def hr_dashboard(
     hr_base_user_filter = and_(
         User.user_id != current_user.user_id,
         User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+        *_user_scope_filters(scope),
     )
 
     total_employees = (
@@ -322,6 +341,8 @@ def hr_dashboard(
         .filter(
             Leave.status == "Pending",
             User.role.in_([RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value])
+            ,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -497,6 +518,7 @@ def hr_dashboard(
 def manager_dashboard(
     current_user: User = Depends(require_roles(RoleEnum.MANAGER)),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     dept_tokens = department_tokens_lower(getattr(current_user, "department", None))
     if not dept_tokens:
@@ -513,7 +535,11 @@ def manager_dashboard(
 
     today_start, today_end = _today_bounds()
 
-    team_members = db.query(User).filter(dept_match, role_filter).count()
+    team_members = (
+        db.query(User)
+        .filter(dept_match, role_filter, *_user_scope_filters(scope))
+        .count()
+    )
     present_today = (
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
@@ -522,6 +548,7 @@ def manager_dashboard(
             role_filter,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -535,6 +562,7 @@ def manager_dashboard(
             Leave.status == "Approved",
             Leave.start_date <= today_end,
             Leave.end_date >= today_start,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -547,6 +575,7 @@ def manager_dashboard(
             dept_match,
             role_filter,
             Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]),
+            *_user_scope_filters(scope),
         )
         .scalar() or 0
     )
@@ -557,6 +586,7 @@ def manager_dashboard(
             dept_match,
             role_filter,
             Task.status == TaskStatus.COMPLETED.value,
+            *_user_scope_filters(scope),
         )
         .scalar() or 0
     )
@@ -568,6 +598,7 @@ def manager_dashboard(
             Leave.status == "Pending",
             User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD]),
             User.is_active.is_(True),
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -581,6 +612,8 @@ def manager_dashboard(
             Task.status != TaskStatus.COMPLETED.value,
             Task.due_date.isnot(None),
             Task.due_date < now_ist()
+            ,
+            *_user_scope_filters(scope),
         )
         .scalar() or 0
     )
@@ -597,6 +630,7 @@ def manager_dashboard(
             role_filter,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
+            *_user_scope_filters(scope),
         )
         .order_by(Attendance.check_in.desc())
         .limit(20)
@@ -664,6 +698,7 @@ def manager_dashboard(
             role_filter,
             Leave.status == "Pending",
             User.is_active.is_(True),
+            *_user_scope_filters(scope),
         )
         .order_by(Leave.start_date.desc())
         .limit(10)
@@ -684,7 +719,7 @@ def manager_dashboard(
     recent_tasks = (
         db.query(Task, User)
         .join(User, User.user_id == Task.assigned_to)
-        .filter(dept_match, role_filter)
+        .filter(dept_match, role_filter, *_user_scope_filters(scope))
         .order_by(Task.due_date.is_(None), Task.due_date.desc())
         .limit(10)
         .all()
@@ -706,7 +741,11 @@ def manager_dashboard(
     activities.sort(key=lambda item: item["time"], reverse=True)
     team_activities = activities[:15]
 
-    team_leads = db.query(User).filter(dept_match, User.role == RoleEnum.TEAM_LEAD).all()
+    team_leads = (
+        db.query(User)
+        .filter(dept_match, User.role == RoleEnum.TEAM_LEAD, *_user_scope_filters(scope))
+        .all()
+    )
     team_performance = []
     for lead in team_leads:
         lead_tasks = (
@@ -752,6 +791,7 @@ def manager_dashboard(
 def team_lead_dashboard(
     current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD)),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Using department as team proxy (supports comma-separated multi-departments)
     if not current_user.department:
@@ -768,7 +808,7 @@ def team_lead_dashboard(
     role_filter = User.role == RoleEnum.EMPLOYEE
     today_start, today_end = _today_bounds()
 
-    team_size = db.query(User).filter(dept_match, role_filter).count()
+    team_size = db.query(User).filter(dept_match, role_filter, *_user_scope_filters(scope)).count()
     present_today = (
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
@@ -777,6 +817,7 @@ def team_lead_dashboard(
             role_filter,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -790,6 +831,7 @@ def team_lead_dashboard(
             Leave.status == "Approved",
             Leave.start_date <= today_end,
             Leave.end_date >= today_start,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -801,6 +843,7 @@ def team_lead_dashboard(
             dept_match,
             role_filter,
             Task.status == TaskStatus.IN_PROGRESS.value,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -812,6 +855,7 @@ def team_lead_dashboard(
             dept_match,
             role_filter,
             Task.status == TaskStatus.COMPLETED.value,
+            *_user_scope_filters(scope),
         )
         .scalar()
         or 0
@@ -828,6 +872,7 @@ def team_lead_dashboard(
             role_filter,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
+            *_user_scope_filters(scope),
         )
         .order_by(Attendance.check_in.desc())
         .limit(20)
@@ -902,6 +947,7 @@ def team_lead_dashboard(
 def employee_dashboard(
     current_user: User = Depends(require_roles(RoleEnum.EMPLOYEE)),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     user_id = current_user.user_id
     if not user_id:
