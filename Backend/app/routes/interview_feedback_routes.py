@@ -9,7 +9,8 @@ from app.db.database import get_db
 from app.db.models.interview import Interview
 from app.db.models.interview_feedback import InterviewFeedback
 from app.db.models.user import User
-from app.dependencies import get_current_user
+from app.db.models.hiring import Vacancy
+from app.dependencies import get_current_user, get_tenant_scope
 from app.enums import RoleEnum
 from app.schemas.interview_feedback_schema import (
     InterviewFeedbackCreate,
@@ -22,6 +23,39 @@ router = APIRouter(
     prefix="/interviews",
     tags=["Interview Feedback Management"],
 )
+
+
+def _interview_in_scope(db: Session, scope: dict, interview_id: int) -> Interview | None:
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(Interview)
+        .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(Interview.interview_id == interview_id, User.company_id == company_id)
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.first()
+
+
+def _feedback_in_scope(db: Session, scope: dict, interview_id: int, feedback_id: int) -> InterviewFeedback | None:
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(InterviewFeedback)
+        .join(Interview, Interview.interview_id == InterviewFeedback.interview_id)
+        .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(
+            InterviewFeedback.id == feedback_id,
+            InterviewFeedback.interview_id == interview_id,
+            User.company_id == company_id,
+        )
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.first()
 
 
 def _user_can_access_feedback(current_user: User, interview: Interview) -> bool:
@@ -55,9 +89,10 @@ def create_interview_feedback(
     feedback_in: InterviewFeedbackCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Submit feedback for an interview (panel member or HR/Admin)."""
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_in_scope(db, scope, interview_id)
     if not interview:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
 
@@ -109,9 +144,10 @@ def list_interview_feedback(
     interview_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get all feedback entries for an interview."""
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_in_scope(db, scope, interview_id)
     if not interview:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
 
@@ -121,12 +157,20 @@ def list_interview_feedback(
             detail="You are not allowed to view feedback for this interview",
         )
 
-    feedback_list = (
+    q = (
         db.query(InterviewFeedback)
-        .filter(InterviewFeedback.interview_id == interview_id)
+        .join(Interview, Interview.interview_id == InterviewFeedback.interview_id)
+        .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(
+            InterviewFeedback.interview_id == interview_id,
+            User.company_id == scope.get("company_id"),
+        )
         .order_by(InterviewFeedback.created_at.asc())
-        .all()
     )
+    if scope.get("branch_id") is not None:
+        q = q.filter(User.branch_id == scope.get("branch_id"))
+    feedback_list = q.all()
 
     # Preload panel member info to avoid repeated queries
     user_ids = {fb.panel_member_id for fb in feedback_list}
@@ -155,20 +199,14 @@ def get_interview_feedback(
     feedback_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get a single feedback entry for an interview."""
-    feedback = (
-        db.query(InterviewFeedback)
-        .filter(
-            InterviewFeedback.id == feedback_id,
-            InterviewFeedback.interview_id == interview_id,
-        )
-        .first()
-    )
+    feedback = _feedback_in_scope(db, scope, interview_id, feedback_id)
     if not feedback:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found")
 
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_in_scope(db, scope, interview_id)
     if not interview:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
 
@@ -194,16 +232,10 @@ def update_interview_feedback(
     feedback_in: InterviewFeedbackUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Update an existing feedback entry."""
-    feedback = (
-        db.query(InterviewFeedback)
-        .filter(
-            InterviewFeedback.id == feedback_id,
-            InterviewFeedback.interview_id == interview_id,
-        )
-        .first()
-    )
+    feedback = _feedback_in_scope(db, scope, interview_id, feedback_id)
     if not feedback:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found")
 
@@ -235,16 +267,10 @@ def delete_interview_feedback(
     feedback_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Delete a feedback entry."""
-    feedback = (
-        db.query(InterviewFeedback)
-        .filter(
-            InterviewFeedback.id == feedback_id,
-            InterviewFeedback.interview_id == interview_id,
-        )
-        .first()
-    )
+    feedback = _feedback_in_scope(db, scope, interview_id, feedback_id)
     if not feedback:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found")
 
