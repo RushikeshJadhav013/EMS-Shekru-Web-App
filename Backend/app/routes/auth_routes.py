@@ -100,6 +100,53 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/me")
+def get_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the currently authenticated user's profile plus tenant context.
+
+    Frontend usage (Option 1):
+    - call this after login
+    - use `company_slug` to build `/{company_slug}/...` API paths
+    """
+    company_slug = None
+    company_name = None
+    if getattr(current_user, "company_id", None) is not None:
+        company = (
+            db.query(Company)
+            .filter(
+                Company.company_id == int(current_user.company_id),
+                Company.is_deleted == False,  # noqa: E712
+            )
+            .first()
+        )
+        if company:
+            company_slug = company.company_slug
+            company_name = company.company_name
+
+    role_value = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+
+    return {
+        "user_id": int(current_user.user_id),
+        "employee_id": current_user.employee_id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "role": role_value,
+        "department": current_user.department,
+        "designation": current_user.designation,
+        "joining_date": current_user.joining_date.isoformat() if current_user.joining_date else None,
+        "profile_photo": current_user.profile_photo,
+        "is_active": bool(current_user.is_active),
+        "company_id": int(current_user.company_id) if current_user.company_id is not None else None,
+        "branch_id": int(current_user.branch_id) if current_user.branch_id is not None else None,
+        "company_slug": company_slug,
+        "company_name": company_name,
+    }
+
+
 @router.get("/me/companies", response_model=list[AccessibleCompanyOut])
 def list_my_accessible_companies(
     db: Session = Depends(get_db),
