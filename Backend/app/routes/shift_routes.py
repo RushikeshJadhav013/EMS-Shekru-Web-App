@@ -23,7 +23,7 @@ from app.crud.shift_crud import (
     get_shift_notifications,
     mark_notification_as_read,
 )
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.schemas.shift_schema import (
     ShiftCreate,
     ShiftUpdate,
@@ -44,12 +44,32 @@ from app.enums import RoleEnum
 router = APIRouter(prefix="/shift", tags=["Shift Management"])
 
 
+def _user_scope_filters(scope: dict):
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    filters = [User.company_id == company_id]
+    if branch_id is not None:
+        filters.append(User.branch_id == branch_id)
+    return filters
+
+
+def _tenant_departments(db: Session, scope: dict) -> list[str]:
+    rows = (
+        db.query(User.department)
+        .filter(*_user_scope_filters(scope), User.is_active.is_(True), User.department.isnot(None))
+        .distinct()
+        .all()
+    )
+    return [r[0] for r in rows if r and r[0]]
+
+
 # Shift CRUD Operations (Manager only)
 @router.post("/", response_model=ShiftOut)
 def create_new_shift(
     shift: ShiftCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Create a new shift (Manager/Admin only)"""
     try:
@@ -63,6 +83,10 @@ def create_new_shift(
         department = shift.department
         if current_user.role == RoleEnum.MANAGER:
             department = current_user.department
+        else:
+            # Admin: do not allow creating shifts for departments outside tenant
+            if department and department not in set(_tenant_departments(db, scope)):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in tenant scope")
         
         new_shift = create_shift(
             db,
@@ -96,12 +120,15 @@ def create_new_shift(
 def list_shifts(
     department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get shifts for a department or all shifts (Admin)"""
     if current_user.role == RoleEnum.ADMIN:
-        # Admin can see all shifts
-        shifts = get_shifts_by_department(db, department)
+        # Admin can see shifts only for departments that exist within this tenant (plus global shifts)
+        if department and department not in set(_tenant_departments(db, scope)):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in tenant scope")
+        shifts = get_shifts_by_department(db, department, allowed_departments=_tenant_departments(db, scope))
     elif current_user.role == RoleEnum.MANAGER:
         # Manager can only see shifts for their department
         if not current_user.department:
@@ -122,11 +149,17 @@ def list_shifts(
 @router.get("/notifications")
 def get_my_shift_notifications(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get current user's shift notifications"""
     try:
-        notifications = get_shift_notifications(db, current_user.user_id)
+        notifications = get_shift_notifications(
+            db,
+            current_user.user_id,
+            company_id=scope.get("company_id"),
+            branch_id=scope.get("branch_id"),
+        )
         # Convert to plain dictionaries to avoid Pydantic validation issues
         result = []
         for notification in notifications:
@@ -172,13 +205,19 @@ def get_my_shift_notifications(
 def get_shift_by_id(
     shift_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get a specific shift by ID"""
     shift = get_shift(db, shift_id)
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
+    # Option A tenant check: shifts are department templates; only allow if shift.department is global
+    # or belongs to a department that exists within this tenant.
+    if shift.department and shift.department not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Check access permissions
     if current_user.role == RoleEnum.MANAGER:
         if shift.department and shift.department != current_user.department:
@@ -192,13 +231,17 @@ def update_shift_by_id(
     shift_id: int,
     shift_update: ShiftUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Update a shift (Manager/Admin only)"""
     shift = get_shift(db, shift_id)
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
+    if shift.department and shift.department not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Check access permissions
     if current_user.role == RoleEnum.MANAGER:
         if shift.department != current_user.department:
@@ -224,13 +267,17 @@ def update_shift_by_id(
 def delete_shift_by_id(
     shift_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Delete a shift (soft delete) (Manager/Admin only)"""
     shift = get_shift(db, shift_id)
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
+    if shift.department and shift.department not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Check access permissions
     if current_user.role == RoleEnum.MANAGER:
         if shift.department != current_user.department:
@@ -248,7 +295,8 @@ def delete_shift_by_id(
 def assign_user_to_shift(
     assignment: ShiftAssignmentCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Assign a user to a shift (Manager/Admin only)"""
     # Verify shift exists
@@ -257,9 +305,12 @@ def assign_user_to_shift(
         raise HTTPException(status_code=404, detail="Shift not found")
     
     # Verify user exists
-    user = db.query(User).filter(User.user_id == assignment.user_id).first()
+    user = db.query(User).filter(User.user_id == assignment.user_id, *_user_scope_filters(scope)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if shift.department and shift.department not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Access denied")
     
     # Check permissions
     if current_user.role == RoleEnum.MANAGER:
@@ -307,7 +358,8 @@ def assign_user_to_shift(
 def bulk_assign_users_to_shift(
     assignment: ShiftAssignmentBulkCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Bulk assign multiple users to a shift (Manager/Admin only)"""
     # Verify shift exists
@@ -315,6 +367,9 @@ def bulk_assign_users_to_shift(
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
+    if shift.department and shift.department not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Check permissions
     if current_user.role == RoleEnum.MANAGER:
         if not current_user.department:
@@ -323,13 +378,22 @@ def bulk_assign_users_to_shift(
             raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
         
         # Verify all users belong to manager's department
-        users = db.query(User).filter(User.user_id.in_(assignment.user_ids)).all()
+        users = db.query(User).filter(User.user_id.in_(assignment.user_ids), *_user_scope_filters(scope)).all()
         for user in users:
             if user.department != current_user.department:
                 raise HTTPException(
                     status_code=403,
                     detail=f"Can only assign shifts to users in your department. User {user.name} is in {user.department}"
                 )
+    else:
+        # Admin: ensure all target users are within tenant scope
+        tenant_user_ids = {
+            int(u[0])
+            for u in db.query(User.user_id).filter(User.user_id.in_(assignment.user_ids), *_user_scope_filters(scope)).all()
+        }
+        missing = [uid for uid in assignment.user_ids if int(uid) not in tenant_user_ids]
+        if missing:
+            raise HTTPException(status_code=403, detail="One or more users are outside tenant scope")
     
     # Create assignments
     assignments = bulk_assign_shift(
@@ -370,7 +434,8 @@ def get_department_schedule(
     schedule_date: date = Query(..., description="Date for the schedule"),
     department: Optional[str] = Query(None, description="Department name (optional, uses manager's department if not provided)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get shift schedule for a department on a specific date"""
     # Determine department
@@ -386,8 +451,17 @@ def get_department_schedule(
         if not current_user.department:
             raise HTTPException(status_code=403, detail="User must belong to a department")
         dept = current_user.department
+
+    if dept not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Department not in tenant scope")
     
-    schedule = get_department_shift_schedule(db, dept, schedule_date)
+    schedule = get_department_shift_schedule(
+        db,
+        dept,
+        schedule_date,
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+    )
     
     # Convert to response model
     from app.schemas.shift_schema import ShiftScheduleView
@@ -415,7 +489,8 @@ def get_department_schedule_week(
     end_date: Optional[date] = Query(None, description="End date for the weekly schedule (defaults to 6 days after start)"),
     department: Optional[str] = Query(None, description="Department name (Admin only; managers use their own department)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get weekly shift schedule for a department"""
     if not end_date:
@@ -440,9 +515,19 @@ def get_department_schedule_week(
         if not current_user.department:
             raise HTTPException(status_code=403, detail="User must belong to a department")
         dept = current_user.department
+
+    if dept not in set(_tenant_departments(db, scope)):
+        raise HTTPException(status_code=403, detail="Department not in tenant scope")
     
     try:
-        schedule = get_department_shift_schedule_range(db, dept, start_date, end_date)
+        schedule = get_department_shift_schedule_range(
+            db,
+            dept,
+            start_date,
+            end_date,
+            company_id=scope.get("company_id"),
+            branch_id=scope.get("branch_id"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     
@@ -479,7 +564,8 @@ def get_my_shift_schedule(
     start_date: Optional[date] = Query(None, description="Start date (default: today)"),
     end_date: Optional[date] = Query(None, description="End date (default: 30 days from start)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get current user's shift schedule"""
     if not start_date:
@@ -506,7 +592,8 @@ def update_shift_assignment_by_id(
     assignment_id: int,
     assignment_update: ShiftAssignmentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Update a shift assignment (Manager/Admin only)"""
     assignment = get_shift_assignment(db, assignment_id)
@@ -515,8 +602,17 @@ def update_shift_assignment_by_id(
     
     # Check permissions
     if current_user.role == RoleEnum.MANAGER:
-        user = db.query(User).filter(User.user_id == assignment.user_id).first()
+        user = db.query(User).filter(User.user_id == assignment.user_id, *_user_scope_filters(scope)).first()
         if not user or user.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        # Admin: ensure assignment user is within tenant scope
+        in_scope = (
+            db.query(User.user_id)
+            .filter(User.user_id == assignment.user_id, *_user_scope_filters(scope))
+            .first()
+        )
+        if not in_scope:
             raise HTTPException(status_code=403, detail="Access denied")
     
     updated_assignment = update_shift_assignment(
@@ -553,7 +649,8 @@ def update_shift_assignment_by_id(
 def delete_shift_assignment_by_id(
     assignment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Delete a shift assignment (Manager/Admin only)"""
     # Validate assignment_id
@@ -569,11 +666,19 @@ def delete_shift_assignment_by_id(
     
     # Check permissions
     if current_user.role == RoleEnum.MANAGER:
-        user = db.query(User).filter(User.user_id == assignment.user_id).first()
+        user = db.query(User).filter(User.user_id == assignment.user_id, *_user_scope_filters(scope)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found for this assignment")
         if user.department != current_user.department:
             raise HTTPException(status_code=403, detail="Access denied: Can only delete assignments for users in your department")
+    else:
+        in_scope = (
+            db.query(User.user_id)
+            .filter(User.user_id == assignment.user_id, *_user_scope_filters(scope))
+            .first()
+        )
+        if not in_scope:
+            raise HTTPException(status_code=403, detail="Access denied")
     
     # Delete the assignment
     try:
@@ -593,10 +698,17 @@ def delete_shift_assignment_by_id(
 def mark_shift_notification_as_read(
     notification_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Mark a shift notification as read"""
-    success = mark_notification_as_read(db, notification_id, current_user.user_id)
+    success = mark_notification_as_read(
+        db,
+        notification_id,
+        current_user.user_id,
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Notification not found")
     return None
