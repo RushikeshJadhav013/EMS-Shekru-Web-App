@@ -24,7 +24,7 @@ from app.db.models.user import User
 from app.db.models.attendance import Attendance
 from app.db.models.task import Task, TaskHistory
 from app.db.models.leave import Leave
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum, TaskStatus, TaskAction
 from app.config.company_config import (
     COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
@@ -32,6 +32,25 @@ from app.config.company_config import (
 from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _scoped_user_query(db: Session, scope: dict):
+    return db.query(User).filter(User.is_active.is_(True), *_user_scope_filters(scope))
+
+
+def _scoped_user_lookup(db: Session, scope: dict, user_id: int) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
 
 
 @router.get("/leave")
@@ -42,6 +61,7 @@ def export_leave_report(
     department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export Leave Report in CSV or PDF format.
@@ -83,6 +103,8 @@ def export_leave_report(
                 end_date=end_dt,
                 department=department,
                 requester=current_user,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
             )
             filename = "leave_report.csv"
             return StreamingResponse(
@@ -98,6 +120,8 @@ def export_leave_report(
                 department=department,
                 generated_by=current_user.name,
                 requester=current_user,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
             )
             filename = f"leave_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             return StreamingResponse(
@@ -127,6 +151,7 @@ def get_employee_performance(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get employee performance metrics for a specific month/year.
@@ -166,7 +191,7 @@ def get_employee_performance(
     
     try:
         # Base query for active employees, filtered by viewer role
-        query = db.query(User).filter(User.is_active == True)
+        query = _scoped_user_query(db, scope)
 
         # Employment-window filter:
         # - Exclude users who joined after the selected period ends
@@ -192,7 +217,9 @@ def get_employee_performance(
         
         # Apply filters
         if department and department != 'all':
-            query = query.filter(User.department == department)
+            dept_token = department.strip().lower()
+            query = query.filter(User.department.isnot(None))
+            query = query.filter(func.lower(User.department).like(f"%{dept_token}%"))
         
         if employee_id:
             query = query.filter(User.employee_id == employee_id)
@@ -284,6 +311,7 @@ def get_department_metrics(
     year: int = Query(..., description="Year"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get department-wise performance metrics.
@@ -339,6 +367,7 @@ def get_department_metrics(
         or_(User.joining_date.is_(None), User.joining_date < end_date),
         # Not resigned before the period starts
         or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
+        *_user_scope_filters(scope),
     )
 
     # Admin viewer: cannot see any Admin users or self
@@ -429,6 +458,7 @@ def get_executive_summary(
     year: int = Query(..., description="Year"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get executive summary with top 5 performers and comprehensive metrics.
@@ -470,6 +500,7 @@ def get_executive_summary(
         or_(User.joining_date.is_(None), User.joining_date < end_date),
         # Not resigned before the period starts
         or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
+        *_user_scope_filters(scope),
     )
 
     # Admin viewer: cannot see any Admin users or self
@@ -592,9 +623,13 @@ def get_executive_summary(
     avg_performance = round(total_performance / len(employee_scores)) if employee_scores else 0
     
     # Total tasks completed
-    total_tasks_completed = db.query(Task).filter(
-        Task.status == TaskStatus.COMPLETED.value
-    ).count()
+    # Option A: tasks have no company_id; scope by joining assignee user
+    total_tasks_completed = (
+        db.query(Task)
+        .join(User, Task.assigned_to == User.user_id)
+        .filter(Task.status == TaskStatus.COMPLETED.value, User.is_active.is_(True), *_user_scope_filters(scope))
+        .count()
+    )
     
     # Find best department
     dept_scores = {}
@@ -646,6 +681,7 @@ def get_executive_summary(
 def get_departments_list(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get list of all departments with active employees"""
 
@@ -657,11 +693,16 @@ def get_departments_list(
         )
 
     # Support multiple departments stored as comma-separated values
-    raw_departments = db.query(User.department).filter(
-        User.is_active == True,
-        User.department.isnot(None),
-        User.department != ''
-    ).all()
+    raw_departments = (
+        db.query(User.department)
+        .filter(
+            User.is_active == True,
+            User.department.isnot(None),
+            User.department != '',
+            *_user_scope_filters(scope),
+        )
+        .all()
+    )
 
     dept_set = set()
     for (dept_str,) in raw_departments:
@@ -685,6 +726,7 @@ async def export_performance_report(
     employee_id: Optional[str] = Query(None, description="Specific employee ID (optional)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export comprehensive performance report in CSV or PDF format.
@@ -715,6 +757,8 @@ async def export_performance_report(
         # - joined on/before period end, and
         # - not resigned before period start.
         query = db.query(User).filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(scope),
             or_(User.joining_date.is_(None), User.joining_date <= end),
             or_(User.resignation_date.is_(None), User.resignation_date >= start),
         )
@@ -1182,6 +1226,7 @@ async def export_task_management_report(
     status: Optional[str] = Query(None, description="Filter by task status"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export Task Management Report in PDF format.
@@ -1278,9 +1323,24 @@ async def export_task_management_report(
         # -----------------------------
         # Scope to tasks directly related to current user only
         # -----------------------------
+        # Ensure current user is in the selected tenant scope
+        if _scoped_user_lookup(db, scope, int(current_user.user_id)) is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Current user is outside selected tenant scope",
+            )
+
+        # Option A: tasks have no company_id; scope by joining creator/assignee users in scope
+        from sqlalchemy.orm import aliased
+
+        creator = aliased(User)
+        assignee = aliased(User)
         query = (
             db.query(Task)
             .outerjoin(TaskHistory, TaskHistory.task_id == Task.task_id)
+            .outerjoin(creator, Task.assigned_by == creator.user_id)
+            .outerjoin(assignee, Task.assigned_to == assignee.user_id)
+            .filter(*_user_scope_filters(scope, creator), *_user_scope_filters(scope, assignee))
             .filter(
                 or_(
                     Task.assigned_to == current_user.user_id,
@@ -1327,7 +1387,8 @@ async def export_task_management_report(
             department=report_department,
             generated_by=current_user.name,
             period_label=period_label,
-            db=db
+            db=db,
+            scope=scope,
         )
     
     except ValueError as e:
@@ -1344,7 +1405,7 @@ async def export_task_management_report(
         )
 
 
-def generate_task_management_pdf(tasks, department, generated_by, period_label, db):
+def generate_task_management_pdf(tasks, department, generated_by, period_label, db, scope: dict):
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -1414,9 +1475,12 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
     ]
     all_rows = []
     for task in tasks:
-        assigned_by = db.query(User).filter(User.user_id == task.assigned_by).first().name if task.assigned_by else "N/A"
-        assigned_to = db.query(User).filter(User.user_id == task.assigned_to).first().name if task.assigned_to else "N/A"
-        last_passed_to = db.query(User).filter(User.user_id == task.last_passed_to).first().name if task.last_passed_to else "N/A"
+        assigned_by_user = _scoped_user_lookup(db, scope, int(task.assigned_by)) if task.assigned_by else None
+        assigned_to_user = _scoped_user_lookup(db, scope, int(task.assigned_to)) if task.assigned_to else None
+        last_passed_to_user = _scoped_user_lookup(db, scope, int(task.last_passed_to)) if task.last_passed_to else None
+        assigned_by = assigned_by_user.name if assigned_by_user else "N/A"
+        assigned_to = assigned_to_user.name if assigned_to_user else "N/A"
+        last_passed_to = last_passed_to_user.name if last_passed_to_user else "N/A"
         completed_by = "N/A"
         created_date = task.created_at.strftime('%Y-%m-%d') if task.created_at else ""
         modified_date = task.last_passed_at.strftime('%Y-%m-%d') if task.last_passed_at else created_date
