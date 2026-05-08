@@ -2,6 +2,7 @@ from typing import List, Optional
 from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -10,7 +11,7 @@ from app.db.models.task import Task
 from app.db.models.project_member import ProjectMember
 from app.db.models.notification import ProjectNotification
 from app.db.models.user import User
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.schemas.project_schema import (
     ProjectCreate,
@@ -27,6 +28,50 @@ router = APIRouter(
     prefix="/projects",
     tags=["Projects"],
 )
+
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin tenant access is assignment-based and validated by get_tenant_scope.
+        return
+    current = (
+        db.query(User.user_id)
+        .filter(
+            User.user_id == current_user.user_id,
+            User.is_active.is_(True),
+            *_user_scope_filters(scope),
+        )
+        .first()
+    )
+    if not current:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current user is outside selected tenant scope",
+        )
+
+
+def _get_user_in_scope(db: Session, user_id: int, scope: dict) -> Optional[User]:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+
+
+def _project_in_scope_clause(scope: dict):
+    clauses = [Project.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(Project.branch_id == branch_id)
+    return clauses
 
 
 def _validate_project_dates(start_date: Optional[date], end_date: Optional[date]) -> None:
@@ -53,14 +98,25 @@ def _validate_project_dates(start_date: Optional[date], end_date: Optional[date]
         )
 
 
-def _ensure_project_exists(db: Session, project_id: int) -> Project:
-    project = db.query(Project).filter(Project.project_id == project_id).first()
+def _ensure_project_exists(db: Session, project_id: int, *, scope: dict) -> Project:
+    project = (
+        db.query(Project)
+        .filter(Project.project_id == project_id)
+        .filter(*_project_in_scope_clause(scope))
+        .first()
+    )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
 
 
-def _active_project_members(db: Session, project_id: int, *, exclude_user_id: int | None = None) -> list[User]:
+def _active_project_members(
+    db: Session,
+    project_id: int,
+    *,
+    scope: dict,
+    exclude_user_id: int | None = None,
+) -> list[User]:
     query = (
         db.query(User)
         .join(ProjectMember, ProjectMember.user_id == User.user_id)
@@ -68,6 +124,7 @@ def _active_project_members(db: Session, project_id: int, *, exclude_user_id: in
             ProjectMember.project_id == project_id,
             ProjectMember.is_active.is_(True),
             User.is_active.is_(True),
+            *_user_scope_filters(scope),
         )
     )
     if exclude_user_id is not None:
@@ -111,8 +168,9 @@ def _notify_project_members(
     notification_type: str,
     title: str,
     message: str,
+    scope: dict,
 ) -> list[ProjectNotification]:
-    recipients = _active_project_members(db, project.project_id, exclude_user_id=actor.user_id)
+    recipients = _active_project_members(db, project.project_id, scope=scope, exclude_user_id=actor.user_id)
     return _create_project_notifications(
         db,
         recipients=recipients,
@@ -123,10 +181,17 @@ def _notify_project_members(
     )
 
 
-def _list_project_notifications(db: Session, user_id: int) -> list[ProjectNotification]:
+def _list_project_notifications(db: Session, user_id: int, *, scope: dict) -> list[ProjectNotification]:
     return (
         db.query(ProjectNotification)
-        .filter(ProjectNotification.user_id == user_id)
+        .outerjoin(Project, Project.project_id == ProjectNotification.project_id)
+        .filter(
+            ProjectNotification.user_id == user_id,
+            or_(
+                ProjectNotification.project_id.is_(None),
+                and_(Project.project_id.isnot(None), *_project_in_scope_clause(scope)),
+            ),
+        )
         .order_by(ProjectNotification.created_at.desc())
         .all()
     )
@@ -137,12 +202,18 @@ def _mark_project_notification_as_read(
     *,
     notification_id: int,
     user_id: int,
+    scope: dict,
 ) -> ProjectNotification | None:
     notification = (
         db.query(ProjectNotification)
+        .outerjoin(Project, Project.project_id == ProjectNotification.project_id)
         .filter(
             ProjectNotification.notification_id == notification_id,
             ProjectNotification.user_id == user_id,
+            or_(
+                ProjectNotification.project_id.is_(None),
+                and_(Project.project_id.isnot(None), *_project_in_scope_clause(scope)),
+            ),
         )
         .first()
     )
@@ -165,12 +236,14 @@ def create_project(
     payload: ProjectCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Create a new project.
 
     Person in charge (PIC) is always Admin/HR (current user).
     """
+    _assert_current_in_scope(db, current_user, scope)
     _validate_project_dates(payload.start_date, payload.end_date)
 
     # Managers must have at least one valid department token (supports comma-separated departments)
@@ -183,6 +256,8 @@ def create_project(
             )
 
     project = Project(
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
         name=payload.name,
         description=payload.description,
         start_date=payload.start_date,
@@ -240,6 +315,7 @@ def list_projects(
     status_filter: Optional[str] = Query(None, description="Filter by project status"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     List projects visible to the current user.
@@ -247,9 +323,10 @@ def list_projects(
     - Admin/HR: see all projects (with optional status filter).
     - Manager/TeamLead/Employee: see only projects where they are active members.
     """
+    _assert_current_in_scope(db, current_user, scope)
     # Admin/HR can see all projects
     if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
-        query = db.query(Project)
+        query = db.query(Project).filter(*_project_in_scope_clause(scope))
     else:
         # Other roles can see only projects where they are active members
         query = (
@@ -262,6 +339,7 @@ def list_projects(
                 ProjectMember.user_id == current_user.user_id,
                 ProjectMember.is_active.is_(True),
             )
+            .filter(*_project_in_scope_clause(scope))
             .distinct()
         )
 
@@ -308,8 +386,10 @@ def list_projects(
 def get_project_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    return _list_project_notifications(db, current_user.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    return _list_project_notifications(db, current_user.user_id, scope=scope)
 
 
 @router.put("/notifications/{notification_id}/read", response_model=ProjectNotificationOut)
@@ -317,11 +397,14 @@ def mark_project_notification_as_read(
     notification_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _assert_current_in_scope(db, current_user, scope)
     notification = _mark_project_notification_as_read(
         db,
         notification_id=notification_id,
         user_id=current_user.user_id,
+        scope=scope,
     )
     if not notification:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
@@ -336,6 +419,7 @@ def get_project(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get a specific project by ID.
@@ -343,9 +427,10 @@ def get_project(
     - Admin/HR: can access any project.
     - Manager/TeamLead/Employee: can access only projects where they are active members.
     """
+    _assert_current_in_scope(db, current_user, scope)
     if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
         # Admin/HR can access any project
-        project = _ensure_project_exists(db, project_id)
+        project = _ensure_project_exists(db, project_id, scope=scope)
     else:
         # Other roles can access only projects where they are active members
         project = (
@@ -359,6 +444,7 @@ def get_project(
                 ProjectMember.user_id == current_user.user_id,
                 ProjectMember.is_active.is_(True),
             )
+            .filter(*_project_in_scope_clause(scope))
             .first()
         )
         if not project:
@@ -404,6 +490,7 @@ def update_project(
     payload: ProjectUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Update a project.
@@ -412,7 +499,8 @@ def update_project(
     - Manager: can update only projects where they are active members and
       have at least one department assigned (supports comma-separated departments).
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
 
     # Managers: enforce department configuration + project ownership
     if current_user.role == RoleEnum.MANAGER:
@@ -463,6 +551,7 @@ def update_project(
         notification_type="Project Updated",
         title="Project Updated",
         message=f"{current_user.name} updated project '{project.name}'.",
+        scope=scope,
     )
 
     member_count = (
@@ -505,13 +594,15 @@ def update_project_status(
     payload: ProjectStatusUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Activate/deactivate a project (is_active flag).
 
     Only Admin/HR can toggle project active status.
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
 
     project.is_active = payload.is_active
     db.commit()
@@ -524,6 +615,7 @@ def update_project_status(
         notification_type="Project Status Changed",
         title="Project Status Changed",
         message=f"{current_user.name} {action} project '{project.name}'.",
+        scope=scope,
     )
 
     member_count = (
@@ -565,16 +657,23 @@ def delete_project(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Delete a project.
 
     Only Admin/HR can delete projects.
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
     _create_project_notifications(
         db,
-        recipients=_active_project_members(db, project.project_id, exclude_user_id=current_user.user_id),
+        recipients=_active_project_members(
+            db,
+            project.project_id,
+            scope=scope,
+            exclude_user_id=current_user.user_id,
+        ),
         project_id=None,
         notification_type="Project Deleted",
         title="Project Deleted",
@@ -598,6 +697,7 @@ def add_project_member(
     payload: ProjectMemberAdd,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Add a member to a project.
@@ -606,9 +706,13 @@ def add_project_member(
     - Manager: can manage members only for their own projects and must have
       at least one department assigned (supports comma-separated departments).
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
 
-    user = db.query(User).filter(User.user_id == payload.user_id, User.is_active.is_(True)).first()
+    user = _get_user_in_scope(db, payload.user_id, scope)
+    if not user and current_user.role == RoleEnum.ADMIN and payload.user_id == current_user.user_id:
+        # Admin access is assignment-based; allow adding self in selected tenant.
+        user = current_user
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
 
@@ -699,6 +803,7 @@ def list_project_members(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     List active members for a project.
@@ -706,7 +811,8 @@ def list_project_members(
     - Admin/HR: can list members of any project.
     - Manager/TeamLead/Employee: can list members only for projects where they are active members.
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
 
     # Non-Admin/HR roles (Manager, Team Lead, Employee) must be active members of the project
     if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
@@ -728,7 +834,11 @@ def list_project_members(
     members = (
         db.query(ProjectMember, User)
         .join(User, ProjectMember.user_id == User.user_id)
-        .filter(ProjectMember.project_id == project_id, ProjectMember.is_active.is_(True))
+        .filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.is_active.is_(True),
+            *_user_scope_filters(scope),
+        )
         .order_by(User.name.asc())
         .all()
     )
@@ -762,6 +872,7 @@ def add_project_members_bulk(
     payload: ProjectMembersBulkAdd,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Bulk add members to a project.
@@ -770,7 +881,8 @@ def add_project_members_bulk(
     - Creates new members where needed.
     - Single role applied to all provided user IDs.
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
 
     # Managers: enforce department configuration + project ownership
     if current_user.role == RoleEnum.MANAGER:
@@ -802,10 +914,12 @@ def add_project_members_bulk(
     # Load users and validate they exist and are active
     users = (
         db.query(User)
-        .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
+        .filter(User.user_id.in_(user_ids), User.is_active.is_(True), *_user_scope_filters(scope))
         .all()
     )
     found_ids = {u.user_id for u in users}
+    if current_user.role == RoleEnum.ADMIN and current_user.user_id in user_ids:
+        found_ids.add(current_user.user_id)
     missing = [uid for uid in user_ids if uid not in found_ids]
     if missing:
         raise HTTPException(
@@ -888,6 +1002,7 @@ def remove_project_member(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Remove (deactivate) a project member.
@@ -897,7 +1012,8 @@ def remove_project_member(
       at least one department assigned (supports comma-separated departments) and
       only for users in their own department(s).
     """
-    project = _ensure_project_exists(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    project = _ensure_project_exists(db, project_id, scope=scope)
 
     # Managers: enforce department configuration + project ownership
     if current_user.role == RoleEnum.MANAGER:
@@ -933,7 +1049,7 @@ def remove_project_member(
 
     # Managers can remove only users from their own department(s)
     if current_user.role == RoleEnum.MANAGER:
-        user = db.query(User).filter(User.user_id == user_id, User.is_active.is_(True)).first()
+        user = _get_user_in_scope(db, user_id, scope)
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
 
@@ -951,7 +1067,7 @@ def remove_project_member(
             detail="Cannot remove the PIC from the project. Change PIC or archive project instead.",
         )
 
-    removed_user = db.query(User).filter(User.user_id == user_id).first()
+    removed_user = _get_user_in_scope(db, user_id, scope)
     if removed_user:
         _create_project_notifications(
             db,

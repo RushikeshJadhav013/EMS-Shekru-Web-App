@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -9,7 +10,7 @@ from app.db.models.meeting import Meeting, MeetingParticipant
 from app.db.models.project import Project
 from app.db.models.project_member import ProjectMember
 from app.db.models.user import User
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_tenant_scope
 from app.enums import RoleEnum
 from app.utils.timezone import now_ist
 from app.schemas.meeting_schema import (
@@ -25,6 +26,38 @@ router = APIRouter(
     prefix="/projects/{project_id}/meetings",
     tags=["Project Meetings"],
 )
+
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin tenant access is assignment-based and validated by get_tenant_scope.
+        return
+    current = (
+        db.query(User.user_id)
+        .filter(User.user_id == current_user.user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+    if not current:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current user is outside selected tenant scope",
+        )
+
+
+def _project_in_scope_clause(scope: dict):
+    clauses = [Project.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(Project.branch_id == branch_id)
+    return clauses
 
 def _normalize_for_compare(dt: datetime | None) -> datetime | None:
     if dt is None:
@@ -59,8 +92,13 @@ def _validate_meeting_times(start_time, end_time) -> None:
         )
 
 
-def _get_project_or_404(db: Session, project_id: int) -> Project:
-    project = db.query(Project).filter(Project.project_id == project_id).first()
+def _get_project_or_404(db: Session, project_id: int, *, scope: dict) -> Project:
+    project = (
+        db.query(Project)
+        .filter(Project.project_id == project_id)
+        .filter(*_project_in_scope_clause(scope))
+        .first()
+    )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
@@ -186,13 +224,15 @@ def create_project_meeting(
     payload: MeetingCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Create a meeting linked to a project.
 
     If `participant_ids` is empty, it defaults to all active project members (+ creator).
     """
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
     _ensure_project_access(db, project_id, current_user)
 
     _validate_meeting_times(payload.start_time, payload.end_time)
@@ -226,10 +266,12 @@ def create_project_meeting(
     if participant_ids:
         users = (
             db.query(User)
-            .filter(User.user_id.in_(participant_ids), User.is_active.is_(True))
+            .filter(User.user_id.in_(participant_ids), User.is_active.is_(True), *_user_scope_filters(scope))
             .all()
         )
         found_ids = {u.user_id for u in users}
+        if current_user.role == RoleEnum.ADMIN and current_user.user_id in participant_ids:
+            found_ids.add(current_user.user_id)
         missing = [uid for uid in participant_ids if uid not in found_ids]
         if missing:
             raise HTTPException(
@@ -261,8 +303,10 @@ def list_project_meetings(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
     _ensure_project_access(db, project_id, current_user)
 
     meetings = (
@@ -279,12 +323,14 @@ def list_project_invited_meetings(
     project_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     List meetings within a project where the current user is invited (participant)
     but is NOT the creator.
     """
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
 
     meetings = (
         db.query(Meeting)
@@ -307,8 +353,10 @@ def get_project_meeting(
     meeting_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
     return _serialize_meeting(db, meeting)
@@ -321,8 +369,10 @@ def update_project_meeting(
     payload: MeetingUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
 
@@ -352,10 +402,12 @@ def update_project_meeting(
         if user_ids:
             users = (
                 db.query(User)
-                .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
+                .filter(User.user_id.in_(user_ids), User.is_active.is_(True), *_user_scope_filters(scope))
                 .all()
             )
             found_ids = {u.user_id for u in users}
+            if current_user.role == RoleEnum.ADMIN and current_user.user_id in user_ids:
+                found_ids.add(current_user.user_id)
             missing = [uid for uid in user_ids if uid not in found_ids]
             if missing:
                 raise HTTPException(
@@ -387,8 +439,10 @@ def delete_project_meeting(
     meeting_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
 
@@ -418,15 +472,17 @@ def list_project_meeting_participants(
     meeting_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    _get_project_or_404(db, project_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
 
     rows = (
         db.query(MeetingParticipant, User)
         .join(User, MeetingParticipant.user_id == User.user_id)
-        .filter(MeetingParticipant.meeting_id == meeting.id)
+        .filter(MeetingParticipant.meeting_id == meeting.id, *_user_scope_filters(scope))
         .order_by(User.name.asc())
         .all()
     )
