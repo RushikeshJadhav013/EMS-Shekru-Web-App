@@ -9,8 +9,9 @@ import uuid
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import and_
 
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.db.database import get_db, SessionLocal
 from app.db.models.user import User
 from app.db.models.chat import ChatSession, ChatMember, ChatMessage
@@ -82,6 +83,35 @@ def save_chat_document(user_id: int, chat_id: str, document: UploadFile):
     return file_url, file_name, file_type, file_size
 
 
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _get_user_in_scope(db: Session, *, user_id: int, scope: dict) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+
+
+def _assert_current_in_scope(db: Session, *, current: User, scope: dict) -> None:
+    # For ADMIN users, tenant scope is assignment-based (validated inside get_tenant_scope).
+    # Admin rows may not have company_id/branch_id populated, so don't enforce via users table.
+    if getattr(current, "role", None) == RoleEnum.ADMIN:
+        return
+
+    if _get_user_in_scope(db, user_id=int(current.user_id), scope=scope) is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current user is outside selected tenant scope",
+        )
+
+
 def _is_chat_member(db: Session, chat_id: str, user_id: int) -> bool:
     return (
         db.query(ChatMember)
@@ -95,6 +125,36 @@ def _assert_chat_member(db: Session, chat_id: str, user_id: int) -> None:
     if not _is_chat_member(db, chat_id, user_id):
         # FastAPI/starlette uses HTTP_403_FORBIDDEN (there is no HTTP_403 constant)
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a member of this chat")
+
+
+def _chat_session_scope_filters(scope: dict) -> list:
+    clauses = [ChatSession.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(ChatSession.branch_id == branch_id)
+    return clauses
+
+
+def _assert_chat_in_scope(db: Session, *, chat_id: str, scope: dict) -> None:
+    exists_in_scope = (
+        db.query(ChatSession.chat_id)
+        .filter(ChatSession.chat_id == chat_id, ChatSession.is_deleted == False)  # noqa: E712
+        .filter(*_chat_session_scope_filters(scope))
+        .first()
+        is not None
+    )
+    if not exists_in_scope:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found in selected tenant scope",
+        )
+
+
+def _assert_chat_member_in_scope(db: Session, *, chat_id: str, current: User, scope: dict) -> None:
+    _assert_current_in_scope(db, current=current, scope=scope)
+    _assert_chat_member(db, chat_id, int(current.user_id))
+    _assert_chat_in_scope(db, chat_id=chat_id, scope=scope)
+
 
 
 def _message_to_dict(m: ChatMessage) -> dict:
@@ -145,7 +205,10 @@ def _create_chat_notifications(
     msg_id: str,
     content: str,
     has_attachment: bool = False,
+    scope: dict | None = None,
 ) -> None:
+    if scope is not None:
+        _assert_chat_in_scope(db, chat_id=chat_id, scope=scope)
     members = (
         db.query(ChatMember.user_id)
         .filter(ChatMember.chat_id == chat_id, ChatMember.user_id != sender_id)
@@ -154,7 +217,10 @@ def _create_chat_notifications(
     if not members:
         return
 
-    sender = db.query(User).filter(User.user_id == sender_id).first()
+    sender_q = db.query(User).filter(User.user_id == sender_id)
+    if scope is not None:
+        sender_q = sender_q.filter(User.is_active.is_(True), *_user_scope_filters(scope))
+    sender = sender_q.first()
     sender_name = sender.name if sender else "Someone"
     text_preview = (content or "").strip()
     if has_attachment and not text_preview:
@@ -187,8 +253,18 @@ def _create_chat_notifications(
 def list_chat_eligible_users(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    users = db.query(User).filter(User.user_id != current.user_id).all()
+    _assert_current_in_scope(db, current=current, scope=scope)
+    users = (
+        db.query(User)
+        .filter(
+            User.is_active.is_(True),
+            User.user_id != current.user_id,
+            *_user_scope_filters(scope),
+        )
+        .all()
+    )
     return [
         ChatUserSchema(
             user_id=u.user_id,
@@ -203,20 +279,37 @@ def list_chat_eligible_users(
 def create_or_get_private_conversation(
     user_id: int,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
-        target_user = db.query(User).filter(User.user_id == user_id).first()
+        _assert_current_in_scope(db, current=current, scope=scope)
+        target_user = _get_user_in_scope(db, user_id=int(user_id), scope=scope)
         if not target_user:
             raise HTTPException(404, "Target user not found")
 
     conv_id = conversation_id(current.user_id, user_id)
 
     with SessionLocal() as db:
-        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == conv_id).first()
+        # Enforce tenant uniqueness: if chat_id exists in a different tenant, fail fast.
+        existing_any = db.query(ChatSession).filter(ChatSession.chat_id == conv_id).first()
+        if existing_any and existing_any.company_id != scope["company_id"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A private chat with this id exists in a different company scope.",
+            )
+
+        session_obj = (
+            db.query(ChatSession)
+            .filter(ChatSession.chat_id == conv_id)
+            .filter(*_chat_session_scope_filters(scope))
+            .first()
+        )
         if not session_obj:
             member_ids = {current.user_id, user_id}
             session_obj = ChatSession(
                 chat_id=conv_id,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
                 chat_type="private",
                 created_by_id=current.user_id,
                 member_count=len(member_ids),
@@ -241,6 +334,7 @@ def create_group_chat(
     current: User = Depends(
         require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER)
     ),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if current.user_id not in payload.member_ids:
         payload.member_ids.append(current.user_id)
@@ -248,9 +342,35 @@ def create_group_chat(
     group_id = str(uuid.uuid4())
 
     with SessionLocal() as db:
+        _assert_current_in_scope(db, current=current, scope=scope)
+        # All members must be in tenant scope
+        ids_to_check = set(member_ids)
+        # Admin users can be in scope via assignments even if users.company_id/branch_id is NULL.
+        # get_tenant_scope already validated the selected scope for ADMIN, so don't block on users table.
+        if getattr(current, "role", None) == RoleEnum.ADMIN:
+            ids_to_check.discard(int(current.user_id))
+
+        scoped_user_ids = {
+            uid
+            for (uid,) in (
+                db.query(User.user_id)
+                .filter(User.user_id.in_(list(ids_to_check)), User.is_active.is_(True), *_user_scope_filters(scope))
+                .all()
+            )
+        }
+        if getattr(current, "role", None) == RoleEnum.ADMIN:
+            scoped_user_ids.add(int(current.user_id))
+        missing = [uid for uid in member_ids if uid not in scoped_user_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Some members are outside selected tenant scope: {missing}",
+            )
         try:
             session_obj = ChatSession(
                 chat_id=group_id,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
                 chat_type="group",
                 name=payload.name,
                 created_by_id=current.user_id,
@@ -288,11 +408,21 @@ def add_group_member(
     current: User = Depends(
         require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER)
     ),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
-        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id).first()
+        _assert_current_in_scope(db, current=current, scope=scope)
+        session_obj = (
+            db.query(ChatSession)
+            .filter(ChatSession.chat_id == group_id)
+            .filter(*_chat_session_scope_filters(scope))
+            .first()
+        )
         if not session_obj:
             raise HTTPException(404, "Group not found")
+        # Only allow adding users in scope
+        if _get_user_in_scope(db, user_id=int(payload.user_id), scope=scope) is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "User is outside selected tenant scope")
         data_members = [
             r[0]
             for r in db.query(ChatMember.user_id)
@@ -328,9 +458,16 @@ def remove_group_member(
     current: User = Depends(
         require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER)
     ),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
-        session_obj = db.query(ChatSession).filter(ChatSession.chat_id == group_id).first()
+        _assert_current_in_scope(db, current=current, scope=scope)
+        session_obj = (
+            db.query(ChatSession)
+            .filter(ChatSession.chat_id == group_id)
+            .filter(*_chat_session_scope_filters(scope))
+            .first()
+        )
         if not session_obj:
             raise HTTPException(404, "Group not found")
         member = (
@@ -356,13 +493,14 @@ async def send_message(
     chat_id: str,
     payload: CreateMessagePayload,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     validated_content = validate_chat_content(payload.content)
     if chat_type not in ("group", "private"):
         raise HTTPException(400, "Invalid chat_type")
 
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
         msg_id = str(uuid.uuid4())
         ts = datetime.utcnow()  # UTC naive datetime
         row = ChatMessage(
@@ -383,6 +521,7 @@ async def send_message(
             msg_id=msg_id,
             content=validated_content,
             has_attachment=False,
+            scope=scope,
         )
         session_obj = db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
         if session_obj:
@@ -401,6 +540,7 @@ async def send_message_with_file(
     content: Optional[str] = Form(None),
     file: UploadFile = File(...),
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     validated_content = validate_chat_content(content)
     if not validated_content and not file:
@@ -412,7 +552,7 @@ async def send_message_with_file(
         raise HTTPException(400, "Invalid chat_type")
 
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
         file_url, file_name, file_type, file_size = save_chat_document(
             user_id=current.user_id,
             chat_id=chat_id,
@@ -442,6 +582,7 @@ async def send_message_with_file(
             msg_id=msg_id,
             content=validated_content,
             has_attachment=True,
+            scope=scope,
         )
         session_obj = db.query(ChatSession).filter(ChatSession.chat_id == chat_id).first()
         if session_obj:
@@ -460,12 +601,13 @@ def fetch_messages(
     limit: int = Query(20, ge=1, le=100),
     before: Optional[float] = Query(None),
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if chat_type not in ("group", "private"):
         raise HTTPException(400, "Invalid chat_type")
 
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
         q = (
             db.query(ChatMessage)
             .filter(ChatMessage.chat_id == chat_id)
@@ -486,12 +628,13 @@ async def mark_message_read(
     chat_id: str,
     msg_id: str,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if chat_type not in ("group", "private"):
         raise HTTPException(400, "Invalid chat_type")
 
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
         msg = (
             db.query(ChatMessage)
             .filter(ChatMessage.chat_id == chat_id, ChatMessage.msg_id == msg_id)
@@ -518,11 +661,12 @@ async def typing_indicator(
     chat_id: str,
     payload: TypingStatusPayload,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if chat_type not in ("group", "private"):
         raise HTTPException(400, "Invalid chat_type")
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
     await emit_chat_typing(chat_type, chat_id, current.user_id, payload.is_typing)
     return {"ok": True}
 
@@ -532,11 +676,14 @@ def change_group_name(
     group_id: str,
     payload: ChangeGroupNamePayload,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
+        _assert_current_in_scope(db, current=current, scope=scope)
         session_obj = (
             db.query(ChatSession)
             .filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group")
+            .filter(*_chat_session_scope_filters(scope))
             .first()
         )
         if not session_obj:
@@ -557,11 +704,14 @@ def change_group_name(
 def soft_delete_group(
     group_id: str,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
+        _assert_current_in_scope(db, current=current, scope=scope)
         session_obj = (
             db.query(ChatSession)
             .filter(ChatSession.chat_id == group_id, ChatSession.chat_type == "group")
+            .filter(*_chat_session_scope_filters(scope))
             .first()
         )
         if not session_obj:
@@ -583,8 +733,10 @@ def bulk_add_group_members(
     group_id: str,
     payload: BulkMembersPayload,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
+        _assert_current_in_scope(db, current=current, scope=scope)
         session_obj = (
             db.query(ChatSession)
             .filter(
@@ -592,6 +744,7 @@ def bulk_add_group_members(
                 ChatSession.chat_type == "group",
                 ChatSession.is_deleted == False,  # noqa: E712
             )
+            .filter(*_chat_session_scope_filters(scope))
             .first()
         )
         if not session_obj:
@@ -605,6 +758,19 @@ def bulk_add_group_members(
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only group admin can add members")
 
         members_to_add = set(payload.user_ids)
+        # Restrict additions to tenant-scoped users only
+        scoped_add_ids = {
+            uid
+            for (uid,) in db.query(User.user_id)
+            .filter(User.user_id.in_(members_to_add), User.is_active.is_(True), *_user_scope_filters(scope))
+            .all()
+        }
+        missing = [uid for uid in members_to_add if uid not in scoped_add_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Some members are outside selected tenant scope: {missing}",
+            )
         added_count = 0
         for uid in members_to_add:
             existing = (
@@ -626,8 +792,10 @@ def bulk_remove_group_members(
     group_id: str,
     payload: BulkMembersPayload,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     with SessionLocal() as db:
+        _assert_current_in_scope(db, current=current, scope=scope)
         session_obj = (
             db.query(ChatSession)
             .filter(
@@ -635,6 +803,7 @@ def bulk_remove_group_members(
                 ChatSession.chat_type == "group",
                 ChatSession.is_deleted == False,  # noqa: E712
             )
+            .filter(*_chat_session_scope_filters(scope))
             .first()
         )
         if not session_obj:
@@ -671,11 +840,12 @@ async def edit_message(
     msg_id: str,
     payload: EditMessagePayload,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if chat_type not in ("group", "private"):
         raise HTTPException(400, "Invalid chat_type")
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
         msg = (
             db.query(ChatMessage)
             .filter(ChatMessage.chat_id == chat_id, ChatMessage.msg_id == msg_id)
@@ -703,11 +873,12 @@ async def delete_message(
     chat_id: str,
     msg_id: str,
     current: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if chat_type not in ("group", "private"):
         raise HTTPException(400, "Invalid chat_type")
     with SessionLocal() as db:
-        _assert_chat_member(db, chat_id, current.user_id)
+        _assert_chat_member_in_scope(db, chat_id=chat_id, current=current, scope=scope)
         msg = (
             db.query(ChatMessage)
             .filter(ChatMessage.chat_id == chat_id, ChatMessage.msg_id == msg_id)
@@ -733,7 +904,9 @@ async def delete_message(
 def list_user_chat_sessions(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _assert_current_in_scope(db, current=current, scope=scope)
     sessions = (
         db.query(ChatSession)
         .join(ChatMember, ChatMember.chat_id == ChatSession.chat_id)
@@ -741,6 +914,7 @@ def list_user_chat_sessions(
             ChatMember.user_id == current.user_id,
             ChatSession.is_deleted == False,  # noqa: E712
         )
+        .filter(*_chat_session_scope_filters(scope))
         .order_by(
             ChatSession.last_message_at.desc(),
             ChatSession.created_at.desc(),
@@ -754,10 +928,15 @@ def list_user_chat_sessions(
 def list_chat_notifications(
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _assert_current_in_scope(db, current=current, scope=scope)
     return (
         db.query(ChatNotification)
         .filter(ChatNotification.user_id == current.user_id)
+        .join(ChatSession, ChatSession.chat_id == ChatNotification.chat_id)
+        .filter(ChatSession.is_deleted == False)  # noqa: E712
+        .filter(*_chat_session_scope_filters(scope))
         .order_by(ChatNotification.created_at.desc())
         .all()
     )
@@ -768,7 +947,9 @@ def mark_chat_notification_read(
     notification_id: int,
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _assert_current_in_scope(db, current=current, scope=scope)
     notification = (
         db.query(ChatNotification)
         .filter(

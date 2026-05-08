@@ -17,6 +17,21 @@ class ChatSession(Base):
     # Private: sorted user ids joined by "_"; group: UUID string
     chat_id = Column(String(255), primary_key=True, index=True)
 
+    # Tenant scope (Option 1): company (+ optional branch)
+    # NOTE: kept nullable for backward compatibility; enforced in API layer.
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    branch_id = Column(
+        Integer,
+        ForeignKey("company_branches.branch_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # 'private' or 'group'
     chat_type = Column(String(20), nullable=False, index=True)
 
