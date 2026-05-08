@@ -24,6 +24,26 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== EMPLOYEE SALARY CRUD ====================
+def _user_scope_filters(*, company_id: int | None, branch_id: int | None) -> list:
+    clauses = []
+    if company_id is not None:
+        clauses.append(User.company_id == company_id)
+    if branch_id is not None:
+        clauses.append(User.branch_id == branch_id)
+    return clauses
+
+
+def _user_in_scope(db: Session, *, user_id: int, company_id: int | None, branch_id: int | None) -> bool:
+    if company_id is None and branch_id is None:
+        return True
+    return (
+        db.query(User.user_id)
+        .filter(User.user_id == user_id, *_user_scope_filters(company_id=company_id, branch_id=branch_id))
+        .first()
+        is not None
+    )
+
+
 
 def _has_pf_account(pf_no: Optional[str]) -> bool:
     """PF can be generated only when PF account/member id exists."""
@@ -315,12 +335,23 @@ def update_employee_salary_from_ctc(
     return salary
 
 
-def get_employee_salary(db: Session, user_id: int) -> Optional[EmployeeSalary]:
+def get_employee_salary(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> Optional[EmployeeSalary]:
     """Get employee salary by user_id"""
-    return db.query(EmployeeSalary).filter(
+    q = db.query(EmployeeSalary).filter(
         EmployeeSalary.user_id == user_id,
         EmployeeSalary.is_active == True
-    ).first()
+    )
+    if company_id is not None or branch_id is not None:
+        q = q.join(User, EmployeeSalary.user_id == User.user_id).filter(
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id)
+        )
+    return q.first()
 
 
 def get_employee_salary_by_id(db: Session, salary_id: int) -> Optional[EmployeeSalary]:
@@ -573,16 +604,28 @@ def list_employee_salaries(
     db: Session, 
     departments: Optional[List[str]] = None,
     skip: int = 0, 
-    limit: int = 100
+    limit: int = 100,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> List[EmployeeSalary]:
     """List all employee salaries (including inactive) with optional department filter(s)."""
     query = db.query(EmployeeSalary)
+    joined_user = False
+
+    if company_id is not None or branch_id is not None:
+        query = query.join(User, EmployeeSalary.user_id == User.user_id).filter(
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id)
+        )
+        joined_user = True
     
     if departments:
         # Join with User to filter by department tokens. Supports users with multiple comma-separated departments.
         patterns = [department_token_regex_pattern(d) for d in departments]
         dept_filters = [User.department.op("RLIKE")(pat) for pat in patterns]
-        query = query.join(User).filter(User.department.isnot(None), or_(*dept_filters))
+        if not joined_user:
+            query = query.join(User)
+        query = query.filter(User.department.isnot(None), or_(*dept_filters))
     
     return query.offset(skip).limit(limit).all()
 
@@ -732,25 +775,56 @@ def create_salary_increment(
     return db_increment
 
 
-def get_salary_increment(db: Session, increment_id: int) -> Optional[SalaryIncrement]:
+def get_salary_increment(
+    db: Session,
+    increment_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> Optional[SalaryIncrement]:
     """Get salary increment by id"""
-    return db.query(SalaryIncrement).filter(
-        SalaryIncrement.id == increment_id
-    ).first()
+    q = db.query(SalaryIncrement).filter(SalaryIncrement.id == increment_id)
+    if company_id is not None or branch_id is not None:
+        q = q.join(User, SalaryIncrement.user_id == User.user_id).filter(
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id)
+        )
+    return q.first()
 
 
-def get_user_increments(db: Session, user_id: int) -> List[SalaryIncrement]:
+def get_user_increments(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> List[SalaryIncrement]:
     """Get all increments for a user"""
-    return db.query(SalaryIncrement).filter(
-        SalaryIncrement.user_id == user_id
-    ).order_by(SalaryIncrement.effective_date.desc()).all()
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return []
+    return (
+        db.query(SalaryIncrement)
+        .filter(SalaryIncrement.user_id == user_id)
+        .order_by(SalaryIncrement.effective_date.desc())
+        .all()
+    )
 
 
-def get_latest_increment(db: Session, user_id: int) -> Optional[SalaryIncrement]:
+def get_latest_increment(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> Optional[SalaryIncrement]:
     """Get the latest increment for a user"""
-    return db.query(SalaryIncrement).filter(
-        SalaryIncrement.user_id == user_id
-    ).order_by(SalaryIncrement.effective_date.desc()).first()
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return None
+    return (
+        db.query(SalaryIncrement)
+        .filter(SalaryIncrement.user_id == user_id)
+        .order_by(SalaryIncrement.effective_date.desc())
+        .first()
+    )
 
 
 def update_increment_letter_sent(
@@ -839,9 +913,14 @@ def update_slip_email_sent(
 def get_user_salary_slip_history(
     db: Session, 
     user_id: int,
-    year: Optional[int] = None
+    year: Optional[int] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> List[SalarySlipHistory]:
     """Get all salary slip history for a user"""
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return []
     query = db.query(SalarySlipHistory).filter(
         SalarySlipHistory.user_id == user_id
     )
@@ -880,19 +959,35 @@ def create_salary_notification(
     return db_notification
 
 
-def list_salary_notifications(db: Session, user_id: int) -> List[SalaryNotification]:
+def list_salary_notifications(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> List[SalaryNotification]:
     """Get all salary notifications for a user, ordered by most recent first"""
-    return db.query(SalaryNotification).filter(
-        SalaryNotification.user_id == user_id
-    ).order_by(SalaryNotification.created_at.desc()).all()
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return []
+    return (
+        db.query(SalaryNotification)
+        .filter(SalaryNotification.user_id == user_id)
+        .order_by(SalaryNotification.created_at.desc())
+        .all()
+    )
 
 
 def mark_salary_notification_as_read(
     db: Session, 
     notification_id: int, 
-    user_id: int
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> Optional[SalaryNotification]:
     """Mark a salary notification as read for a specific user"""
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return None
     notification = db.query(SalaryNotification).filter(
         SalaryNotification.notification_id == notification_id,
         SalaryNotification.user_id == user_id
@@ -909,8 +1004,16 @@ def mark_salary_notification_as_read(
     return notification
 
 
-def get_unread_salary_notifications_count(db: Session, user_id: int) -> int:
+def get_unread_salary_notifications_count(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> int:
     """Get count of unread salary notifications for a user"""
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return 0
     return db.query(SalaryNotification).filter(
         SalaryNotification.user_id == user_id,
         SalaryNotification.is_read == False
