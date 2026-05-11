@@ -172,10 +172,21 @@ def _ensure_project_or_invited_access(
     )
 
 
-def _get_project_meeting_or_404(db: Session, project_id: int, meeting_id: int) -> Meeting:
+def _meeting_scope_filters(scope: dict) -> list:
+    clauses = [Meeting.company_id == scope["company_id"]]
+    if scope.get("branch_id") is not None:
+        clauses.append(Meeting.branch_id == scope["branch_id"])
+    return clauses
+
+
+def _get_project_meeting_or_404(db: Session, project_id: int, meeting_id: int, *, scope: dict) -> Meeting:
     meeting = (
         db.query(Meeting)
-        .filter(Meeting.id == meeting_id, Meeting.project_id == project_id)
+        .filter(
+            Meeting.id == meeting_id,
+            Meeting.project_id == project_id,
+            *_meeting_scope_filters(scope),
+        )
         .first()
     )
     if not meeting:
@@ -244,6 +255,8 @@ def create_project_meeting(
         meeting_url=str(payload.meeting_url),
         created_by_id=current_user.user_id,
         project_id=project_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     db.add(meeting)
     db.flush()
@@ -294,6 +307,8 @@ def create_project_meeting(
         title="Meeting Scheduled",
         message=f"Project meeting '{meeting.title}' is scheduled {start_iso} - {end_iso}.",
         store_meeting_id=meeting.id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     return _serialize_meeting(db, meeting)
 
@@ -311,7 +326,7 @@ def list_project_meetings(
 
     meetings = (
         db.query(Meeting)
-        .filter(Meeting.project_id == project_id)
+        .filter(Meeting.project_id == project_id, *_meeting_scope_filters(scope))
         .order_by(Meeting.created_at.desc())
         .all()
     )
@@ -337,6 +352,7 @@ def list_project_invited_meetings(
         .join(MeetingParticipant, Meeting.id == MeetingParticipant.meeting_id)
         .filter(
             Meeting.project_id == project_id,
+            *_meeting_scope_filters(scope),
             MeetingParticipant.user_id == current_user.user_id,
             Meeting.created_by_id != current_user.user_id,
         )
@@ -357,7 +373,7 @@ def get_project_meeting(
 ):
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
-    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
     return _serialize_meeting(db, meeting)
 
@@ -373,7 +389,7 @@ def update_project_meeting(
 ):
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
-    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
 
     if meeting.created_by_id != current_user.user_id:
@@ -429,6 +445,8 @@ def update_project_meeting(
         title="Meeting Updated",
         message=f"Project meeting '{meeting.title}' was updated {start_iso} - {end_iso}.",
         store_meeting_id=meeting.id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     return _serialize_meeting(db, meeting)
 
@@ -443,7 +461,7 @@ def delete_project_meeting(
 ):
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
-    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
 
     if meeting.created_by_id != current_user.user_id:
@@ -460,6 +478,8 @@ def delete_project_meeting(
         title="Meeting Cancelled",
         message=f"Project meeting '{meeting.title}' was cancelled.",
         store_meeting_id=None,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     db.delete(meeting)
     db.commit()
@@ -476,7 +496,7 @@ def list_project_meeting_participants(
 ):
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
-    meeting = _get_project_meeting_or_404(db, project_id, meeting_id)
+    meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
     _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
 
     rows = (

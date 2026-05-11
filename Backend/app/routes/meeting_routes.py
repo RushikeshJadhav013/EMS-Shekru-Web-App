@@ -8,7 +8,8 @@ from app.db.database import get_db
 from app.db.models.meeting import Meeting, MeetingParticipant
 from app.db.models.notification import MeetingNotification
 from app.db.models.user import User
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_tenant_scope
+from app.enums import RoleEnum
 from app.utils.timezone import now_ist
 from app.schemas.meeting_schema import (
     MeetingCreate,
@@ -30,6 +31,86 @@ router = APIRouter(
     tags=["Meetings"],
 )
 
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
+    if current_user.role == RoleEnum.ADMIN:
+        return
+    row = (
+        db.query(User.user_id)
+        .filter(
+            User.user_id == current_user.user_id,
+            User.is_active.is_(True),
+            *_user_scope_filters(scope),
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current user is outside selected tenant scope",
+        )
+
+
+def _get_user_in_scope(db: Session, user_id: int, scope: dict) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+
+
+def _meeting_scope_filters(scope: dict, meeting_alias=Meeting) -> list:
+    clauses = [meeting_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(meeting_alias.branch_id == branch_id)
+    return clauses
+
+
+def _meeting_base_query(db: Session, scope: dict):
+    return db.query(Meeting).filter(*_meeting_scope_filters(scope))
+
+
+def _get_meeting_in_scope(db: Session, meeting_id: int, scope: dict) -> Meeting | None:
+    return (
+        _meeting_base_query(db, scope)
+        .filter(Meeting.id == meeting_id)
+        .first()
+    )
+
+
+def _ensure_meeting_in_scope(db: Session, meeting_id: int, scope: dict) -> Meeting:
+    meeting = _get_meeting_in_scope(db, meeting_id, scope)
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Meeting not found",
+        )
+    return meeting
+
+
+def _user_can_access_meeting(db: Session, meeting: Meeting, current_user: User) -> bool:
+    if meeting.created_by_id == current_user.user_id:
+        return True
+    mp = (
+        db.query(MeetingParticipant.id)
+        .filter(
+            MeetingParticipant.meeting_id == meeting.id,
+            MeetingParticipant.user_id == current_user.user_id,
+        )
+        .first()
+    )
+    return mp is not None
+
+
 def _normalize_for_compare(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
@@ -39,11 +120,6 @@ def _normalize_for_compare(dt: datetime | None) -> datetime | None:
 
 
 def _validate_meeting_times(start_time, end_time) -> None:
-    """
-    Business rules:
-    - start_time cannot be in the past
-    - end_time cannot be earlier than start_time
-    """
     normalized_start_time = _normalize_for_compare(start_time)
     normalized_end_time = _normalize_for_compare(end_time)
 
@@ -61,16 +137,6 @@ def _validate_meeting_times(start_time, end_time) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="end_time cannot be earlier than start_time",
         )
-
-
-def _get_meeting_or_404(db: Session, meeting_id: int) -> Meeting:
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Meeting not found",
-        )
-    return meeting
 
 
 def _serialize_meeting(db: Session, meeting: Meeting) -> MeetingOut:
@@ -105,13 +171,32 @@ def _serialize_meeting(db: Session, meeting: Meeting) -> MeetingOut:
     )
 
 
+def _validate_participant_ids(
+    db: Session, user_ids: list[int], scope: dict, current_user: User
+) -> None:
+    missing: list[int] = []
+    for uid in user_ids:
+        u = _get_user_in_scope(db, uid, scope)
+        if not u and current_user.role == RoleEnum.ADMIN and uid == current_user.user_id:
+            continue
+        if not u:
+            missing.append(uid)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User(s) not found or inactive: {missing}",
+        )
+
+
 @router.post("/", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
 def create_meeting(
     payload: MeetingCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Create a meeting with an existing Google Meet / Zoom URL."""
+    _assert_current_in_scope(db, current_user, scope)
     _validate_meeting_times(payload.start_time, payload.end_time)
     meeting = Meeting(
         title=payload.title,
@@ -120,25 +205,15 @@ def create_meeting(
         end_time=payload.end_time,
         meeting_url=str(payload.meeting_url),
         created_by_id=current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     db.add(meeting)
     db.flush()
 
     if payload.participant_ids:
         user_ids = list({uid for uid in payload.participant_ids if uid is not None})
-        users = (
-            db.query(User)
-            .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
-            .all()
-        )
-        found_ids = {u.user_id for u in users}
-        missing = [uid for uid in user_ids if uid not in found_ids]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User(s) not found or inactive: {missing}",
-            )
-
+        _validate_participant_ids(db, user_ids, scope, current_user)
         for uid in user_ids:
             db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
 
@@ -154,6 +229,8 @@ def create_meeting(
         title="Meeting Scheduled",
         message=f"Meeting '{meeting.title}' is scheduled {start_iso} - {end_iso}.",
         store_meeting_id=meeting.id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     return _serialize_meeting(db, meeting)
 
@@ -162,6 +239,7 @@ def create_meeting(
 def list_my_meetings(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     as_creator: bool = Query(
         True,
         description=(
@@ -170,22 +248,17 @@ def list_my_meetings(
         ),
     ),
 ):
+    _assert_current_in_scope(db, current_user, scope)
+    q = _meeting_base_query(db, scope)
     if as_creator:
-        meetings = (
-            db.query(Meeting)
-            .filter(Meeting.created_by_id == current_user.user_id)
-            .order_by(Meeting.created_at.desc())
-            .all()
-        )
+        q = q.filter(Meeting.created_by_id == current_user.user_id)
     else:
-        meetings = (
-            db.query(Meeting)
-            .join(MeetingParticipant, Meeting.id == MeetingParticipant.meeting_id)
+        q = (
+            q.join(MeetingParticipant, Meeting.id == MeetingParticipant.meeting_id)
             .filter(MeetingParticipant.user_id == current_user.user_id)
-            .order_by(Meeting.created_at.desc())
-            .all()
+            .distinct()
         )
-
+    meetings = q.order_by(Meeting.created_at.desc()).all()
     return [_serialize_meeting(db, m) for m in meetings]
 
 
@@ -194,8 +267,15 @@ def get_meeting(
     meeting_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    meeting = _get_meeting_or_404(db, meeting_id)
+    _assert_current_in_scope(db, current_user, scope)
+    meeting = _ensure_meeting_in_scope(db, meeting_id, scope)
+    if not _user_can_access_meeting(db, meeting, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view meetings you created or participate in",
+        )
     return _serialize_meeting(db, meeting)
 
 
@@ -205,8 +285,10 @@ def update_meeting(
     payload: MeetingUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    meeting = _get_meeting_or_404(db, meeting_id)
+    _assert_current_in_scope(db, current_user, scope)
+    meeting = _ensure_meeting_in_scope(db, meeting_id, scope)
 
     if meeting.created_by_id != current_user.user_id:
         raise HTTPException(
@@ -234,18 +316,7 @@ def update_meeting(
 
         user_ids = list({uid for uid in participant_ids if uid is not None})
         if user_ids:
-            users = (
-                db.query(User)
-                .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
-                .all()
-            )
-            found_ids = {u.user_id for u in users}
-            missing = [uid for uid in user_ids if uid not in found_ids]
-            if missing:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"User(s) not found or inactive: {missing}",
-                )
+            _validate_participant_ids(db, user_ids, scope, current_user)
             for uid in user_ids:
                 db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
 
@@ -259,6 +330,8 @@ def update_meeting(
         title="Meeting Updated",
         message=f"Meeting '{meeting.title}' was updated.",
         store_meeting_id=meeting.id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     return _serialize_meeting(db, meeting)
 
@@ -273,8 +346,10 @@ def add_meeting_participants(
     payload: MeetingParticipantsAdd,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    meeting = _get_meeting_or_404(db, meeting_id)
+    _assert_current_in_scope(db, current_user, scope)
+    meeting = _ensure_meeting_in_scope(db, meeting_id, scope)
 
     if meeting.created_by_id != current_user.user_id:
         raise HTTPException(
@@ -286,18 +361,7 @@ def add_meeting_participants(
     if not user_ids:
         return []
 
-    users = (
-        db.query(User)
-        .filter(User.user_id.in_(user_ids), User.is_active.is_(True))
-        .all()
-    )
-    found_ids = {u.user_id for u in users}
-    missing = [uid for uid in user_ids if uid not in found_ids]
-    if missing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User(s) not found or inactive: {missing}",
-        )
+    _validate_participant_ids(db, user_ids, scope, current_user)
 
     existing = (
         db.query(MeetingParticipant)
@@ -363,8 +427,10 @@ def remove_meeting_participant(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    meeting = _get_meeting_or_404(db, meeting_id)
+    _assert_current_in_scope(db, current_user, scope)
+    meeting = _ensure_meeting_in_scope(db, meeting_id, scope)
 
     if meeting.created_by_id != current_user.user_id:
         raise HTTPException(
@@ -415,8 +481,10 @@ def delete_meeting(
     meeting_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    meeting = _get_meeting_or_404(db, meeting_id)
+    _assert_current_in_scope(db, current_user, scope)
+    meeting = _ensure_meeting_in_scope(db, meeting_id, scope)
 
     if meeting.created_by_id != current_user.user_id:
         raise HTTPException(
@@ -432,6 +500,8 @@ def delete_meeting(
         title="Meeting Cancelled",
         message=f"Meeting '{meeting.title}' was cancelled.",
         store_meeting_id=None,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     db.delete(meeting)
     db.commit()
@@ -442,8 +512,10 @@ def delete_meeting(
 def get_meeting_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    return list_meeting_notifications(db, current_user.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    return list_meeting_notifications(db, current_user.user_id, scope=scope)
 
 
 @router.put("/notifications/{notification_id}/read", response_model=MeetingNotificationOut)
@@ -451,13 +523,15 @@ def mark_meeting_notification_as_read(
     notification_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _assert_current_in_scope(db, current_user, scope)
     notification = mark_meeting_notification_as_read_crud(
         db,
         notification_id=notification_id,
         user_id=current_user.user_id,
+        scope=scope,
     )
     if not notification:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
     return notification
-
