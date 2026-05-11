@@ -286,6 +286,7 @@ Backend/cython_debug/
 Backend/staticfiles/
 Backend/static/profile_photos/
 Backend/static/uploads/
+Backend/static/company_logos/
 
 # Media files
 Backend/media/
