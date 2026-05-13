@@ -283,13 +283,18 @@ def generate_salary_slip_pdf(
             Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
         ])
     
-    # Add PAN row - pair with PF No only if PF No exists
-    pf_no_wrapped = None
-    if pf_no and pf_no.strip() and pf_no.upper() not in ("NA", "N/A", ""):
+    # PAN row: pair with PF No when present; otherwise move Variable Pay up beside PAN when UAN
+    # consumed the DOJ row (Variable Pay already appears next to DOJ when UAN is missing).
+    if show_pf:
         pf_no_wrapped = Paragraph(_xml_escape(str(pf_no)), wrap_value_style)
         details_data.append([
             Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
             Table([["PF No.", ":", pf_no_wrapped]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+        ])
+    elif has_uan:
+        details_data.append([
+            Table([["PAN", ":", pan]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
         ])
     else:
         details_data.append([
@@ -303,17 +308,20 @@ def generate_salary_slip_pdf(
         bank_account and str(bank_account).strip() and str(bank_account).strip().upper() not in ("NA", "N/A", "")
     )
 
-    # When UAN is visible, Variable Pay is shown on the right in this section.
+    # When UAN is visible, Variable Pay sits beside Bank Name only if PF No row exists (else it is beside PAN).
     if has_uan:
         left_cell = (
             Table([["Bank Name", ":", str(bank_name).strip()]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch])
             if has_bank_name
             else ""
         )
-        details_data.append([
-            left_cell,
-            Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
-        ])
+        if show_pf:
+            details_data.append([
+                left_cell,
+                Table([["Variable Pay*", ":", format_currency(variable_pay)]], colWidths=[1.2*inch, 0.1*inch, col_width - 1.5*inch]),
+            ])
+        elif has_bank_name:
+            details_data.append([left_cell, ""])
     else:
         # UAN not visible: Variable Pay already shown next to DOJ. Only show Bank Name if present.
         if has_bank_name:
