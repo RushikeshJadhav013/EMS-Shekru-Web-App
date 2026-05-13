@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional, List, Literal, Tuple
 from datetime import datetime
+from calendar import monthrange
 import logging
 import traceback
 
@@ -731,6 +732,27 @@ def _parse_slip_optional_custom_deductions(
     return out, total
 
 
+def _build_manual_leave_deduction(
+    month: int,
+    year: int,
+    monthly_gross: float,
+    manual_leave_days: float,
+) -> Tuple[List[Tuple[str, float]], float]:
+    """
+    Build manual leave deduction entries for slips.
+    Deduction is calculated from calendar days in the selected month.
+    """
+    leave_days = round(float(manual_leave_days or 0), 2)
+    if leave_days <= 0:
+        return [], 0.0
+    days_in_month = monthrange(year, month)[1]
+    per_day_salary = monthly_gross / days_in_month
+    leave_amount = round(per_day_salary * leave_days, 2)
+    if leave_amount <= 0:
+        return [], 0.0
+    return [("Leave Deduction", leave_amount)], leave_amount
+
+
 @router.get("/slip/download/{user_id}")
 def download_salary_slip(
     user_id: int,
@@ -742,6 +764,7 @@ def download_salary_slip(
     optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
+    manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -755,6 +778,7 @@ def download_salary_slip(
     The salary slip uses the current salary-structure logic:
     - Monthly Gross = total_earnings_annual / 12
     - Deductions = Professional Tax (₹200/month, Feb ₹300) + Other Tax (other_deduction_annual/12) + PF (pf_annual/12)
+      + manual leave deduction based on calendar days in month
       + up to 3 optional manual deductions (optional_deduction_N_label + optional_deduction_N_amount)
     - Net Payable = (Monthly Gross + Variable Pay Monthly) - Deductions
     """
@@ -798,6 +822,13 @@ def download_salary_slip(
             optional_deduction_3_label,
             optional_deduction_3_amount,
         )
+        gross = salary.total_earnings_annual / 12
+        leave_deduction_rows, leave_deduction_total = _build_manual_leave_deduction(
+            month, year, gross, manual_leave_days
+        )
+        if leave_deduction_rows:
+            custom_deductions.extend(leave_deduction_rows)
+            custom_deductions_total += leave_deduction_total
 
         # Generate PDF (PF No is taken from salary record)
         pdf_buffer = _generate_salary_slip(
@@ -805,7 +836,6 @@ def download_salary_slip(
         )
         
         # Record in history using slip calculation values
-        gross = salary.total_earnings_annual / 12
         variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
         
         # Employee deductions = Professional Tax (month-specific) + Other Tax + PF + optional manual
@@ -856,6 +886,7 @@ def send_salary_slip(
     optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
+    manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
@@ -865,8 +896,9 @@ def send_salary_slip(
     Generate and send salary slip via email.
     Admin/HR only. Requires employee email to be verified.
 
-    Optional query params: optional_deduction_1/2/3 _label and _amount (monthly),
-    same rules as GET slip/download.
+    Optional query params:
+    - optional_deduction_1/2/3 _label and _amount (monthly)
+    - manual_leave_days (monthly deduction by calendar days in selected month)
     """
     try:
         _assert_current_in_scope(db, current_user, scope)
@@ -915,6 +947,13 @@ def send_salary_slip(
             optional_deduction_3_label,
             optional_deduction_3_amount,
         )
+        gross = salary.total_earnings_annual / 12
+        leave_deduction_rows, leave_deduction_total = _build_manual_leave_deduction(
+            month, year, gross, manual_leave_days
+        )
+        if leave_deduction_rows:
+            custom_deductions.extend(leave_deduction_rows)
+            custom_deductions_total += leave_deduction_total
 
         # Generate PDF (PF No is taken from salary record)
         pdf_buffer = _generate_salary_slip(
@@ -922,7 +961,6 @@ def send_salary_slip(
         )
         
         # Calculate net salary using slip logic (include variable pay when present)
-        gross = salary.total_earnings_annual / 12
         variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
         pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
         pf_monthly = round((salary.pf_annual or 0) / 12, 2)
