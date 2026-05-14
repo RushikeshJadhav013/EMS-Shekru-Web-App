@@ -685,12 +685,22 @@ def download_salary_slip(
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
     manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
+    inline: bool = Query(
+        False,
+        description="If true, use Content-Disposition: inline so browsers show the PDF (tab/iframe). If false (default), send as attachment (download).",
+    ),
+    preview: bool = Query(
+        False,
+        description="If true, PDF is generated for viewing only and is not written to salary_slip_history (use while parameters may still change). If false (default), persist a history row as for a finalized slip.",
+    ),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Download salary slip PDF for an employee.
+    Download or view salary slip PDF for an employee.
+    Pass `inline=true` to open in the browser instead of forcing a file download.
+    Pass `preview=true` to preview without recording in salary_slip_history; use `preview=false` (default) when the slip is finalized so the download is stored in DB.
     Employees can download their own, Admin/HR can download any.
     
     The salary slip uses the current salary-structure logic:
@@ -760,19 +770,23 @@ def download_salary_slip(
         
         # Net = Gross + variable pay - employee deductions
         net = (gross + variable_pay_monthly) - employee_deductions
-        
-        create_salary_slip_history(
-            db, user_id, month, year, gross, employee_deductions, net, current_user.user_id
-        )
-        
+
+        if not preview:
+            create_salary_slip_history(
+                db, user_id, month, year, gross, employee_deductions, net, current_user.user_id
+            )
+
         # Return PDF
         month_name = _get_month_name(month)
         filename = f"Salary_Slip_{month_name}_{year}_{user.name.replace(' ', '_')}.pdf"
-        
+        filename_quoted = filename.replace('"', "'")
+        disposition_type = "inline" if inline else "attachment"
+        content_disposition = f'{disposition_type}; filename="{filename_quoted}"'
+
         return StreamingResponse(
             pdf_buffer,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": content_disposition},
         )
         
     except ValueError as e:
