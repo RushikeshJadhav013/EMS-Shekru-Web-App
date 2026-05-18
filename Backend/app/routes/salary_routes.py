@@ -750,7 +750,8 @@ def _build_manual_leave_deduction(
     leave_amount = round(per_day_salary * leave_days, 2)
     if leave_amount <= 0:
         return [], 0.0
-    return [("Leave Deduction", leave_amount)], leave_amount
+    day_label = "day" if leave_days == 1 else "days"
+    return [(f"Leave Deduction ({leave_days:g} {day_label})", leave_amount)], leave_amount
 
 
 @router.get("/slip/download/{user_id}")
