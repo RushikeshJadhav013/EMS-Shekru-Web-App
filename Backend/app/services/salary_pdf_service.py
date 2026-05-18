@@ -432,7 +432,13 @@ def generate_salary_slip_pdf(
             ],
             ["Other Allowance", format_currency(other_allowance), "", ""],
         ]
-    
+
+    # Custom deductions beyond the 3 slots paired with earnings rows (e.g. leave after 3 optionals)
+    for lbl, amt in custom_rows[3:]:
+        earnings_deductions_data.append(
+            ["", "", str(lbl).strip()[:120], format_currency(float(amt))]
+        )
+
     # Total row
     total_row = [["Total Earnings", format_currency(total_earnings), "Total Deductions", format_currency(total_deductions)]]
     
