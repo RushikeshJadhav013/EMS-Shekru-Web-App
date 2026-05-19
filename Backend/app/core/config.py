@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "supersecretjwtkey"
     JWT_ALGORITHM: str = "HS256"
     OTP_EXPIRY_SECONDS: int = 300
+    # Redis (shared OTP store for multi-worker Gunicorn). Example:
+    # redis://:password@127.0.0.1:6379/0
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
+    OTP_REDIS_KEY_PREFIX: str = os.getenv("OTP_REDIS_KEY_PREFIX", "staffly:otp:")
+
+    @property
+    def use_redis_for_otp(self) -> bool:
+        return bool(self.REDIS_URL and self.REDIS_URL.strip())
 
     @property
     def OTP_EXPIRY_MINUTES(self) -> float:
