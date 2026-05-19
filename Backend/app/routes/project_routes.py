@@ -706,7 +706,7 @@ def list_project_members(
     - Admin/HR: can list members of any project.
     - Manager/TeamLead/Employee: can list members only for projects where they are active members.
     """
-    _ensure_project_exists(db, project_id)
+    project = _ensure_project_exists(db, project_id)
 
     # Non-Admin/HR roles (Manager, Team Lead, Employee) must be active members of the project
     if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
@@ -897,7 +897,7 @@ def remove_project_member(
       at least one department assigned (supports comma-separated departments) and
       only for users in their own department(s).
     """
-    _ensure_project_exists(db, project_id)
+    project = _ensure_project_exists(db, project_id)
 
     # Managers: enforce department configuration + project ownership
     if current_user.role == RoleEnum.MANAGER:
