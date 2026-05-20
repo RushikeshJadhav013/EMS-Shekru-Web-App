@@ -258,19 +258,26 @@ def update_interview_status(
     new_status = status_update.status
     
     # Validate status transitions
-    terminal_statuses = ['completed', 'cancelled', 'no_show']
-    
-    # Cannot change from terminal statuses (except to rescheduled)
-    if current_status in terminal_statuses and new_status not in ['rescheduled']:
-        if current_status == 'completed' and new_status != 'completed':
+    if current_status != new_status:
+        # Completed interviews cannot be rescheduled or changed to any other status
+        if current_status == 'completed':
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot change status from 'completed' to '{new_status}'"
+                detail="Cannot change status of a completed interview."
             )
-        elif current_status == 'cancelled' and new_status != 'rescheduled':
+            
+        # Cancelled interviews can only transition to rescheduled
+        if current_status == 'cancelled' and new_status != 'rescheduled':
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot change status from 'cancelled' to '{new_status}'. Use 'rescheduled' to reschedule."
+                detail=f"Cannot change status from 'cancelled' to '{new_status}'. Cancelled interviews can only be rescheduled."
+            )
+            
+        # No-show interviews can only transition to rescheduled
+        if current_status == 'no_show' and new_status != 'rescheduled':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot change status from 'no_show' to '{new_status}'. No-show interviews can only be rescheduled."
             )
     
     # Update status only
