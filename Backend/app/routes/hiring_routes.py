@@ -547,100 +547,112 @@ def update_candidate_resume(
     
     return result
 
-@router.post("/candidates/{candidate_id}/shortlist", response_model=CandidateOut)
-def shortlist_candidate(
-    candidate_id: int,
-    shortlist_data: CandidateShortlist,
-    current_user: User = Depends(get_current_user),
-    scope: dict = Depends(get_tenant_scope),
-    db: Session = Depends(get_db)
-):
-    """Shortlist a candidate for an interview. Creates an interview record and updates status to 'interview'."""
-    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
-    if not candidate:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+# @router.post("/candidates/{candidate_id}/shortlist", response_model=CandidateOut)
+# def shortlist_candidate(
+#     candidate_id: int,
+#     shortlist_data: CandidateShortlist,
+#     current_user: User = Depends(get_current_user),
+#     db: Session = Depends(get_db)
+# ):
+#     """Shortlist a candidate for an interview. Creates an interview record and updates status to 'interview'."""
+#     candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+#     if not candidate:
+#         raise HTTPException(status_code=404, detail="Candidate not found")
+#     vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
     
-    # Check if candidate is already rejected or hired
-    if candidate.status in ['rejected', 'hired', 'withdrawn']:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot shortlist candidate with status '{candidate.status}'"
-        )
+#     # Check if candidate is already rejected or hired
+#     if candidate.status in ['rejected', 'hired', 'withdrawn']:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail=f"Cannot shortlist candidate with status '{candidate.status}'"
+#         )
     
+#     # Check for overlapping interviews
+#     # Simple overlap check: if new interview starts before existing ends and ends after existing starts
+#     overlapping = db.query(Interview).filter(
+#         and_(
+#             Interview.candidate_id == candidate_id,
+#             Interview.status.in_(['scheduled', 'rescheduled']),
+#             Interview.start_time <= shortlist_data.interview_date,
+#             or_(
+#                 Interview.end_time > shortlist_data.interview_date,
+#                 Interview.end_time.is_(None)  # If no end_time, assume 1 hour duration
+#             )
+#         )
+#     ).first()
     # Check for overlapping interviews
     # Simple overlap check: if new interview starts before existing ends and ends after existing starts
-    overlapping = _interview_scope_query(db, scope).filter(
-        and_(
-            Interview.candidate_id == candidate_id,
-            Interview.status.in_(['scheduled', 'rescheduled']),
-            Interview.start_time <= shortlist_data.interview_date,
-            or_(
-                Interview.end_time > shortlist_data.interview_date,
-                Interview.end_time.is_(None)  # If no end_time, assume 1 hour duration
-            )
-        )
-    ).first()
+    # overlapping = _interview_scope_query(db, scope).filter(
+    #     and_(
+    #         Interview.candidate_id == candidate_id,
+    #         Interview.status.in_(['scheduled', 'rescheduled']),
+    #         Interview.start_time <= shortlist_data.interview_date,
+    #         or_(
+    #             Interview.end_time > shortlist_data.interview_date,
+    #             Interview.end_time.is_(None)  # If no end_time, assume 1 hour duration
+    #         )
+    #     )
+    # ).first()
     
-    # Also check reverse overlap
-    if not overlapping:
-        overlapping = _interview_scope_query(db, scope).filter(
-            and_(
-                Interview.candidate_id == candidate_id,
-                Interview.status.in_(['scheduled', 'rescheduled']),
-                Interview.start_time >= shortlist_data.interview_date,
-                Interview.start_time < shortlist_data.interview_date + timedelta(hours=1)  # Default 1 hour duration
-            )
-        ).first()
+    # # Also check reverse overlap
+    # if not overlapping:
+    #     overlapping = db.query(Interview).filter(
+    #         and_(
+    #             Interview.candidate_id == candidate_id,
+    #             Interview.status.in_(['scheduled', 'rescheduled']),
+    #             Interview.start_time >= shortlist_data.interview_date,
+    #             Interview.start_time < shortlist_data.interview_date + timedelta(hours=1)  # Default 1 hour duration
+    #         )
+    #     ).first()
     
-    if overlapping:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Candidate already has an interview scheduled at this time (Interview ID: {overlapping.interview_id})"
-        )
+#     if overlapping:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail=f"Candidate already has an interview scheduled at this time (Interview ID: {overlapping.interview_id})"
+#         )
     
-    # Create interview record
-    interview_data = InterviewCreate(
-        candidate_id=candidate_id,
-        vacancy_id=candidate.vacancy_id,
-        start_time=shortlist_data.interview_date,
-        end_time=None,  # Can be set later
-        round_type="HR"  # Default to HR round for shortlisting
-    )
+#     # Create interview record
+#     interview_data = InterviewCreate(
+#         candidate_id=candidate_id,
+#         vacancy_id=candidate.vacancy_id,
+#         start_time=shortlist_data.interview_date,
+#         end_time=None,  # Can be set later
+#         round_type="HR"  # Default to HR round for shortlisting
+#     )
     
-    db_interview = Interview(
-        candidate_id=interview_data.candidate_id,
-        vacancy_id=interview_data.vacancy_id,
-        scheduled_by=current_user.user_id,
-        start_time=interview_data.start_time,
-        end_time=interview_data.end_time,
-        round_type=interview_data.round_type,
-        status="scheduled"
-    )
+#     db_interview = Interview(
+#         candidate_id=interview_data.candidate_id,
+#         vacancy_id=interview_data.vacancy_id,
+#         scheduled_by=current_user.user_id,
+#         start_time=interview_data.start_time,
+#         end_time=interview_data.end_time,
+#         round_type=interview_data.round_type,
+#         status="scheduled"
+#     )
     
-    # Store interview notes in feedback_summary (can be updated later with proper feedback)
-    if shortlist_data.interview_notes:
-        db_interview.feedback_summary = shortlist_data.interview_notes
+#     # Store interview notes in feedback_summary (can be updated later with proper feedback)
+#     if shortlist_data.interview_notes:
+#         db_interview.feedback_summary = shortlist_data.interview_notes
     
-    db.add(db_interview)
+#     db.add(db_interview)
     
-    # Update candidate status to 'interview'
-    candidate.status = 'interview'
-    candidate.updated_at = datetime.now()
+#     # Update candidate status to 'interview'
+#     candidate.status = 'interview'
+#     candidate.updated_at = datetime.now()
     
-    db.commit()
-    db.refresh(candidate)
-    db.refresh(db_interview)
+#     db.commit()
+#     db.refresh(candidate)
+#     db.refresh(db_interview)
     
-    result = CandidateOut.model_validate(candidate)
-    if vacancy:
-        result.vacancy_title = vacancy.title
-        result.vacancy_department = vacancy.department
+#     result = CandidateOut.model_validate(candidate)
+#     if vacancy:
+#         result.vacancy_title = vacancy.title
+#         result.vacancy_department = vacancy.department
     
-    # Set interview_date from the created interview (for backward compatibility)
-    result.interview_date = db_interview.start_time
+#     # Set interview_date from the created interview (for backward compatibility)
+#     result.interview_date = db_interview.start_time
     
-    return result
+#     return result
 
 @router.put("/candidates/{candidate_id}/status", response_model=CandidateOutNoInterview)
 def update_candidate_status(
@@ -773,6 +785,58 @@ def update_candidate(
         raise HTTPException(status_code=404, detail="Candidate not found")
     
     update_data = candidate_update.model_dump(exclude_unset=True)
+
+    # Validate status transitions if status is being updated
+    new_status = update_data.get("status")
+    if new_status is not None:
+        current_status = candidate.status
+        
+        # Terminal statuses cannot be changed to other statuses
+        terminal_statuses = ['rejected', 'hired', 'withdrawn']
+        if current_status in terminal_statuses and new_status != current_status:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot change status from '{current_status}' to '{new_status}'. Terminal statuses cannot be changed."
+            )
+        
+        # Cannot change to terminal status from another terminal status (except same status)
+        if new_status in terminal_statuses and current_status in terminal_statuses and new_status != current_status:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot change status from '{current_status}' to '{new_status}'."
+            )
+        
+        # Business logic validation: when setting status to 'interview', 
+        # there should be at least one scheduled interview
+        if new_status == 'interview':
+            existing_interview = db.query(Interview).filter(
+                and_(
+                    Interview.candidate_id == candidate_id,
+                    Interview.status.in_(['scheduled', 'rescheduled'])
+                )
+            ).first()
+            
+            if not existing_interview:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No scheduled interview found. Please schedule an interview first or use status update API."
+                )
+
+        # Business logic validation: when setting status to 'hired',
+        # there should be at least one scheduled, rescheduled, or completed interview
+        if new_status == 'hired':
+            existing_interview = db.query(Interview).filter(
+                and_(
+                    Interview.candidate_id == candidate_id,
+                    Interview.status.in_(['scheduled', 'rescheduled', 'completed'])
+                )
+            ).first()
+            
+            if not existing_interview:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot hire candidate without scheduling an interview first."
+                )
 
     # Enforce unique phone number on update (if phone is being changed)
     new_phone = update_data.get("phone")
