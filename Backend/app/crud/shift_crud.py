@@ -1,4 +1,23 @@
-from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, or_, extract
++from app.utils.department_utils import department_tokens_lower
++from typing import List, Optional
++
++
++def get_shifts_by_departments(db: Session, departments: Optional[List[str]] = None) -> List[Shift]:
++    """Retrieve shifts that belong to any of the supplied departments (case‑insensitive).
++    Global shifts (department IS NULL) are always included.
++    """
++    query = db.query(Shift).filter(Shift.is_active == True)
++    if departments:
++        lower_depts = [d.lower() for d in departments]
++        # Build a list of equality filters for each department token
++        dept_filters = [func.lower(Shift.department) == d for d in lower_depts]
++        # Include global shifts as well
++        query = query.filter(or_(*dept_filters, Shift.department.is_(None)))
++    else:
++        query = query.filter(Shift.department.is_(None))
++    return query.order_by(Shift.start_time).all()
++
 from sqlalchemy import func, and_, or_, extract
 from datetime import datetime, date, timedelta, time as dt_time
 from typing import List, Optional
@@ -45,22 +64,23 @@ def get_shift(db: Session, shift_id: int) -> Optional[Shift]:
 
 
 def get_shifts_by_department(db: Session, department: Optional[str] = None) -> List[Shift]:
-    """Get shifts for a department (or global shifts if department is None)"""
+    """Get shifts for a department (or global) supporting comma‑separated department strings.
+    If *department* contains commas, each token is treated as a separate department.
+    Global shifts (department IS NULL) are always included.
+    """
     query = db.query(Shift).filter(Shift.is_active == True)
-    
     if department:
-        # Get department-specific shifts and global shifts (where department is NULL)
-        # Use case-insensitive comparison for department matching
-        query = query.filter(
-            or_(
-                func.lower(Shift.department) == func.lower(department),
-                Shift.department.is_(None)
-            )
-        )
+        # Parse possible comma‑separated list
+        depts = department_tokens_lower(department)
+        if depts:
+            # Build equality filters for each token (case‑insensitive)
+            dept_filters = [func.lower(Shift.department) == d for d in depts]
+            query = query.filter(or_(*dept_filters, Shift.department.is_(None)))
+        else:
+            # Fallback to original behavior (single exact match)
+            query = query.filter(Shift.department == department)
     else:
-        # Get only global shifts
         query = query.filter(Shift.department.is_(None))
-    
     return query.order_by(Shift.start_time).all()
 
 

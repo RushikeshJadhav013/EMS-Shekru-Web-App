@@ -265,10 +265,16 @@ def assign_user_to_shift(
     if current_user.role == RoleEnum.MANAGER:
         if not current_user.department:
             raise HTTPException(status_code=403, detail="Manager must belong to a department")
-        if user.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Can only assign shifts to users in your department")
-        if shift.department and shift.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
+        # Parse manager's department list
+        manager_depts = department_tokens_lower(current_user.department)
+        # Validate user's department
+        if user.department:
+            if user.department.lower() not in manager_depts:
+                raise HTTPException(status_code=403, detail="Can only assign shifts to users in your department")
+        # Validate shift's department
+        if shift.department:
+            if shift.department.lower() not in manager_depts:
+                raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
     
     # Create assignment
     new_assignment = assign_shift(
@@ -319,17 +325,23 @@ def bulk_assign_users_to_shift(
     if current_user.role == RoleEnum.MANAGER:
         if not current_user.department:
             raise HTTPException(status_code=403, detail="Manager must belong to a department")
-        if shift.department and shift.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
+        # Parse manager's department list
+        manager_depts = department_tokens_lower(current_user.department)
+        if shift.department:
+            if shift.department.lower() not in manager_depts:
+                raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
         
         # Verify all users belong to manager's department
         users = db.query(User).filter(User.user_id.in_(assignment.user_ids)).all()
+        # Parse manager's department list
+        manager_depts = department_tokens_lower(current_user.department)
         for user in users:
-            if user.department != current_user.department:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Can only assign shifts to users in your department. User {user.name} is in {user.department}"
-                )
+            if user.department:
+                if user.department.lower() not in manager_depts:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Can only assign shifts to users in your department. User {user.name} is in {user.department}"
+                    )
     
     # Create assignments
     assignments = bulk_assign_shift(
