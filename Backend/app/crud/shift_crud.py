@@ -1,23 +1,28 @@
 from sqlalchemy import func, and_, or_, extract
-+from app.utils.department_utils import department_tokens_lower
-+from typing import List, Optional
-+
-+
-+def get_shifts_by_departments(db: Session, departments: Optional[List[str]] = None) -> List[Shift]:
-+    """Retrieve shifts that belong to any of the supplied departments (case‑insensitive).
-+    Global shifts (department IS NULL) are always included.
-+    """
-+    query = db.query(Shift).filter(Shift.is_active == True)
-+    if departments:
-+        lower_depts = [d.lower() for d in departments]
-+        # Build a list of equality filters for each department token
-+        dept_filters = [func.lower(Shift.department) == d for d in lower_depts]
-+        # Include global shifts as well
-+        query = query.filter(or_(*dept_filters, Shift.department.is_(None)))
-+    else:
-+        query = query.filter(Shift.department.is_(None))
-+    return query.order_by(Shift.start_time).all()
-+
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from app.utils.department_utils import department_tokens_lower
+from app.db.models.shift import Shift, ShiftAssignment, ShiftNotification
+from app.db.models.user import User
+from app.db.models.leave import Leave
+from app.enums import RoleEnum
+
+
+def get_shifts_by_departments(db: Session, departments: Optional[List[str]] = None) -> List[Shift]:
+    """Retrieve shifts that belong to any of the supplied departments (case‑insensitive).
+    Global shifts (department IS NULL) are always included.
+    """
+    query = db.query(Shift).filter(Shift.is_active == True)
+    if departments:
+        lower_depts = [d.lower() for d in departments]
+        # Build a list of equality filters for each department token
+        dept_filters = [func.lower(Shift.department) == d for d in lower_depts]
+        # Include global shifts as well
+        query = query.filter(or_(*dept_filters, Shift.department.is_(None)))
+    else:
+        query = query.filter(Shift.department.is_(None))
+    return query.order_by(Shift.start_time).all()
+
 from sqlalchemy import func, and_, or_, extract
 from datetime import datetime, date, timedelta, time as dt_time
 from typing import List, Optional
