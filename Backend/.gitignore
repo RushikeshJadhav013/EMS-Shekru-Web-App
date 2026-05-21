@@ -316,9 +316,7 @@ site/
 # ===========================================
 # Alembic (Keep versions, but can add specific ignores if needed)
 # ===========================================
-# Uncomment if you want to ignore alembic versions
-# alembic/versions/*.py
-# !alembic/versions/__init__.py
+# Alembic migration scripts are tracked in git (see repo root .gitignore)
 
 # ===========================================
 # Framework Specific
