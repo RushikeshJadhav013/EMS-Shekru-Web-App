@@ -60,6 +60,37 @@ def _ensure_project_exists(db: Session, project_id: int) -> Project:
     return project
 
 
+def _validate_project_member_add(
+    project: Project,
+    user_id: int,
+    role: str,
+    existing_member: ProjectMember | None,
+) -> None:
+    """
+    Guards for POST /members and /members/bulk:
+    - PIC role is only assigned at project creation.
+    - Project person-in-charge cannot be added again via these endpoints.
+    - Existing PIC membership cannot be modified or downgraded here.
+    """
+    if role == "pic":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PIC role cannot be assigned via this endpoint. PIC is set when the project is created.",
+        )
+
+    if project.person_in_charge_id and user_id == project.person_in_charge_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Person in charge is already a project member from project creation and cannot be added via this endpoint.",
+        )
+
+    if existing_member and existing_member.role == "pic":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot modify PIC membership via this endpoint. Change PIC or archive the project instead.",
+        )
+
+
 def _active_project_members(db: Session, project_id: int, *, exclude_user_id: int | None = None) -> list[User]:
     query = (
         db.query(User)
@@ -605,12 +636,20 @@ def add_project_member(
     - Admin/HR (PIC roles): can manage any project members.
     - Manager: can manage members only for their own projects and must have
       at least one department assigned (supports comma-separated departments).
+    - PIC role and project person-in-charge cannot be added or changed via this endpoint.
     """
     project = _ensure_project_exists(db, project_id)
 
     user = db.query(User).filter(User.user_id == payload.user_id, User.is_active.is_(True)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+
+    member = (
+        db.query(ProjectMember)
+        .filter(ProjectMember.project_id == project.project_id, ProjectMember.user_id == payload.user_id)
+        .first()
+    )
+    _validate_project_member_add(project, payload.user_id, payload.role, member)
 
     # Managers: enforce department configuration, project ownership, and department match
     if current_user.role == RoleEnum.MANAGER:
@@ -644,12 +683,6 @@ def add_project_member(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Managers can manage members only from their own department(s).",
             )
-
-    member = (
-        db.query(ProjectMember)
-        .filter(ProjectMember.project_id == project.project_id, ProjectMember.user_id == payload.user_id)
-        .first()
-    )
 
     if member:
         # Reactivate + update role
@@ -769,8 +802,15 @@ def add_project_members_bulk(
     - Reactivates existing members (updates role).
     - Creates new members where needed.
     - Single role applied to all provided user IDs.
+    - PIC role and project person-in-charge cannot be added or changed via this endpoint.
     """
     project = _ensure_project_exists(db, project_id)
+
+    if payload.role == "pic":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PIC role cannot be assigned via this endpoint. PIC is set when the project is created.",
+        )
 
     # Managers: enforce department configuration + project ownership
     if current_user.role == RoleEnum.MANAGER:
@@ -834,6 +874,8 @@ def add_project_members_bulk(
                 )
 
         member = members_by_user_id.get(user.user_id)
+        _validate_project_member_add(project, user.user_id, payload.role, member)
+
         if member:
             # Reactivate and update role
             member.is_active = True
