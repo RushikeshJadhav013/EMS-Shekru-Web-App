@@ -92,6 +92,20 @@ def _enforce_hr_non_privileged_target(current_user: User, target_user: User, act
         )
 
 
+def _reject_future_salary_slip_period(month: int, year: int) -> None:
+    """Disallow salary slips for calendar months after the current month (IST)."""
+    today = now_ist().date()
+    if (year, month) > (today.year, today.month):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Salary slip cannot be generated for a future period. "
+                f"Requested: {_get_month_name(month)} {year}. "
+                f"Current month: {_get_month_name(today.month)} {today.year}."
+            ),
+        )
+
+
 # Helper to attach variable pay info from the current salary record
 def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncrementOut:
     """
@@ -785,6 +799,7 @@ def download_salary_slip(
     Pass `inline=true` to open in the browser instead of forcing a file download.
     Pass `preview=true` to preview without recording in salary_slip_history; use `preview=false` (default) when the slip is finalized so the download is stored in DB.
     Employees can download their own, Admin/HR can download any.
+    Future calendar months (after the current month in IST) are not allowed.
     
     The salary slip uses the current salary-structure logic:
     - Monthly Gross = total_earnings_annual / 12
@@ -799,6 +814,8 @@ def download_salary_slip(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only download your own salary slip"
         )
+
+    _reject_future_salary_slip_period(month, year)
     
     try:
         # Get user and salary info
@@ -910,11 +927,14 @@ def send_salary_slip(
     """
     Generate and send salary slip via email.
     Admin/HR only. Requires employee email to be verified.
+    Future calendar months (after the current month in IST) are not allowed.
 
     Optional query params:
     - optional_deduction_1/2/3 _label and _amount (monthly)
     - manual_leave_days (monthly deduction by calendar days in selected month)
     """
+    _reject_future_salary_slip_period(month, year)
+
     try:
         _assert_current_in_scope(db, current_user, scope)
         # Get user and salary info
