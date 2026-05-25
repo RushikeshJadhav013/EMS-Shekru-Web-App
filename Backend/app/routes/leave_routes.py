@@ -763,7 +763,7 @@ def approvals_history(
         # Include Employee decided leaves from intersecting departments (if TeamLead has departments)
         if lead_tokens:
             employee_decided = (
-                base_query.join(User, Leave.user_id == User.user_id)
+                base_query
                 .filter(User.role == RoleEnum.EMPLOYEE)
                 .filter(User.user_id != user.user_id)
                 .order_by(Leave.end_date.desc())
