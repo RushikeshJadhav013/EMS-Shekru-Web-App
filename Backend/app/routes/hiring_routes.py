@@ -71,6 +71,22 @@ def _interview_scope_query(db: Session, scope: dict):
     return q
 
 
+# Interview records that count toward offer/hire (excludes cancelled / no_show-only paths).
+_QUALIFYING_INTERVIEW_STATUSES = ("scheduled", "rescheduled", "completed")
+
+
+def _candidate_has_qualifying_interview(db: Session, scope: dict, candidate_id: int) -> bool:
+    return (
+        _interview_scope_query(db, scope)
+        .filter(
+            Interview.candidate_id == candidate_id,
+            Interview.status.in_(_QUALIFYING_INTERVIEW_STATUSES),
+        )
+        .first()
+        is not None
+    )
+
+
 # Vacancy Routes
 
 @router.post("/vacancies", response_model=VacancyOut, status_code=status.HTTP_201_CREATED)
@@ -658,7 +674,36 @@ def update_candidate_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot change status from '{current_status}' to '{new_status}'."
         )
-    
+
+    # Pipeline: interview -> offered -> hired (rejected/withdrawn allowed without interview)
+    if new_status == "offered":
+        if current_status != "interview":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot move to 'offered' from '{current_status}'. "
+                    "Candidate must be in 'interview' status first."
+                ),
+            )
+        if not _candidate_has_qualifying_interview(db, scope, candidate_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Cannot move to 'offered' without a scheduled interview. "
+                    "Shortlist the candidate or set status to 'interview' with interview_date first."
+                ),
+            )
+
+    if new_status == "hired":
+        if current_status != "offered":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot move to 'hired' from '{current_status}'. "
+                    "Candidate must be in 'offered' status first."
+                ),
+            )
+
     # Business logic validation: when setting status to 'interview', 
     # there should be at least one scheduled interview
     if new_status == 'interview':

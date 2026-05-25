@@ -695,48 +695,48 @@ def update_employee(
 #         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 #     return employee
 
-@router.put("/{user_id}/role", response_model=UserOut)
-def update_role_public(
-    user_id: int,
-    role_data: UpdateRoleSchema,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    scope: dict = Depends(get_tenant_scope),
-):
-    """
-    Update a user's role.
-    - Admin: can update any user's role (including Admins and self)
-    - HR: can update roles except:
-       * cannot update Admin profiles
-       * cannot update other HR profiles
-       * cannot update their own role
-       * cannot assign the Admin role
-    - Others: forbidden
-    """
-    # Load target user
-    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
-    if not employee:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+# @router.put("/{user_id}/role", response_model=UserOut)
+# def update_role_public(
+#     user_id: int,
+#     role_data: UpdateRoleSchema,
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user),
+#     scope: dict = Depends(get_tenant_scope),
+# ):
+#     """
+#     Update a user's role.
+#     - Admin: can update any user's role (including Admins and self)
+#     - HR: can update roles except:
+#        * cannot update Admin profiles
+#        * cannot update other HR profiles
+#        * cannot update their own role
+#        * cannot assign the Admin role
+#     - Others: forbidden
+#     """
+#     # Load target user
+#     employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
+#     if not employee:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    # Admins may do anything
-    if current_user.role == RoleEnum.ADMIN:
-        pass
-    elif current_user.role == RoleEnum.HR:
-        # HR cannot modify Admins or other HRs, and cannot modify self
-        if employee.user_id == current_user.user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify their own role")
-        if getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify Admin or other HR profiles")
-        # HR cannot assign Admin role
-        if role_data.role == RoleEnum.ADMIN:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users are not permitted to assign the Admin role")
-    else:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can update roles")
+#     # Admins may do anything
+#     if current_user.role == RoleEnum.ADMIN:
+#         pass
+#     elif current_user.role == RoleEnum.HR:
+#         # HR cannot modify Admins or other HRs, and cannot modify self
+#         if employee.user_id == current_user.user_id:
+#             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify their own role")
+#         if getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+#             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify Admin or other HR profiles")
+#         # HR cannot assign Admin role
+#         if role_data.role == RoleEnum.ADMIN:
+#             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users are not permitted to assign the Admin role")
+#     else:
+#         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can update roles")
 
-    updated = update_user_role(db, user_id, role_data.role, updated_by=current_user.user_id)
-    if not updated:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(updated)
+#     updated = update_user_role(db, user_id, role_data.role, updated_by=current_user.user_id)
+#     if not updated:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+#     return _sanitize_users_response(updated)
 
 
 @router.put("/{user_id}/status", response_model=UserOut, summary="Activate/Deactivate Employee")
