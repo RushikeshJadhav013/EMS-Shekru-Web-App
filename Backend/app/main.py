@@ -242,6 +242,7 @@ origins = [
     "https://testing.staffly.space",           # Frontend (new custom domain on Netlify)
     "https://stafflytesting.netlify.app",       # Temporary fallback during migration
     "https://api-testing.staffly.space",    # Optional: backend domain (Swagger/tests)
+    "https://stafflysuperadmin.netlify.app"     # Super Admin frontend
 ]
 
 # Configure CORS middleware with detailed settings

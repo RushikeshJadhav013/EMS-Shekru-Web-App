@@ -6,6 +6,7 @@ from app.db.models.shift import Shift, ShiftAssignment, ShiftNotification
 from app.db.models.user import User
 from app.db.models.leave import Leave
 from app.enums import RoleEnum
+from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 
 def create_shift(
@@ -81,6 +82,36 @@ def get_shifts_by_department(
             query = query.filter(Shift.department.is_(None))
     
     return query.order_by(Shift.start_time).all()
+
+
+def get_shifts_for_department_tokens(db: Session, department_tokens: List[str]) -> List[Shift]:
+    """Return active shifts for any of the given department tokens (plus global shifts)."""
+    tokens = [t.strip().lower() for t in department_tokens if t and t.strip()]
+    if not tokens:
+        return get_shifts_by_department(db, None)
+
+    query = db.query(Shift).filter(Shift.is_active == True)
+    query = query.filter(
+        or_(
+            Shift.department.is_(None),
+            func.lower(Shift.department).in_(tokens),
+        )
+    )
+    return query.order_by(Shift.start_time).all()
+
+
+def user_has_department_token(user_department: Optional[str], department: str) -> bool:
+    """True if user's comma-separated departments include the given department token."""
+    token = (department or "").strip().lower()
+    if not token:
+        return False
+    return token in department_tokens_lower(user_department)
+
+
+def _department_token_rlike_filter(department: str):
+    """SQLAlchemy filter: User.department contains department as a comma-separated token."""
+    pattern = department_token_regex_pattern(department.strip())
+    return and_(User.department.isnot(None), User.department.op("RLIKE")(pattern))
 
 
 def update_shift(
@@ -224,17 +255,20 @@ def get_department_shift_schedule(
     assignments_q = (
         db.query(ShiftAssignment)
         .join(User, User.user_id == ShiftAssignment.user_id)
-        .filter(ShiftAssignment.assignment_date == schedule_date)
+        .filter(
+            ShiftAssignment.assignment_date == schedule_date,
+            _department_token_rlike_filter(department),
+        )
     )
     if company_id is not None:
         assignments_q = assignments_q.filter(User.company_id == company_id)
     if branch_id is not None:
         assignments_q = assignments_q.filter(User.branch_id == branch_id)
     assignments = assignments_q.all()
-    
-    # Get users in the department
+
+    # Get users whose department list includes this department token
     dept_users_q = db.query(User).filter(
-        User.department == department,
+        _department_token_rlike_filter(department),
         User.is_active == True,
         User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD])
     )
@@ -246,7 +280,7 @@ def get_department_shift_schedule(
     
     # Get users on leave for this date
     users_on_leave_q = db.query(User).join(Leave).filter(
-        User.department == department,
+        _department_token_rlike_filter(department),
         User.is_active == True,
         Leave.start_date <= schedule_date,
         Leave.end_date >= schedule_date,
