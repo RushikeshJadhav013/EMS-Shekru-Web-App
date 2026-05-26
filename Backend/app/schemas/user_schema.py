@@ -38,6 +38,7 @@ class UserBase(BaseModel):
         return v
     
     resignation_date: Optional[datetime] = Field(None, description="Resignation date if applicable")
+    joining_date: Optional[datetime] = Field(None, description="Date of joining (IST)")
     pan_card: Optional[constr(min_length=10, max_length=10, strip_whitespace=True)] = Field(None, description="PAN card number (10 characters)")
     aadhar_card: Optional[constr(min_length=14, max_length=14, strip_whitespace=True)] = Field(None, description="Aadhar card number (format: 1234-5678-9012)")
     shift_type: Optional[Literal['general', 'morning', 'afternoon', 'day', 'night', 'rotational', 'rotating']] = Field(None, description="Shift type")
@@ -302,6 +303,7 @@ class AdminCreate(BaseModel):
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
+    joining_date: Optional[datetime] = None
 
     @validator("gender", pre=True, always=True)
     def validate_gender(cls, v):
@@ -520,6 +522,7 @@ class AdminUpdate(BaseModel):
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
     is_active: Optional[bool] = None
+    joining_date: Optional[datetime] = None
 
     @validator("gender", pre=True, always=True)
     def validate_gender(cls, v):

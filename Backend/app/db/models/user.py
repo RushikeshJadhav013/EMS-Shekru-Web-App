@@ -49,7 +49,7 @@ class User(Base):
     employee_type = Column(String(50), nullable=True)  # ✅ Added: contract or permanent
 
     # Dates
-    joining_date = Column(DateTime, default=now_ist)
+    joining_date = Column(DateTime, nullable=True)
     resignation_date = Column(DateTime, nullable=True)
 
     # Profile & status

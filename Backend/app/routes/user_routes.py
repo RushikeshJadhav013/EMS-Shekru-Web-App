@@ -53,6 +53,26 @@ def _profile_photo_exists(photo_path: Optional[str]) -> bool:
     return candidate.exists()
 
 
+def _parse_optional_form_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Parse YYYY-MM-DD or ISO datetime from multipart form fields."""
+    if value is None or not str(value).strip():
+        return None
+    raw = str(value).strip()
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Invalid date format. Use YYYY-MM-DD or ISO datetime.",
+    )
+
+
 def _sanitize_user_record(user: User) -> dict:
     data = UserOut.model_validate(user).model_dump()
     if data.get("profile_photo") and not _profile_photo_exists(data["profile_photo"]):
@@ -83,6 +103,7 @@ def register_employee(
     # Make gender mandatory on user registration
     gender: str = Form(...),
     resignation_date: Optional[datetime] = Form(None),
+    joining_date: Optional[datetime] = Form(None),
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
     shift_type: Optional[str] = Form(None),
@@ -246,6 +267,7 @@ def register_employee(
         role=role,
         gender=gender_value,
         resignation_date=resignation_date,
+        joining_date=joining_date,
         pan_card=pan_card,
         aadhar_card=aadhar_card,
         shift_type=shift_type,
@@ -473,6 +495,7 @@ def update_employee(
     role: Optional[RoleEnum] = Form(RoleEnum.EMPLOYEE),
     gender: str = Form(...),
     resignation_date: Optional[str] = Form(None),
+    joining_date: Optional[str] = Form(None),
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
     shift_type: Optional[str] = Form(None),
@@ -674,7 +697,9 @@ def update_employee(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
         )
-    employee.resignation_date = resignation_date
+    employee.resignation_date = _parse_optional_form_datetime(resignation_date)
+    if joining_date is not None:
+        employee.joining_date = _parse_optional_form_datetime(joining_date)
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card
     employee.shift_type = shift_type

@@ -140,6 +140,7 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
         department=normalize_department_string(user.department),
         designation=user.designation,
         resignation_date=user.resignation_date,
+        joining_date=user.joining_date,
         phone=user.phone,
         address=user.address,
         pan_card=user.pan_card,
