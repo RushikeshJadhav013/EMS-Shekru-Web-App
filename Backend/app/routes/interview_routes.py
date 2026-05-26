@@ -24,6 +24,52 @@ router = APIRouter(
     dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))]
 )
 
+# Allowed status transitions (target statuses from each source status).
+_INTERVIEW_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    "scheduled": {"completed", "cancelled", "no_show"},
+    "rescheduled": {"completed", "cancelled", "no_show"},
+    "cancelled": {"rescheduled"},
+    "no_show": {"rescheduled"},
+    "completed": set(),
+}
+
+
+def _validate_interview_status_transition(current_status: str, new_status: str) -> None:
+    """Raise HTTP 400 when a status change is not permitted."""
+    if current_status == new_status:
+        return
+    allowed = _INTERVIEW_STATUS_TRANSITIONS.get(current_status)
+    if allowed is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown interview status '{current_status}'.",
+        )
+    if new_status not in allowed:
+        if current_status == "completed":
+            detail = "Cannot change status of a completed interview."
+        elif current_status == "scheduled" and new_status == "rescheduled":
+            detail = (
+                "Cannot change status from 'scheduled' to 'rescheduled'. "
+                "Update interview times instead, or cancel and create a new interview."
+            )
+        elif current_status in ("cancelled", "no_show"):
+            detail = (
+                f"Cannot change status from '{current_status}' to '{new_status}'. "
+                f"'{current_status}' interviews can only be rescheduled."
+            )
+        elif current_status == "rescheduled":
+            detail = (
+                f"Cannot change status from 'rescheduled' to '{new_status}'. "
+                "Allowed targets: completed, cancelled, no_show."
+            )
+        else:
+            allowed_list = ", ".join(sorted(allowed)) if allowed else "none"
+            detail = (
+                f"Cannot change status from '{current_status}' to '{new_status}'. "
+                f"Allowed targets: {allowed_list}."
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
 
 def _interview_scope_query(db: Session, scope: dict):
     company_id = scope.get("company_id")
@@ -262,6 +308,9 @@ def update_interview(
     
     # Update fields
     update_data = interview_update.model_dump(exclude_unset=True)
+
+    if "status" in update_data:
+        _validate_interview_status_transition(interview.status, update_data["status"])
     
     # Handle panel_members serialization
     if 'panel_members' in update_data and update_data['panel_members'] is not None:
@@ -300,34 +349,10 @@ def update_interview_status(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
-    current_status = interview.status
-    new_status = status_update.status
-    
-    # Validate status transitions
-    if current_status != new_status:
-        # Completed interviews cannot be rescheduled or changed to any other status
-        if current_status == 'completed':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot change status of a completed interview."
-            )
-            
-        # Cancelled interviews can only transition to rescheduled
-        if current_status == 'cancelled' and new_status != 'rescheduled':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot change status from 'cancelled' to '{new_status}'. Cancelled interviews can only be rescheduled."
-            )
-            
-        # No-show interviews can only transition to rescheduled
-        if current_status == 'no_show' and new_status != 'rescheduled':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot change status from 'no_show' to '{new_status}'. No-show interviews can only be rescheduled."
-            )
-    
+    _validate_interview_status_transition(interview.status, status_update.status)
+
     # Update status only
-    interview.status = new_status
+    interview.status = status_update.status
     
     interview.updated_at = datetime.now()
     db.commit()
