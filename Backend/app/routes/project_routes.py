@@ -110,6 +110,67 @@ def _ensure_project_exists(db: Session, project_id: int, *, scope: dict) -> Proj
     return project
 
 
+def _get_project_member_record(db: Session, project_id: int, user_id: int) -> Optional[ProjectMember]:
+    return (
+        db.query(ProjectMember)
+        .filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
+        .first()
+    )
+
+
+def _reject_pic_member_add(project: Project, user_id: int) -> None:
+    """PIC is added at project creation; do not re-add via member endpoints (avoids role demotion)."""
+    if project.person_in_charge_id == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The person in charge (user {user_id}) is already a member of this project.",
+        )
+
+
+def _reject_if_active_member(member: Optional[ProjectMember], user_id: int) -> None:
+    if member and member.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"User {user_id} is already a member of this project.",
+        )
+
+
+def _validate_bulk_member_add_targets(
+    project: Project,
+    user_ids: list[int],
+    members_by_user_id: dict[int, ProjectMember],
+) -> None:
+    pic_ids = [uid for uid in user_ids if project.person_in_charge_id == uid]
+    active_ids = [
+        uid
+        for uid in user_ids
+        if uid not in pic_ids
+        and (m := members_by_user_id.get(uid)) is not None
+        and m.is_active
+    ]
+
+    if not pic_ids and not active_ids:
+        return
+
+    messages: list[str] = []
+    if pic_ids:
+        messages.append(
+            f"The person in charge (user {pic_ids[0]}) is already a member of this project."
+        )
+    if len(active_ids) == 1:
+        messages.append(f"User {active_ids[0]} is already a member of this project.")
+    elif active_ids:
+        ids_label = ", ".join(str(uid) for uid in active_ids)
+        messages.append(f"The following user(s) are already members of this project: {ids_label}.")
+
+    status_code = (
+        status.HTTP_400_BAD_REQUEST
+        if pic_ids and not active_ids
+        else status.HTTP_409_CONFLICT
+    )
+    raise HTTPException(status_code=status_code, detail=" ".join(messages))
+
+
 def _active_project_members(
     db: Session,
     project_id: int,
@@ -705,6 +766,8 @@ def add_project_member(
     - Admin/HR (PIC roles): can manage any project members.
     - Manager: can manage members only for their own projects and must have
       at least one department assigned (supports comma-separated departments).
+    - Person in charge cannot be added again (already on project at creation).
+    - Already-active members must be removed before they can be added again.
     """
     _assert_current_in_scope(db, current_user, scope)
     project = _ensure_project_exists(db, project_id, scope=scope)
@@ -749,14 +812,12 @@ def add_project_member(
                 detail="Managers can manage members only from their own department(s).",
             )
 
-    member = (
-        db.query(ProjectMember)
-        .filter(ProjectMember.project_id == project.project_id, ProjectMember.user_id == payload.user_id)
-        .first()
-    )
+    member = _get_project_member_record(db, project.project_id, payload.user_id)
+    _reject_pic_member_add(project, payload.user_id)
+    _reject_if_active_member(member, payload.user_id)
 
     if member:
-        # Reactivate + update role
+        # Reactivate previously removed member only
         member.is_active = True
         member.removed_at = None
         member.role = payload.role
@@ -877,8 +938,9 @@ def add_project_members_bulk(
     """
     Bulk add members to a project.
 
-    - Reactivates existing members (updates role).
+    - Reactivates previously removed members (updates role).
     - Creates new members where needed.
+    - Rejects person in charge and already-active members.
     - Single role applied to all provided user IDs.
     """
     _assert_current_in_scope(db, current_user, scope)
@@ -934,8 +996,9 @@ def add_project_members_bulk(
         .all()
     )
     members_by_user_id = {m.user_id: m for m in existing_members}
+    _validate_bulk_member_add_targets(project, user_ids, members_by_user_id)
 
-    created_or_updated: list[ProjectMember] = []
+    created_or_updated: list[tuple[ProjectMember, User]] = []
 
     for user in users:
         # Managers can add only users from their own department(s)
@@ -949,7 +1012,7 @@ def add_project_members_bulk(
 
         member = members_by_user_id.get(user.user_id)
         if member:
-            # Reactivate and update role
+            # Reactivate previously removed member only (active members rejected above)
             member.is_active = True
             member.removed_at = None
             member.role = payload.role
