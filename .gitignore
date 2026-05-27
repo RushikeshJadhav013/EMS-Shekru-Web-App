@@ -201,7 +201,6 @@ Backend/attendance.db
 *.sqlite3
 
 # Alembic
-Backend/alembic/versions/*.py
 !Backend/alembic/versions/__init__.py
 
 # PyInstaller
