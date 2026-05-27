@@ -313,13 +313,6 @@ docs/_build/
 site/
 
 # ===========================================
-# Alembic (Keep versions, but can add specific ignores if needed)
-# ===========================================
-# Uncomment if you want to ignore alembic versions
-# alembic/versions/*.py
-# !alembic/versions/__init__.py
-
-# ===========================================
 # Framework Specific
 # ===========================================
 # Flask
