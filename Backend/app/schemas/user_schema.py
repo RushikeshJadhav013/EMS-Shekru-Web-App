@@ -38,6 +38,7 @@ class UserBase(BaseModel):
         return v
     
     resignation_date: Optional[datetime] = Field(None, description="Resignation date if applicable")
+    joining_date: Optional[datetime] = Field(None, description="Date of joining (IST)")
     pan_card: Optional[constr(min_length=10, max_length=10, strip_whitespace=True)] = Field(None, description="PAN card number (10 characters)")
     aadhar_card: Optional[constr(min_length=14, max_length=14, strip_whitespace=True)] = Field(None, description="Aadhar card number (format: 1234-5678-9012)")
     shift_type: Optional[Literal['general', 'morning', 'afternoon', 'day', 'night', 'rotational', 'rotating']] = Field(None, description="Shift type")
@@ -185,6 +186,9 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     employee_id: constr(min_length=1, max_length=50, strip_whitespace=True) = Field(..., description="Unique employee ID")
     profile_photo: Optional[str] = Field(None, description="Profile photo URL or path")
+    # Tenant scope is set server-side based on admin assignment (or current_user scope).
+    company_id: Optional[int] = Field(None, description="Company ID (set by server)")
+    branch_id: Optional[int] = Field(None, description="Branch ID (set by server, optional)")
 
     @field_validator('employee_id')
     @classmethod
@@ -267,6 +271,8 @@ class UserOut(UserBase):
     is_active: bool
     profile_photo: Optional[str] = None
     created_at: datetime
+    company_id: Optional[int] = None
+    branch_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -297,6 +303,7 @@ class AdminCreate(BaseModel):
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
+    joining_date: Optional[datetime] = None
 
     @validator("gender", pre=True, always=True)
     def validate_gender(cls, v):
@@ -508,18 +515,19 @@ class AdminUpdate(BaseModel):
     designation: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    # For updates, gender is required and must not be null.
-    gender: str
+    # For updates, gender is optional.
+    gender: Optional[str] = None
     shift_type: Optional[str] = None
     employee_type: Optional[str] = None
     pan_card: Optional[str] = None
     aadhar_card: Optional[str] = None
     is_active: Optional[bool] = None
+    joining_date: Optional[datetime] = None
 
     @validator("gender", pre=True, always=True)
     def validate_gender(cls, v):
         if v is None:
-            raise ValueError('Gender is required')
+            return None
         if isinstance(v, str):
             normalized = v.strip().lower()
             if normalized in ['male', 'm']:

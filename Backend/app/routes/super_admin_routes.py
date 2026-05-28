@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import timedelta
 from pydantic import EmailStr
 import logging
@@ -29,6 +30,8 @@ from app.schemas.user_schema import (
     AdminUpdate,
 )
 from app.db.models.super_admin import SuperAdmin
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
 from app.core.security import create_token
 from app.core.otp_utils import generate_otp, verify_otp, get_environment_info
 from app.services.email_service import send_otp_email
@@ -52,6 +55,48 @@ from app.crud.user_crud import (
 )
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
+
+
+def _ensure_not_targeting_self_super_admin(
+    current: SuperAdmin, target_super_admin_id: int, action_phrase: str
+) -> None:
+    if current.super_admin_id == target_super_admin_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You cannot {action_phrase} your own super admin account.",
+        )
+
+
+def _get_super_admin_by_email(db: Session, email: str, exclude_super_admin_id: int | None = None):
+    if not email:
+        return None
+    query = db.query(SuperAdmin).filter(func.lower(SuperAdmin.email) == email.strip().lower())
+    if exclude_super_admin_id is not None:
+        query = query.filter(SuperAdmin.super_admin_id != exclude_super_admin_id)
+    return query.first()
+
+
+def _get_super_admin_by_contact(
+    db: Session, contact_no: str, exclude_super_admin_id: int | None = None
+):
+    if not contact_no:
+        return None
+    query = db.query(SuperAdmin).filter(SuperAdmin.contact_no == contact_no.strip())
+    if exclude_super_admin_id is not None:
+        query = query.filter(SuperAdmin.super_admin_id != exclude_super_admin_id)
+    return query.first()
+
+
+def _get_company_by_contact(db: Session, contact_no: str):
+    if not contact_no:
+        return None
+    return db.query(Company).filter(Company.contact_number == contact_no.strip()).first()
+
+
+def _get_branch_by_contact(db: Session, contact_no: str):
+    if not contact_no:
+        return None
+    return db.query(CompanyBranch).filter(CompanyBranch.contact_number == contact_no.strip()).first()
 
 # @router.get("/total-companies")
 # def total_companies(db: Session = Depends(get_db)):
@@ -81,27 +126,43 @@ def create_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Create a new super admin - requires authentication"""
-    # Prevent duplicate email addresses
-    existing_email = (
-        db.query(SuperAdmin)
-        .filter(SuperAdmin.email == super_admin.email)
-        .first()
-    )
+    normalized_email = super_admin.email.strip().lower()
+
+    # Prevent duplicate email addresses in super_admins table
+    existing_email = _get_super_admin_by_email(db, normalized_email)
     if existing_email:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A super admin already uses this email address",
         )
-    # Prevent duplicate contact numbers
-    existing_contact = (
-        db.query(SuperAdmin)
-        .filter(SuperAdmin.contact_no == super_admin.contact_no)
-        .first()
-    )
+    # Enforce global email uniqueness against users table
+    if get_user_by_email(db, normalized_email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email address is already used by a user/admin account",
+        )
+    # Prevent duplicate contact numbers in super_admins table
+    existing_contact = _get_super_admin_by_contact(db, super_admin.contact_no)
     if existing_contact:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A super admin already uses this contact number",
+        )
+    # Enforce global phone uniqueness against users table
+    if get_user_by_phone(db, super_admin.contact_no):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Contact number is already used by a user/admin account",
+        )
+    if _get_company_by_contact(db, super_admin.contact_no):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Contact number is already used by a company.",
+        )
+    if _get_branch_by_contact(db, super_admin.contact_no):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Contact number is already used by a company branch.",
         )
 
     return create_super_admin(db, super_admin, current_super_admin.super_admin_id)
@@ -114,19 +175,49 @@ def update_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Update a super admin - requires authentication"""
-    if super_admin.contact_no:
-        existing_contact = (
-            db.query(SuperAdmin)
-            .filter(
-                SuperAdmin.contact_no == super_admin.contact_no,
-                SuperAdmin.super_admin_id != super_admin_id,
+    _ensure_not_targeting_self_super_admin(current_super_admin, super_admin_id, "edit")
+    if super_admin.email:
+        normalized_email = super_admin.email.strip().lower()
+        existing_email = _get_super_admin_by_email(
+            db,
+            normalized_email,
+            exclude_super_admin_id=super_admin_id,
+        )
+        if existing_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another super admin already uses this email address",
             )
-            .first()
+        if get_user_by_email(db, normalized_email):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email address is already used by a user/admin account",
+            )
+    if super_admin.contact_no:
+        existing_contact = _get_super_admin_by_contact(
+            db,
+            super_admin.contact_no,
+            exclude_super_admin_id=super_admin_id,
         )
         if existing_contact:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Another super admin already uses this contact number",
+            )
+        if get_user_by_phone(db, super_admin.contact_no):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Contact number is already used by a user/admin account",
+            )
+        if _get_company_by_contact(db, super_admin.contact_no):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Contact number is already used by a company.",
+            )
+        if _get_branch_by_contact(db, super_admin.contact_no):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Contact number is already used by a company branch.",
             )
 
     updated_admin = update_super_admin(db, super_admin_id, super_admin, current_super_admin.super_admin_id)
@@ -141,6 +232,7 @@ def delete_super_admin_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Delete a super admin - requires authentication"""
+    _ensure_not_targeting_self_super_admin(current_super_admin, super_admin_id, "delete")
     deleted_admin = delete_super_admin(db, super_admin_id)
     if not deleted_admin:
         raise HTTPException(status_code=404, detail="Super Admin not found")
@@ -160,11 +252,12 @@ def get_super_admin_route(
 
 @router.get("/list", response_model=List[SuperAdminOut])
 def list_super_admins_route(
+    status_filter: bool | None = None,
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """List all super admins - requires authentication"""
-    return list_super_admins(db)
+    return list_super_admins(db, status=status_filter)
 
 
 @router.patch("/status/{super_admin_id}", response_model=SuperAdminOut)
@@ -175,6 +268,7 @@ def set_super_admin_status_route(
     current_super_admin: SuperAdmin = Depends(get_current_super_admin)
 ):
     """Enable/disable a super admin - requires authentication"""
+    _ensure_not_targeting_self_super_admin(current_super_admin, super_admin_id, "change the status of")
     updated_admin = set_super_admin_status(
         db,
         super_admin_id,
@@ -236,6 +330,11 @@ def create_admin_user_route(
             status_code=status.HTTP_409_CONFLICT,
             detail="A user already exists with this email address",
         )
+    if _get_super_admin_by_email(db, email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email address is already used by a super admin",
+        )
 
     if get_user_by_employee_id(db, employee_id):
         raise HTTPException(
@@ -250,6 +349,24 @@ def create_admin_user_route(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+        existing_super_admin_contact = _get_super_admin_by_contact(db, admin.phone.strip())
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a super admin.",
+            )
+        existing_company_contact = _get_company_by_contact(db, admin.phone.strip())
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company.",
+            )
+        existing_branch_contact = _get_branch_by_contact(db, admin.phone.strip())
+        if existing_branch_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company branch.",
             )
 
     # Check for duplicate PAN card
@@ -283,10 +400,11 @@ def create_admin_user_route(
 
 @router.get("/admins", response_model=List[UserOut])
 def list_admin_users_route(
+    status_filter: bool | None = None,
     db: Session = Depends(get_db),
     current_super_admin: SuperAdmin = Depends(get_current_super_admin),
 ):
-    return list_admin_users(db)
+    return list_admin_users(db, status=status_filter)
 
 
 @router.get("/admins/{admin_id}", response_model=UserOut)
@@ -316,6 +434,12 @@ def update_admin_user_route(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Another user already uses this email address",
             )
+        existing_super_admin = _get_super_admin_by_email(db, admin_update.email)
+        if existing_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email address is already used by a super admin",
+            )
 
     if admin_update.employee_id:
         normalized_emp = admin_update.employee_id.strip()
@@ -334,6 +458,24 @@ def update_admin_user_route(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+        existing_super_admin_contact = _get_super_admin_by_contact(db, admin_update.phone.strip())
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a super admin.",
+            )
+        existing_company_contact = _get_company_by_contact(db, admin_update.phone.strip())
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company.",
+            )
+        existing_branch_contact = _get_branch_by_contact(db, admin_update.phone.strip())
+        if existing_branch_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company branch.",
             )
 
     # Check for duplicate PAN card (excluding current admin)

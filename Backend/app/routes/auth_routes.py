@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from app.db.database import SessionLocal, get_db
@@ -8,6 +8,15 @@ from app.services.email_service import send_otp_email, test_email_configuration
 from app.core.security import create_token
 from app.core.config import settings
 import logging
+from app.dependencies import get_current_user, require_roles
+from app.enums import RoleEnum
+from app.crud.branch_admin_assignment_crud import list_companies_for_admin
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
+from app.db.models.branch_admin_assignment import BranchAdminAssignment
+from app.db.models.company_admin_assignment import CompanyAdminAssignment
+from app.schemas.company_schema import AccessibleCompanyOut
+from app.schemas.company_branch_schema import AccessibleBranchOut
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +97,134 @@ def verify_user(email: str, otp: int, db: Session = Depends(get_db)):
         "joining_date": user.joining_date.isoformat() if user.joining_date else None,
         "profile_photo": user.profile_photo,
         "environment": settings.ENVIRONMENT
+    }
+
+
+@router.get("/me")
+def get_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the currently authenticated user's profile plus tenant context.
+
+    Frontend usage (Option 1):
+    - call this after login
+    - use `company_slug` to build `/{company_slug}/...` API paths
+    """
+    company_slug = None
+    company_name = None
+    if getattr(current_user, "company_id", None) is not None:
+        company = (
+            db.query(Company)
+            .filter(
+                Company.company_id == int(current_user.company_id),
+                Company.is_deleted == False,  # noqa: E712
+            )
+            .first()
+        )
+        if company:
+            company_slug = company.company_slug
+            company_name = company.company_name
+
+    role_value = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+
+    return {
+        "user_id": int(current_user.user_id),
+        "employee_id": current_user.employee_id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "role": role_value,
+        "department": current_user.department,
+        "designation": current_user.designation,
+        "joining_date": current_user.joining_date.isoformat() if current_user.joining_date else None,
+        "profile_photo": current_user.profile_photo,
+        "is_active": bool(current_user.is_active),
+        "company_id": int(current_user.company_id) if current_user.company_id is not None else None,
+        "branch_id": int(current_user.branch_id) if current_user.branch_id is not None else None,
+        "company_slug": company_slug,
+        "company_name": company_name,
+    }
+
+
+@router.get("/me/companies", response_model=list[AccessibleCompanyOut])
+def list_my_accessible_companies(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    """
+    List companies accessible to the currently authenticated ADMIN user.
+
+    This is intended for frontend tenant selection before navigating to `/{company_slug}/...`.
+    """
+    companies = list_companies_for_admin(db=db, admin_user_id=int(current_user.user_id))
+    return companies
+
+
+@router.get("/me/companies/{company_slug}/branches")
+def list_my_accessible_branches_for_company(
+    company_slug: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+):
+    """
+    For the logged-in ADMIN:
+    - Verify they can access the company identified by `company_slug`
+    - Return whether they have company-level access
+    - Return the list of branches they are assigned to in that company
+
+    Frontend usage: after selecting a company (by slug), call this to decide
+    whether to prompt for `X-Branch-Id` or treat the admin as company-level.
+    """
+    slug_norm = (company_slug or "").strip().lower()
+    if not slug_norm:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="company_slug is required")
+
+    company: Company | None = (
+        db.query(Company)
+        .filter(Company.company_slug == slug_norm, Company.is_deleted == False)  # noqa: E712
+        .first()
+    )
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    admin_user_id = int(current_user.user_id)
+
+    has_company_level_access = (
+        db.query(CompanyAdminAssignment.assignment_id)
+        .filter(
+            CompanyAdminAssignment.admin_user_id == admin_user_id,
+            CompanyAdminAssignment.company_id == int(company.company_id),
+            CompanyAdminAssignment.is_active == True,  # noqa: E712
+        )
+        .first()
+        is not None
+    )
+
+    # Branches assigned to this admin within the selected company
+    branches = (
+        db.query(CompanyBranch)
+        .join(BranchAdminAssignment, BranchAdminAssignment.branch_id == CompanyBranch.branch_id)
+        .filter(
+            CompanyBranch.company_id == int(company.company_id),
+            CompanyBranch.is_deleted == False,  # noqa: E712
+            BranchAdminAssignment.admin_user_id == admin_user_id,
+            BranchAdminAssignment.is_active == True,  # noqa: E712
+        )
+        .order_by(CompanyBranch.branch_name.asc())
+        .all()
+    )
+
+    # Access is granted if admin has company-level access OR at least one branch assignment in this company.
+    if not has_company_level_access and not branches:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied for this company")
+
+    return {
+        "company_id": int(company.company_id),
+        "company_slug": company.company_slug,
+        "company_name": company.company_name,
+        "has_company_level_access": bool(has_company_level_access),
+        "branches": [AccessibleBranchOut.model_validate(b).model_dump() for b in branches],
     }
 
 # Development/Testing endpoints for debugging OTP

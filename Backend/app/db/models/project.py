@@ -11,6 +11,8 @@ class Project(Base):
     __tablename__ = "projects"
 
     project_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id", ondelete="CASCADE"), nullable=True, index=True)
+    branch_id = Column(Integer, ForeignKey("company_branches.branch_id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 

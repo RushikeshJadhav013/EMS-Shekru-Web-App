@@ -31,6 +31,19 @@ class Meeting(Base):
         index=True,
     )
 
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    branch_id = Column(
+        Integer,
+        ForeignKey("company_branches.branch_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     created_by_id = Column(
         Integer,
         ForeignKey("users.user_id", ondelete="RESTRICT"),

@@ -1,3 +1,4 @@
+static/
 # Bytecode and cache
 __pycache__/
 *.py[cod]
@@ -311,6 +312,11 @@ Temporary Items
 # ===========================================
 docs/_build/
 site/
+
+# ===========================================
+# Alembic (Keep versions, but can add specific ignores if needed)
+# ===========================================
+# Alembic migration scripts are tracked in git (see repo root .gitignore)
 
 # ===========================================
 # Framework Specific

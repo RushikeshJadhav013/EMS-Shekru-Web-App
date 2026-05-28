@@ -13,7 +13,7 @@ from app.crud.department_crud import (
     update_department,
     delete_department,
 )
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.utils.department_utils import normalize_department_string, department_tokens_lower
 
@@ -25,8 +25,9 @@ router = APIRouter(prefix="/departments", tags=["Departments"])
 def get_departments(
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    return list_departments(db)
+    return list_departments(db, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
 
 
 @router.post("/", response_model=DepartmentOut, status_code=status.HTTP_201_CREATED)
@@ -34,8 +35,12 @@ def create_department_endpoint(
     dept_in: DepartmentCreate,
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    return create_department(db, dept_in)
+    try:
+        return create_department(db, dept_in, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.put("/{dept_id}", response_model=DepartmentOut)
@@ -44,8 +49,9 @@ def update_department_endpoint(
     dept_in: DepartmentUpdate,
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    dept = get_department(db, dept_id)
+    dept = get_department(db, dept_id, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
     
@@ -53,7 +59,16 @@ def update_department_endpoint(
     old_manager_id = dept.manager_id
     
     # Update the department
-    updated_dept = update_department(db, dept, dept_in)
+    try:
+        updated_dept = update_department(
+            db,
+            dept,
+            dept_in,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     
     # Handle manager role synchronization
     new_manager_id = updated_dept.manager_id
@@ -89,8 +104,9 @@ def update_department_status_endpoint(
     status_in: DepartmentStatusUpdate,
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    dept = get_department(db, dept_id)
+    dept = get_department(db, dept_id, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
 
@@ -111,8 +127,9 @@ def delete_department_endpoint(
     dept_id: int,
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    dept = get_department(db, dept_id)
+    dept = get_department(db, dept_id, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
     delete_department(db, dept)
@@ -123,12 +140,14 @@ def delete_department_endpoint(
 def get_department_names(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get basic department names for all authenticated users.
     This is used for dropdowns, filters, and week-off planners.
     """
-    departments = list_departments(db)
+    # current_user is still used for auth; scoping is enforced via get_tenant_scope
+    departments = list_departments(db, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
     return [{"name": dept.name, "code": dept.code} for dept in departments]
 
 
@@ -136,16 +155,19 @@ def get_department_names(
 def get_department_managers(
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # ✅ Include HR, Manager, and TeamLead roles as potential department managers
     # ✅ Exclude Admin users - Admin is the boss and should not be assigned to departments
-    managers = (
+    q = (
         db.query(User)
         .filter(User.role.in_([RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD]))
         .filter(User.is_active.is_(True))
-        .order_by(User.name.asc())
-        .all()
+        .filter(User.company_id == scope["company_id"])
     )
+    if scope.get("branch_id") is not None:
+        q = q.filter(User.branch_id == scope["branch_id"])
+    managers = q.order_by(User.name.asc()).all()
 
     return [
         {
@@ -167,6 +189,7 @@ def get_department_managers(
 def sync_departments_from_users(
     db: Session = Depends(get_db),
     _: RoleEnum = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Auto-detect departments from existing users and create department entries.
@@ -176,12 +199,16 @@ def sync_departments_from_users(
     from sqlalchemy import func
     
     # Get all user department strings and split into tokens, normalizing each token.
-    raw_user_departments = (
+    q = (
         db.query(User.department)
+        .filter(User.is_active.is_(True))
+        .filter(User.company_id == scope["company_id"])
         .filter(User.department.isnot(None))
-        .filter(User.department != '')
-        .all()
+        .filter(User.department != "")
     )
+    if scope.get("branch_id") is not None:
+        q = q.filter(User.branch_id == scope["branch_id"])
+    raw_user_departments = q.all()
 
     # Count per individual department token (handles comma-separated multi-dept values)
     consolidated_departments = {}
@@ -200,7 +227,11 @@ def sync_departments_from_users(
                 }
     
     # Get existing departments
-    existing_departments = {dept.name.lower(): dept for dept in db.query(Department).all()}
+    # Restrict "existing departments" to the same tenant-derived scope to avoid cross-tenant collisions
+    existing_departments = {
+        dept.name.lower(): dept
+        for dept in list_departments(db, company_id=scope["company_id"], branch_id=scope.get("branch_id"))
+    }
     
     created_count = 0
     updated_count = 0

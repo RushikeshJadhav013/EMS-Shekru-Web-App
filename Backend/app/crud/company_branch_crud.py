@@ -4,11 +4,18 @@ from app.db.models.company_branch import CompanyBranch
 from app.schemas.company_branch_schema import CompanyBranchCreate, CompanyBranchUpdate
 
 
+def _normalize_email(email: str | None) -> str | None:
+    if email is None:
+        return None
+    value = email.strip().lower()
+    return value or None
+
+
 def create_branch(db: Session, branch: CompanyBranchCreate, created_by: int | None = None) -> CompanyBranch:
     payload = branch.model_dump()
     payload["branch_name"] = payload["branch_name"].strip()
     if payload.get("branch_email"):
-        payload["branch_email"] = payload["branch_email"].strip().lower()
+        payload["branch_email"] = _normalize_email(payload["branch_email"])
     payload["contact_number"] = payload["contact_number"].strip()
     payload["address"] = payload["address"].strip()
 
@@ -37,6 +44,20 @@ def get_branch_by_name(
         CompanyBranch.company_id == company_id,
         func.lower(CompanyBranch.branch_name) == normalized_name.lower(),
     )
+    if not include_deleted:
+        q = q.filter(CompanyBranch.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
+def get_branch_by_email(
+    db: Session,
+    branch_email: str | None,
+    include_deleted: bool = False,
+) -> CompanyBranch | None:
+    normalized = _normalize_email(branch_email)
+    if normalized is None:
+        return None
+    q = db.query(CompanyBranch).filter(func.lower(CompanyBranch.branch_email) == normalized)
     if not include_deleted:
         q = q.filter(CompanyBranch.is_deleted == False)  # noqa: E712
     return q.first()
@@ -93,7 +114,7 @@ def update_branch(
     if "branch_name" in data and data["branch_name"] is not None:
         data["branch_name"] = data["branch_name"].strip()
     if "branch_email" in data and data["branch_email"] is not None:
-        data["branch_email"] = data["branch_email"].strip().lower()
+        data["branch_email"] = _normalize_email(data["branch_email"])
     if "contact_number" in data and data["contact_number"] is not None:
         data["contact_number"] = data["contact_number"].strip()
     if "address" in data and data["address"] is not None:

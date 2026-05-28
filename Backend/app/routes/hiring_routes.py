@@ -16,7 +16,7 @@ from app.schemas.hiring_schema import (
     CandidateStatusUpdate,
 )
 from app.db.database import get_db
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.db.models.hiring import Vacancy, Candidate
 from app.db.models.interview import Interview
@@ -32,12 +32,68 @@ router = APIRouter(
     dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))]
 )
 
+
+def _vacancy_scope_query(db: Session, scope: dict):
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = db.query(Vacancy).join(User, User.user_id == Vacancy.created_by)
+    q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q
+
+
+def _candidate_scope_query(db: Session, scope: dict):
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(Candidate)
+        .join(Vacancy, Vacancy.vacancy_id == Candidate.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(User.company_id == company_id)
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q
+
+
+def _interview_scope_query(db: Session, scope: dict):
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(Interview)
+        .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(User.company_id == company_id)
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q
+
+
+# Interview records that count toward offer/hire (excludes cancelled / no_show-only paths).
+_QUALIFYING_INTERVIEW_STATUSES = ("scheduled", "rescheduled", "completed")
+
+
+def _candidate_has_qualifying_interview(db: Session, scope: dict, candidate_id: int) -> bool:
+    return (
+        _interview_scope_query(db, scope)
+        .filter(
+            Interview.candidate_id == candidate_id,
+            Interview.status.in_(_QUALIFYING_INTERVIEW_STATUSES),
+        )
+        .first()
+        is not None
+    )
+
+
 # Vacancy Routes
 
 @router.post("/vacancies", response_model=VacancyOut, status_code=status.HTTP_201_CREATED)
 def create_vacancy(
     vacancy: VacancyCreate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Create a new vacancy."""
@@ -67,10 +123,11 @@ def get_vacancies(
     department: Optional[str] = None,
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get all vacancies."""
-    query = db.query(Vacancy)
+    query = _vacancy_scope_query(db, scope)
     
     if department:
         query = query.filter(Vacancy.department == department)
@@ -99,10 +156,11 @@ def get_vacancies(
 def get_vacancy(
     vacancy_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get a specific vacancy."""
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -122,10 +180,11 @@ def update_vacancy(
     vacancy_id: int,
     vacancy_update: VacancyUpdate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Update a vacancy."""
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -152,10 +211,11 @@ def update_vacancy(
 def delete_vacancy(
     vacancy_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Delete a vacancy."""
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -168,10 +228,11 @@ def post_to_social_media(
     vacancy_id: int,
     post_data: SocialMediaPost,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Post vacancy to social media platforms."""
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -229,6 +290,7 @@ def create_candidate(
     resume_url: Optional[str] = Form(None, description="Resume URL (if already hosted)"),
     resume: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Create a new candidate application."""
@@ -282,7 +344,7 @@ def create_candidate(
         )
     
     # Verify vacancy exists
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate_obj.vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == candidate_obj.vacancy_id).first()
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -317,10 +379,11 @@ def get_candidates(
     vacancy_id: Optional[int] = None,
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get all candidates."""
-    query = db.query(Candidate)
+    query = _candidate_scope_query(db, scope)
     
     if vacancy_id:
         query = query.filter(Candidate.vacancy_id == vacancy_id)
@@ -347,10 +410,11 @@ def get_candidates(
 def get_shortlisted_candidates(
     vacancy_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get all shortlisted candidates (status='interview'). Optionally filter by vacancy_id."""
-    query = db.query(Candidate).filter(Candidate.status == 'interview')
+    query = _candidate_scope_query(db, scope).filter(Candidate.status == 'interview')
     
     if vacancy_id:
         query = query.filter(Candidate.vacancy_id == vacancy_id)
@@ -390,10 +454,11 @@ def get_shortlisted_candidates(
 def get_candidate(
     candidate_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get a specific candidate."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
@@ -411,10 +476,11 @@ def get_candidate(
 def get_candidate_resume(
     candidate_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Download/view the resume file for a specific candidate."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
@@ -441,13 +507,14 @@ def update_candidate_resume(
     resume: Optional[UploadFile] = File(None),
     resume_url: Optional[str] = Form(None, description="External resume URL"),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Update a candidate's resume, either via file upload or external URL."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
 
     # Ensure exactly one of resume or resume_url is provided
     if (resume is None and not resume_url) or (resume is not None and resume_url):
@@ -513,17 +580,30 @@ def update_candidate_resume(
 #             )
 #         )
 #     ).first()
+    # Check for overlapping interviews
+    # Simple overlap check: if new interview starts before existing ends and ends after existing starts
+    # overlapping = _interview_scope_query(db, scope).filter(
+    #     and_(
+    #         Interview.candidate_id == candidate_id,
+    #         Interview.status.in_(['scheduled', 'rescheduled']),
+    #         Interview.start_time <= shortlist_data.interview_date,
+    #         or_(
+    #             Interview.end_time > shortlist_data.interview_date,
+    #             Interview.end_time.is_(None)  # If no end_time, assume 1 hour duration
+    #         )
+    #     )
+    # ).first()
     
-#     # Also check reverse overlap
-#     if not overlapping:
-#         overlapping = db.query(Interview).filter(
-#             and_(
-#                 Interview.candidate_id == candidate_id,
-#                 Interview.status.in_(['scheduled', 'rescheduled']),
-#                 Interview.start_time >= shortlist_data.interview_date,
-#                 Interview.start_time < shortlist_data.interview_date + timedelta(hours=1)  # Default 1 hour duration
-#             )
-#         ).first()
+    # # Also check reverse overlap
+    # if not overlapping:
+    #     overlapping = db.query(Interview).filter(
+    #         and_(
+    #             Interview.candidate_id == candidate_id,
+    #             Interview.status.in_(['scheduled', 'rescheduled']),
+    #             Interview.start_time >= shortlist_data.interview_date,
+    #             Interview.start_time < shortlist_data.interview_date + timedelta(hours=1)  # Default 1 hour duration
+    #         )
+    #     ).first()
     
 #     if overlapping:
 #         raise HTTPException(
@@ -579,13 +659,14 @@ def update_candidate_status(
     candidate_id: int,
     status_update: CandidateStatusUpdate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Update a candidate's status with proper validation."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
     
     # Validate status transitions
     current_status = candidate.status
@@ -605,11 +686,40 @@ def update_candidate_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot change status from '{current_status}' to '{new_status}'."
         )
-    
+
+    # Pipeline: interview -> offered -> hired (rejected/withdrawn allowed without interview)
+    if new_status == "offered":
+        if current_status != "interview":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot move to 'offered' from '{current_status}'. "
+                    "Candidate must be in 'interview' status first."
+                ),
+            )
+        if not _candidate_has_qualifying_interview(db, scope, candidate_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Cannot move to 'offered' without a scheduled interview. "
+                    "Shortlist the candidate or set status to 'interview' with interview_date first."
+                ),
+            )
+
+    if new_status == "hired":
+        if current_status != "offered":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot move to 'hired' from '{current_status}'. "
+                    "Candidate must be in 'offered' status first."
+                ),
+            )
+
     # Business logic validation: when setting status to 'interview', 
     # there should be at least one scheduled interview
     if new_status == 'interview':
-        existing_interview = db.query(Interview).filter(
+        existing_interview = _interview_scope_query(db, scope).filter(
             and_(
                 Interview.candidate_id == candidate_id,
                 Interview.status.in_(['scheduled', 'rescheduled'])
@@ -666,10 +776,11 @@ def update_candidate(
     candidate_id: int,
     candidate_update: CandidateUpdate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Update a candidate."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
@@ -768,7 +879,7 @@ def update_candidate(
     db.commit()
     db.refresh(candidate)
     
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
     result = CandidateOutNoInterview.model_validate(candidate)
     
     if vacancy:
@@ -781,10 +892,11 @@ def update_candidate(
 def delete_candidate(
     candidate_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Delete a candidate."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     

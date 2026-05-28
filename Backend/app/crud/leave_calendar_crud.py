@@ -4,10 +4,11 @@ from typing import Optional, List
 
 from app.db.models.leave_calendar import CompanyHoliday, DeptWeekOffRule
 from app.db.models.notification import CompanyHolidayNotification
+from app.db.models.notification import CompanyHolidayNotification
 from app.db.models.leave_config import LeaveAllocationConfig
 from app.db.models.leave import Leave
 from app.db.models.user import User
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 from datetime import timedelta
 
 
@@ -42,6 +43,9 @@ def list_holidays(
     start: Optional[date] = None,
     end: Optional[date] = None,
     department: Optional[str] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+    include_global: bool = True,
 ) -> List[CompanyHoliday]:
     """
     List holidays within an optional date range.
@@ -53,13 +57,27 @@ def list_holidays(
       will appear as 2025-01-01 when the requested range covers that date.
     - When start/end are not both provided, fall back to returning stored rows only.
     """
+    def apply_tenant_filter(q):
+        if company_id is None and branch_id is None:
+            return q
+        # Treat holidays created_by=NULL as "global" optionally.
+        q = q.outerjoin(User, User.user_id == CompanyHoliday.created_by)
+        clauses = []
+        if company_id is not None:
+            clauses.append(User.company_id == company_id)
+        if branch_id is not None:
+            clauses.append(User.branch_id == branch_id)
+        if include_global:
+            return q.filter(or_(CompanyHoliday.created_by.is_(None), and_(*clauses)))
+        return q.filter(and_(*clauses))
+
     # If no explicit range, preserve simple behaviour (no projection).
     if not start and not end:
-        q = db.query(CompanyHoliday)
+        q = apply_tenant_filter(db.query(CompanyHoliday))
         return q.order_by(CompanyHoliday.date.asc()).all()
 
-    # Load all holidays once; table is expected to be small.
-    holidays = db.query(CompanyHoliday).all()
+    # Load all holidays once (scoped); table is expected to be small.
+    holidays = apply_tenant_filter(db.query(CompanyHoliday)).all()
 
     results: List[CompanyHoliday] = []
 
@@ -115,8 +133,28 @@ def list_holidays(
     return results
 
 
-def delete_holiday(db: Session, holiday_id: int) -> bool:
-    h = db.query(CompanyHoliday).filter(CompanyHoliday.id == holiday_id).first()
+def delete_holiday(
+    db: Session,
+    holiday_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+    include_global: bool = True,
+) -> bool:
+    q = db.query(CompanyHoliday).filter(CompanyHoliday.id == holiday_id)
+    if company_id is not None or branch_id is not None:
+        q = q.outerjoin(User, User.user_id == CompanyHoliday.created_by)
+        clauses = []
+        if company_id is not None:
+            clauses.append(User.company_id == company_id)
+        if branch_id is not None:
+            clauses.append(User.branch_id == branch_id)
+        if include_global:
+            q = q.filter(or_(CompanyHoliday.created_by.is_(None), and_(*clauses)))
+        else:
+            q = q.filter(and_(*clauses))
+
+    h = q.first()
     if not h:
         return False
     db.delete(h)
@@ -130,8 +168,15 @@ def create_holiday_notifications(
     holiday: CompanyHoliday,
     actor_user_id: Optional[int],
     action: str,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> int:
-    users = db.query(User).filter(User.is_active.is_(True)).all()
+    users_q = db.query(User).filter(User.is_active.is_(True))
+    if company_id is not None:
+        users_q = users_q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        users_q = users_q.filter(User.branch_id == branch_id)
+    users = users_q.all()
     if not users:
         return 0
 
@@ -220,8 +265,25 @@ def upsert_weekoff_rule(db: Session, department: str, days: List[str], created_b
     return rule
 
 
-def list_weekoff_rules(db: Session, department: Optional[str] = None):
+def list_weekoff_rules(
+    db: Session,
+    department: Optional[str] = None,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+    include_global: bool = True,
+):
     q = db.query(DeptWeekOffRule).filter(DeptWeekOffRule.is_active == True)
+    if company_id is not None or branch_id is not None:
+        q = q.outerjoin(User, User.user_id == DeptWeekOffRule.created_by)
+        clauses = []
+        if company_id is not None:
+            clauses.append(User.company_id == company_id)
+        if branch_id is not None:
+            clauses.append(User.branch_id == branch_id)
+        if include_global:
+            q = q.filter(or_(DeptWeekOffRule.created_by.is_(None), and_(*clauses)))
+        else:
+            q = q.filter(and_(*clauses))
     if department:
         q = q.filter(DeptWeekOffRule.department == department)
     return q.order_by(DeptWeekOffRule.department.asc()).all()
@@ -266,10 +328,30 @@ def update_leave_allocation(db: Session, total: int, sick: int, casual: int, oth
     return cfg
 
 
-def get_calendar_events(db: Session, start: date, end: date, department: Optional[str] = None):
+def get_calendar_events(
+    db: Session,
+    start: date,
+    end: date,
+    department: Optional[str] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+    include_global: bool = True,
+):
     events = []
     # Holidays
     qh = db.query(CompanyHoliday).filter(CompanyHoliday.date >= start, CompanyHoliday.date <= end)
+    if company_id is not None or branch_id is not None:
+        qh = qh.outerjoin(User, User.user_id == CompanyHoliday.created_by)
+        clauses = []
+        if company_id is not None:
+            clauses.append(User.company_id == company_id)
+        if branch_id is not None:
+            clauses.append(User.branch_id == branch_id)
+        if include_global:
+            qh = qh.filter(or_(CompanyHoliday.created_by.is_(None), and_(*clauses)))
+        else:
+            qh = qh.filter(and_(*clauses))
     for h in qh.all():
         events.append({
             "id": f"holiday-{h.id}",
@@ -283,6 +365,10 @@ def get_calendar_events(db: Session, start: date, end: date, department: Optiona
     # Leaves
     # Include leaves that overlap the requested range (start <= end AND end >= start)
     ql = db.query(Leave, User.department, User.name).join(User, Leave.user_id == User.user_id)
+    if company_id is not None:
+        ql = ql.filter(User.company_id == company_id)
+    if branch_id is not None:
+        ql = ql.filter(User.branch_id == branch_id)
     if department:
         ql = ql.filter(User.department == department)
     ql = ql.filter(and_(Leave.start_date <= end, Leave.end_date >= start))
@@ -299,6 +385,17 @@ def get_calendar_events(db: Session, start: date, end: date, department: Optiona
 
     # Weekoffs
     qw = db.query(DeptWeekOffRule).filter(DeptWeekOffRule.is_active == True)
+    if company_id is not None or branch_id is not None:
+        qw = qw.outerjoin(User, User.user_id == DeptWeekOffRule.created_by)
+        clauses = []
+        if company_id is not None:
+            clauses.append(User.company_id == company_id)
+        if branch_id is not None:
+            clauses.append(User.branch_id == branch_id)
+        if include_global:
+            qw = qw.filter(or_(DeptWeekOffRule.created_by.is_(None), and_(*clauses)))
+        else:
+            qw = qw.filter(and_(*clauses))
     if department:
         qw = qw.filter(DeptWeekOffRule.department == department)
     for rule in qw.all():

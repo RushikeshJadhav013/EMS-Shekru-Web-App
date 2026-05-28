@@ -8,6 +8,7 @@ from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, Updat
 from app.crud.user_crud import (
     create_user,
     list_users,
+    list_users_scoped,
     update_user_role,
     update_user_status,
     update_users_status_bulk,
@@ -18,22 +19,27 @@ from app.crud.user_crud import (
     get_user_by_pan_card,
     get_user_by_aadhar_card,
     get_user,
+    get_user_scoped,
     export_users_pdf,
     export_users_csv,
 )
 from app.db.database import get_db
-from app.dependencies import require_roles, get_current_user
+from app.dependencies import require_roles, get_current_user, get_tenant_scope
 from app.enums import GenderEnum, RoleEnum
 from app.db.models.user import User
-from app.crud.subscription_crud import check_admin_subscription_limit
+# Subscription enforcement is done inside create_user() using company/branch scope.
 import os
 import shutil
 from datetime import datetime
 import re
 from pydantic import EmailStr
+from sqlalchemy import func
 from starlette.responses import Response
 from starlette.background import BackgroundTask
 from app.utils.department_utils import normalize_department_string, department_tokens_lower
+from app.db.models.super_admin import SuperAdmin
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -45,6 +51,26 @@ def _profile_photo_exists(photo_path: Optional[str]) -> bool:
     if not candidate.is_absolute():
         candidate = (BASE_DIR / photo_path).resolve()
     return candidate.exists()
+
+
+def _parse_optional_form_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Parse YYYY-MM-DD or ISO datetime from multipart form fields."""
+    if value is None or not str(value).strip():
+        return None
+    raw = str(value).strip()
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Invalid date format. Use YYYY-MM-DD or ISO datetime.",
+    )
 
 
 def _sanitize_user_record(user: User) -> dict:
@@ -77,6 +103,7 @@ def register_employee(
     # Make gender mandatory on user registration
     gender: str = Form(...),
     resignation_date: Optional[datetime] = Form(None),
+    joining_date: Optional[datetime] = Form(None),
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
     shift_type: Optional[str] = Form(None),
@@ -84,7 +111,8 @@ def register_employee(
     manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
 
     email = email.strip().lower()
@@ -115,12 +143,23 @@ def register_employee(
             detail="HR users are not permitted to create Admin users"
         )
 
-    # Check for duplicate email
+    # Check for duplicate email in users table
     existing_user = get_user_by_email(db, email)
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Employee already exists with this email address",
+        )
+    # Enforce global email uniqueness across users and super admins
+    existing_super_admin = (
+        db.query(SuperAdmin)
+        .filter(func.lower(SuperAdmin.email) == email)
+        .first()
+    )
+    if existing_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email address is already used by a super admin",
         )
     
     # Check for duplicate employee_id
@@ -133,11 +172,42 @@ def register_employee(
 
     # Check for duplicate phone number
     if phone and phone.strip():
-        existing_phone = get_user_by_phone(db, phone.strip())
+        normalized_phone = re.sub(r'[^0-9]', '', phone.strip())
+        existing_phone = get_user_by_phone(db, normalized_phone)
         if existing_phone:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+        existing_super_admin_contact = (
+            db.query(SuperAdmin)
+            .filter(SuperAdmin.contact_no == normalized_phone)
+            .first()
+        )
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a super admin.",
+            )
+        existing_company_contact = (
+            db.query(Company)
+            .filter(Company.contact_number == normalized_phone)
+            .first()
+        )
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company.",
+            )
+        existing_branch_contact = (
+            db.query(CompanyBranch)
+            .filter(CompanyBranch.contact_number == normalized_phone)
+            .first()
+        )
+        if existing_branch_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company branch.",
             )
 
     if pan_card:
@@ -197,12 +267,15 @@ def register_employee(
         role=role,
         gender=gender_value,
         resignation_date=resignation_date,
+        joining_date=joining_date,
         pan_card=pan_card,
         aadhar_card=aadhar_card,
         shift_type=shift_type,
         employee_type=employee_type,
         manager_id=manager_id,  # ✅ Added
-        profile_photo=profile_photo_path
+        profile_photo=profile_photo_path,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     try:
@@ -253,6 +326,7 @@ def register_employee(
 def get_all_employees_public(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[RoleEnum] = Query(None, description="Filter by role"),
@@ -268,7 +342,7 @@ def get_all_employees_public(
     - TeamLead: Can view Employees of their assigned teams only
     - Employee: Cannot access this endpoint
     """
-    employees = list_users(db)
+    employees = list_users_scoped(db, scope["company_id"], scope.get("branch_id"))
     
     # Apply role-based visibility filtering
     if current_user.role == RoleEnum.ADMIN:
@@ -421,6 +495,7 @@ def update_employee(
     role: Optional[RoleEnum] = Form(RoleEnum.EMPLOYEE),
     gender: str = Form(...),
     resignation_date: Optional[str] = Form(None),
+    joining_date: Optional[str] = Form(None),
     pan_card: Optional[str] = Form(None),
     aadhar_card: Optional[str] = Form(None),
     shift_type: Optional[str] = Form(None),
@@ -428,7 +503,8 @@ def update_employee(
     manager_id: Optional[int] = Form(None),  # ✅ Added
     profile_photo: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Check permissions: User can update their own profile OR must be Admin/HR to update others
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -437,7 +513,7 @@ def update_employee(
             detail="Operation not permitted. You can only update your own profile."
         )
     
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -448,13 +524,25 @@ def update_employee(
             detail="HR users are not permitted to modify Admin profiles"
         )
 
-    # Check for duplicate email (excluding current user)
+    # Check for duplicate email in users table (excluding current user)
     if email and email.strip():
-        existing_user = get_user_by_email(db, email.strip().lower())
+        normalized_email = email.strip().lower()
+        existing_user = get_user_by_email(db, normalized_email)
         if existing_user and existing_user.user_id != user_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Employee already exists with this email address",
+            )
+        # Enforce global uniqueness against super admins as well
+        existing_super_admin = (
+            db.query(SuperAdmin)
+            .filter(func.lower(SuperAdmin.email) == normalized_email)
+            .first()
+        )
+        if existing_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email address is already used by a super admin",
             )
 
     # Check for duplicate employee_id (excluding current user)
@@ -480,6 +568,36 @@ def update_employee(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Phone number already exists. Please enter a unique phone number.",
+            )
+        existing_super_admin_contact = (
+            db.query(SuperAdmin)
+            .filter(SuperAdmin.contact_no == digits)
+            .first()
+        )
+        if existing_super_admin_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a super admin.",
+            )
+        existing_company_contact = (
+            db.query(Company)
+            .filter(Company.contact_number == digits)
+            .first()
+        )
+        if existing_company_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company.",
+            )
+        existing_branch_contact = (
+            db.query(CompanyBranch)
+            .filter(CompanyBranch.contact_number == digits)
+            .first()
+        )
+        if existing_branch_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number is already used by a company branch.",
             )
     # Validate address (no emojis)
     if address and address.strip():
@@ -579,7 +697,9 @@ def update_employee(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid gender value. Must be one of: {', '.join([g.value for g in GenderEnum])}"
         )
-    employee.resignation_date = resignation_date
+    employee.resignation_date = _parse_optional_form_datetime(resignation_date)
+    if joining_date is not None:
+        employee.joining_date = _parse_optional_form_datetime(joining_date)
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card
     employee.shift_type = shift_type
@@ -600,47 +720,48 @@ def update_employee(
 #         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 #     return employee
 
-@router.put("/{user_id}/role", response_model=UserOut)
-def update_role_public(
-    user_id: int,
-    role_data: UpdateRoleSchema,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Update a user's role.
-    - Admin: can update any user's role (including Admins and self)
-    - HR: can update roles except:
-       * cannot update Admin profiles
-       * cannot update other HR profiles
-       * cannot update their own role
-       * cannot assign the Admin role
-    - Others: forbidden
-    """
-    # Load target user
-    employee = get_user(db, user_id)
-    if not employee:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+# @router.put("/{user_id}/role", response_model=UserOut)
+# def update_role_public(
+#     user_id: int,
+#     role_data: UpdateRoleSchema,
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user),
+#     scope: dict = Depends(get_tenant_scope),
+# ):
+#     """
+#     Update a user's role.
+#     - Admin: can update any user's role (including Admins and self)
+#     - HR: can update roles except:
+#        * cannot update Admin profiles
+#        * cannot update other HR profiles
+#        * cannot update their own role
+#        * cannot assign the Admin role
+#     - Others: forbidden
+#     """
+#     # Load target user
+#     employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
+#     if not employee:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    # Admins may do anything
-    if current_user.role == RoleEnum.ADMIN:
-        pass
-    elif current_user.role == RoleEnum.HR:
-        # HR cannot modify Admins or other HRs, and cannot modify self
-        if employee.user_id == current_user.user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify their own role")
-        if getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify Admin or other HR profiles")
-        # HR cannot assign Admin role
-        if role_data.role == RoleEnum.ADMIN:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users are not permitted to assign the Admin role")
-    else:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can update roles")
+#     # Admins may do anything
+#     if current_user.role == RoleEnum.ADMIN:
+#         pass
+#     elif current_user.role == RoleEnum.HR:
+#         # HR cannot modify Admins or other HRs, and cannot modify self
+#         if employee.user_id == current_user.user_id:
+#             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify their own role")
+#         if getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+#             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users cannot modify Admin or other HR profiles")
+#         # HR cannot assign Admin role
+#         if role_data.role == RoleEnum.ADMIN:
+#             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="HR users are not permitted to assign the Admin role")
+#     else:
+#         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can update roles")
 
-    updated = update_user_role(db, user_id, role_data.role, updated_by=current_user.user_id)
-    if not updated:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    return _sanitize_users_response(updated)
+#     updated = update_user_role(db, user_id, role_data.role, updated_by=current_user.user_id)
+#     if not updated:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+#     return _sanitize_users_response(updated)
 
 
 @router.put("/{user_id}/status", response_model=UserOut, summary="Activate/Deactivate Employee")
@@ -648,7 +769,8 @@ def update_employee_status(
     user_id: int,
     status_data: UpdateStatusSchema,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Activate or deactivate an employee
@@ -656,7 +778,7 @@ def update_employee_status(
     - **is_active**: True to activate, False to deactivate
     """
     # Load target user for validation
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -700,7 +822,8 @@ def download_users_pdf(
     designation: Optional[str] = Query(None, description="Filter by designation"),
     active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export employee directory as PDF with optional filters.
@@ -772,7 +895,9 @@ def download_users_pdf(
             designation=designation,
             status=active_status,
             exclude_user_ids=exclude_user_ids,
-            exclude_roles=exclude_roles
+            exclude_roles=exclude_roles,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
         )
         
         # Build filename based on filters
@@ -811,7 +936,8 @@ def download_users_csv(
     role: Optional[str] = Query(None, description="Filter by role"),
     active_status: Optional[bool] = Query(None, description="Filter by active status (true/false)", alias="status"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export employee directory as CSV with optional filters.
@@ -878,7 +1004,9 @@ def download_users_csv(
         role=role,
         status=active_status,
         exclude_user_ids=exclude_user_ids,
-        exclude_roles=exclude_roles
+        exclude_roles=exclude_roles,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     # Build filename based on filters
@@ -906,7 +1034,8 @@ def download_users_csv(
 def remove_employee(
     user_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # ✅ Only requires login, no role check
+    current_user: User = Depends(get_current_user),  # ✅ Only requires login, no role check
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Optional: Allow users to delete only themselves, or Admin/HR to delete anyone
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
@@ -915,6 +1044,10 @@ def remove_employee(
             detail="Operation not permitted. Only Admin/HR can delete other employees."
         )
     
+    # Ensure the target is in-scope before deleting.
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     employee = delete_user(db, user_id)
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -925,10 +1058,11 @@ def remove_employee(
 def get_single_employee(
     user_id: int, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Load the employee first
-    employee = get_user(db, user_id)
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
     if not employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
@@ -964,20 +1098,20 @@ def get_single_employee(
 
 
 # ✅ Admin: Check subscription status
-@router.get("/subscription/status")
-def get_subscription_status(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Get subscription status for the current admin user"""
-    if current_user.role != RoleEnum.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can check subscription status"
-        )
+# @router.get("/subscription/status")
+# def get_subscription_status(
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user)
+# ):
+#     """Get subscription status for the current admin user"""
+#     if current_user.role != RoleEnum.ADMIN:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="Only admins can check subscription status"
+#         )
     
-    from app.crud.subscription_crud import get_admin_subscription_info
-    return get_admin_subscription_info(db, current_user.user_id)
+#     from app.crud.subscription_crud import get_admin_subscription_info
+#     return get_admin_subscription_info(db, current_user.user_id)
 
 
 # ✅ Real-time validation endpoints for form fields
@@ -1006,11 +1140,44 @@ def validate_phone_availability(
             "message": "Phone number must start with 6, 7, 8, or 9"
         }
     
-    existing_user = get_user_by_phone(db, phone)
+    existing_user = get_user_by_phone(db, digits)
     if existing_user and (exclude_user_id is None or existing_user.user_id != exclude_user_id):
         return {
             "available": False, 
             "message": "Phone number already exists. Please enter a unique phone number."
+        }
+
+    existing_super_admin_contact = (
+        db.query(SuperAdmin)
+        .filter(SuperAdmin.contact_no == digits)
+        .first()
+    )
+    if existing_super_admin_contact:
+        return {
+            "available": False,
+            "message": "Phone number is already used by a super admin.",
+        }
+
+    existing_company_contact = (
+        db.query(Company)
+        .filter(Company.contact_number == digits)
+        .first()
+    )
+    if existing_company_contact:
+        return {
+            "available": False,
+            "message": "Phone number is already used by a company.",
+        }
+
+    existing_branch_contact = (
+        db.query(CompanyBranch)
+        .filter(CompanyBranch.contact_number == digits)
+        .first()
+    )
+    if existing_branch_contact:
+        return {
+            "available": False,
+            "message": "Phone number is already used by a company branch.",
         }
     
     return {"available": True, "message": ""}

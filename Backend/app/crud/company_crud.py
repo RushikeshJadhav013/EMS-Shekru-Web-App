@@ -72,6 +72,20 @@ def list_companies(
     return q.order_by(Company.created_at.desc()).all()
 
 
+def get_company_by_slug(db: Session, company_slug: str, include_deleted: bool = False) -> Company | None:
+    """
+    Resolve company by tenant slug (used for tenant path routing).
+    """
+    normalized = (company_slug or "").strip().lower()
+    if not normalized:
+        return None
+
+    q = db.query(Company).filter(Company.company_slug == normalized)
+    if not include_deleted:
+        q = q.filter(Company.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
 def update_company(
     db: Session,
     company_id: int,

@@ -5,7 +5,7 @@ from typing import Optional
 from datetime import datetime
 
 from app.db.database import get_db
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.db.models.user import User
 from app.enums import RoleEnum
 
@@ -27,17 +27,35 @@ router = APIRouter(prefix="/calendar", tags=["Calendar"])
 
 
 @router.post("/holidays", response_model=CompanyHolidayOut)
-def add_holiday(payload: CompanyHolidayCreate, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))):
+def add_holiday(
+    payload: CompanyHolidayCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
+):
     try:
         h = create_holiday(db, holiday_date=payload.date, name=payload.name, description=payload.description, created_by=current_user.user_id, is_recurring=payload.is_recurring)
-        create_holiday_notifications(db, holiday=h, actor_user_id=current_user.user_id, action="created")
+        create_holiday_notifications(
+            db,
+            holiday=h,
+            actor_user_id=current_user.user_id,
+            action="created",
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         return h
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/holidays", response_model=list[CompanyHolidayOut])
-def get_holidays(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_holidays(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
     start = None
     end = None
     try:
@@ -47,24 +65,52 @@ def get_holidays(start_date: Optional[str] = Query(None), end_date: Optional[str
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    return list_holidays(db, start=start, end=end)
+    return list_holidays(
+        db,
+        start=start,
+        end=end,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
 
 
 @router.delete("/holidays/{holiday_id}")
-def remove_holiday(holiday_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))):
+def remove_holiday(
+    holiday_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
+):
     holiday = db.query(CompanyHoliday).filter(CompanyHoliday.id == holiday_id).first()
     if not holiday:
         raise HTTPException(status_code=404, detail="Holiday not found")
 
-    ok = delete_holiday(db, holiday_id)
+    ok = delete_holiday(
+        db,
+        holiday_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Holiday not found")
-    create_holiday_notifications(db, holiday=holiday, actor_user_id=current_user.user_id, action="deleted")
+    create_holiday_notifications(
+        db,
+        holiday=holiday,
+        actor_user_id=current_user.user_id,
+        action="deleted",
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return {"message": "Holiday deleted"}
 
 
 @router.post("/weekoffs", response_model=DeptWeekOffRuleOut)
-def set_weekoff_rule(payload: DeptWeekOffRuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))):
+def set_weekoff_rule(
+    payload: DeptWeekOffRuleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
+):
     rule = upsert_weekoff_rule(db, department=payload.department, days=payload.days, created_by=current_user.user_id)
     # Convert days string to list for response model
     rule_out = DeptWeekOffRuleOut(
@@ -78,8 +124,18 @@ def set_weekoff_rule(payload: DeptWeekOffRuleCreate, db: Session = Depends(get_d
 
 
 @router.get("/weekoffs", response_model=list[DeptWeekOffRuleOut])
-def get_weekoff_rules(department: Optional[str] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    rules = list_weekoff_rules(db, department=department)
+def get_weekoff_rules(
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    rules = list_weekoff_rules(
+        db,
+        department=department,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     out = []
     for r in rules:
         out.append(DeptWeekOffRuleOut(id=r.id, department=r.department, days=[d.strip() for d in r.days.split(",") if d.strip()], is_active=r.is_active, created_at=r.created_at))
@@ -96,7 +152,11 @@ def delete_weekoff(rule_id: int, db: Session = Depends(get_db), current_user: Us
 
 
 @router.get("/allocation")
-def get_allocation(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_allocation(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
     cfg = get_leave_allocation(db)
     if not cfg:
         return {}
@@ -112,7 +172,12 @@ def get_allocation(db: Session = Depends(get_db), current_user: User = Depends(g
 
 
 @router.put("/allocation")
-def update_allocation(payload: LeaveAllocationUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN))):
+def update_allocation(
+    payload: LeaveAllocationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
+):
     cfg = update_leave_allocation(db, total=payload.total_annual_leave, sick=payload.sick_leave_allocation, casual=payload.casual_leave_allocation, other=payload.other_leave_allocation, updated_by=current_user.user_id)
     # Calculate annual as sick + casual
     annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
@@ -126,7 +191,14 @@ def update_allocation(payload: LeaveAllocationUpdate, db: Session = Depends(get_
 
 
 @router.get("/calendar", response_model=list[CalendarEvent])
-def read_calendar(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), department: Optional[str] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def read_calendar(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
     try:
         if start_date:
             start = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -139,7 +211,14 @@ def read_calendar(start_date: Optional[str] = Query(None), end_date: Optional[st
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format.")
 
-    events = get_calendar_events(db, start=start, end=end, department=department)
+    events = get_calendar_events(
+        db,
+        start=start,
+        end=end,
+        department=department,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return events
 
 
@@ -147,6 +226,7 @@ def read_calendar(start_date: Optional[str] = Query(None), end_date: Optional[st
 def get_holiday_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     return list_holiday_notifications(db, current_user.user_id)
 
@@ -156,6 +236,7 @@ def mark_holiday_notification_read(
     notification_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     notification = mark_holiday_notification_as_read(db, notification_id, current_user.user_id)
     if not notification:

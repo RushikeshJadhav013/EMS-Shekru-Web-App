@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator, constr, ValidationInfo
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, constr, ValidationInfo
 from typing import Optional, List, Literal
 from datetime import datetime, date, timedelta, timezone
 import re
@@ -290,6 +290,15 @@ class CandidateStatusUpdate(BaseModel):
         if v not in valid_statuses:
             raise ValueError(f'Status must be one of: {", ".join(valid_statuses)}')
         return v
+
+    @model_validator(mode='after')
+    def interview_fields_only_for_interview_status(self):
+        """interview_date and interview_notes apply only when moving to 'interview'."""
+        if self.status != 'interview' and (self.interview_date is not None or self.interview_notes):
+            raise ValueError(
+                'interview_date and interview_notes are only allowed when status is "interview"'
+            )
+        return self
 
 # Social Media Posting Schema
 class SocialMediaPost(BaseModel):

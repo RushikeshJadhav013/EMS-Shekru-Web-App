@@ -15,17 +15,40 @@ from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
 
 
+def _user_scope_filters(*, company_id: int | None, branch_id: int | None, user_alias=User) -> list:
+    clauses = []
+    if company_id is not None:
+        clauses.append(user_alias.company_id == company_id)
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _user_in_scope(db: Session, *, user_id: int, company_id: int | None, branch_id: int | None) -> bool:
+    if company_id is None and branch_id is None:
+        return True
+    q = db.query(User.user_id).filter(User.user_id == user_id, User.is_active.is_(True))
+    for clause in _user_scope_filters(company_id=company_id, branch_id=branch_id):
+        q = q.filter(clause)
+    return q.first() is not None
+
+
 def create_wfh_request(
     db: Session,
     user_id: int,
     start_date: datetime,
     end_date: datetime,
     reason: str,
-    wfh_type: str = "Full Day"
+    wfh_type: str = "Full Day",
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> WFHRequest:
     """
     Create a new WFH request.
     """
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        raise ValueError("User not in tenant scope")
     wfh_request = WFHRequest(
         user_id=user_id,
         start_date=start_date,
@@ -41,21 +64,39 @@ def create_wfh_request(
     return wfh_request
 
 
-def get_wfh_request_by_id(db: Session, wfh_id: int) -> Optional[WFHRequest]:
+def get_wfh_request_by_id(
+    db: Session,
+    wfh_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> Optional[WFHRequest]:
     """
     Get a WFH request by ID.
     """
-    return db.query(WFHRequest).filter(WFHRequest.wfh_id == wfh_id).first()
+    q = db.query(WFHRequest).filter(WFHRequest.wfh_id == wfh_id)
+    if company_id is not None or branch_id is not None:
+        q = q.join(User, WFHRequest.user_id == User.user_id).filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+        )
+    return q.first()
 
 
 def get_user_wfh_requests(
     db: Session, 
     user_id: int,
-    status_filter: Optional[str] = None
+    status_filter: Optional[str] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> List[WFHRequest]:
     """
     Get all WFH requests for a specific user.
     """
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return []
+
     query = db.query(WFHRequest).filter(WFHRequest.user_id == user_id)
     
     if status_filter:
@@ -68,7 +109,10 @@ def get_all_wfh_requests(
     db: Session,
     status_filter: Optional[str] = None,
     department_filter: Optional[str] = None,
-    requester_user: Optional[User] = None
+    requester_user: Optional[User] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> Tuple[List[dict], int]:
     """
     Get all WFH requests with user details.
@@ -90,6 +134,13 @@ def get_all_wfh_requests(
         )
         .join(User, WFHRequest.user_id == User.user_id)
     )
+
+    # Tenant scope filter (Option A via users table)
+    if company_id is not None or branch_id is not None:
+        query = query.filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+        )
     
     # Role-based filtering with hierarchy validation
     if requester_user:
@@ -198,6 +249,12 @@ def get_all_wfh_requests(
         if not pending_joined:
             pending_query = pending_query.join(User, WFHRequest.user_id == User.user_id)
             pending_joined = True
+
+        if company_id is not None or branch_id is not None:
+            pending_query = pending_query.filter(
+                User.is_active.is_(True),
+                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+            )
         
         if requester_user.role == RoleEnum.ADMIN:
             # Admin can see all pending requests except Admins and self
@@ -273,12 +330,15 @@ def approve_wfh_request(
     wfh_id: int,
     approver_id: int,
     approved: bool,
-    rejection_reason: Optional[str] = None
+    rejection_reason: Optional[str] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> Optional[WFHRequest]:
     """
     Approve or reject a WFH request.
     """
-    wfh_request = get_wfh_request_by_id(db, wfh_id)
+    wfh_request = get_wfh_request_by_id(db, wfh_id, company_id=company_id, branch_id=branch_id)
     if not wfh_request:
         return None
     
@@ -305,16 +365,28 @@ def update_wfh_request(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     wfh_type: Optional[str] = None,
-    reason: Optional[str] = None
+    reason: Optional[str] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> Optional[WFHRequest]:
     """
     Update a pending WFH request (only the owner can update).
     """
-    wfh_request = db.query(WFHRequest).filter(
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return None
+
+    q = db.query(WFHRequest).filter(
         WFHRequest.wfh_id == wfh_id,
         WFHRequest.user_id == user_id,
-        WFHRequest.status == WFHStatus.PENDING.value
-    ).first()
+        WFHRequest.status == WFHStatus.PENDING.value,
+    )
+    if company_id is not None or branch_id is not None:
+        q = q.join(User, WFHRequest.user_id == User.user_id).filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+        )
+    wfh_request = q.first()
     
     if not wfh_request:
         return None
@@ -335,15 +407,31 @@ def update_wfh_request(
     return wfh_request
 
 
-def delete_wfh_request(db: Session, wfh_id: int, user_id: int) -> bool:
+def delete_wfh_request(
+    db: Session,
+    wfh_id: int,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> bool:
     """
     Delete a pending WFH request (only the owner can delete).
     """
-    wfh_request = db.query(WFHRequest).filter(
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return False
+
+    q = db.query(WFHRequest).filter(
         WFHRequest.wfh_id == wfh_id,
         WFHRequest.user_id == user_id,
-        WFHRequest.status == WFHStatus.PENDING.value
-    ).first()
+        WFHRequest.status == WFHStatus.PENDING.value,
+    )
+    if company_id is not None or branch_id is not None:
+        q = q.join(User, WFHRequest.user_id == User.user_id).filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+        )
+    wfh_request = q.first()
     
     if not wfh_request:
         return False
@@ -358,12 +446,18 @@ def check_overlapping_wfh(
     user_id: int,
     start_date: datetime,
     end_date: datetime,
-    exclude_wfh_id: Optional[int] = None
+    exclude_wfh_id: Optional[int] = None,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> bool:
     """
     Check if there's an overlapping approved or pending WFH request.
     Returns True if overlap exists.
     """
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return False
+
     query = db.query(WFHRequest).filter(
         WFHRequest.user_id == user_id,
         WFHRequest.status.in_([WFHStatus.PENDING.value, WFHStatus.APPROVED.value]),
@@ -412,7 +506,13 @@ def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
     return query.scalar() or 0
 
 
-def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]:
+def _get_wfh_notification_recipients(
+    db: Session,
+    requester: User,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> List[User]:
     """
     Resolve approver-side recipients for WFH request notifications.
 
@@ -437,6 +537,7 @@ def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]
                 User.department.isnot(None),
                 User.is_active == True,  # noqa: E712
                 User.user_id != requester.user_id,
+                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
             )
             .all()
         )
@@ -457,6 +558,7 @@ def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]
                 User.department.isnot(None),
                 User.is_active == True,  # noqa: E712
                 User.user_id != requester.user_id,
+                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
             )
             .all()
         )
@@ -473,6 +575,7 @@ def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]
                 User.role.in_([RoleEnum.HR, RoleEnum.ADMIN]),
                 User.is_active == True,  # noqa: E712
                 User.user_id != requester.user_id,
+                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
             )
             .all()
         )
@@ -484,6 +587,7 @@ def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]
                 User.role == RoleEnum.ADMIN,
                 User.is_active == True,  # noqa: E712
                 User.user_id != requester.user_id,
+                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
             )
             .all()
         )
@@ -493,7 +597,12 @@ def _get_wfh_notification_recipients(db: Session, requester: User) -> List[User]
 
 def create_wfh_request_notifications(db: Session, wfh_request: WFHRequest, requester: User) -> List[WFHNotification]:
     """Create approver notifications for a newly submitted WFH request."""
-    recipients = _get_wfh_notification_recipients(db, requester)
+    recipients = _get_wfh_notification_recipients(
+        db,
+        requester,
+        company_id=getattr(requester, "company_id", None),
+        branch_id=getattr(requester, "branch_id", None),
+    )
     if not recipients:
         return []
 
@@ -569,9 +678,14 @@ def create_wfh_decision_notification(
     wfh_request: WFHRequest,
     approver: User,
     approved: bool,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> Optional[WFHNotification]:
     """Notify the requester that their WFH request was approved or rejected."""
-    requester = db.query(User).filter(User.user_id == wfh_request.user_id).first()
+    rq = db.query(User).filter(User.user_id == wfh_request.user_id)
+    if company_id is not None or branch_id is not None:
+        rq = rq.filter(User.is_active.is_(True), *_user_scope_filters(company_id=company_id, branch_id=branch_id))
+    requester = rq.first()
     if not requester or requester.user_id == approver.user_id:
         return None
 
@@ -598,9 +712,21 @@ def create_wfh_decision_notification(
     return notification
 
 
-def create_wfh_deletion_notification(db: Session, wfh_request: WFHRequest, requester: User) -> List[WFHNotification]:
+def create_wfh_deletion_notification(
+    db: Session,
+    wfh_request: WFHRequest,
+    requester: User,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> List[WFHNotification]:
     """Notify approvers when a pending WFH request is withdrawn/deleted."""
-    recipients = _get_wfh_notification_recipients(db, requester)
+    recipients = _get_wfh_notification_recipients(
+        db,
+        requester,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
     if not recipients:
         return []
 
@@ -635,8 +761,16 @@ def create_wfh_deletion_notification(db: Session, wfh_request: WFHRequest, reque
     return notifications
 
 
-def list_wfh_notifications(db: Session, user_id: int) -> List[WFHNotification]:
+def list_wfh_notifications(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> List[WFHNotification]:
     """Get all WFH notifications for a user, most recent first."""
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return []
     return (
         db.query(WFHNotification)
         .filter(WFHNotification.user_id == user_id)
@@ -645,8 +779,17 @@ def list_wfh_notifications(db: Session, user_id: int) -> List[WFHNotification]:
     )
 
 
-def mark_wfh_notification_as_read(db: Session, notification_id: int, user_id: int) -> Optional[WFHNotification]:
+def mark_wfh_notification_as_read(
+    db: Session,
+    notification_id: int,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> Optional[WFHNotification]:
     """Mark a WFH notification as read for the owning user."""
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return None
     notification = (
         db.query(WFHNotification)
         .filter(

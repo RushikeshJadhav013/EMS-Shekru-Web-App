@@ -1,16 +1,28 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
-from app.db.models.subscription import SubscriptionPlan, AdminSubscription
+from app.db.models.subscription import (
+    SubscriptionPlan,
+    AdminSubscription,
+    CompanySubscription,
+    BranchSubscription,
+)
 from app.db.models.user import User
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
 from app.schemas.subscription_schema import (
     SubscriptionPlanCreate,
     SubscriptionPlanUpdate,
     AdminSubscriptionCreate,
-    AdminSubscriptionUpdate
+    AdminSubscriptionUpdate,
+    CompanySubscriptionCreate,
+    CompanySubscriptionUpdate,
+    BranchSubscriptionCreate,
+    BranchSubscriptionUpdate,
 )
 from app.enums import RoleEnum
 from datetime import datetime, timedelta
 from typing import Optional
+import calendar
 
 
 # ==================== Subscription Plan CRUD ====================
@@ -26,6 +38,7 @@ def create_subscription_plan(
         description=plan.description,
         max_users=plan.max_users,
         price=plan.price,
+        duration_months=plan.duration_months,
         created_by=created_by
     )
     db.add(db_plan)
@@ -41,16 +54,20 @@ def get_subscription_plan(db: Session, plan_id: int) -> SubscriptionPlan:
 
 def list_subscription_plans(
     db: Session,
-    active_only: bool = False
+    active_only: Optional[bool] = None
 ) -> list[SubscriptionPlan]:
     """
     List subscription plans.
 
     - active_only=True  -> only active plans
-    - active_only=False -> only inactive plans (per current requirement)
+    - active_only=False -> only inactive plans
+    - active_only=None  -> all plans (default)
     """
     query = db.query(SubscriptionPlan)
-    query = query.filter(SubscriptionPlan.is_active == True) if active_only else query.filter(SubscriptionPlan.is_active == False)
+    if active_only is True:
+        query = query.filter(SubscriptionPlan.is_active == True)  # noqa: E712
+    elif active_only is False:
+        query = query.filter(SubscriptionPlan.is_active == False)  # noqa: E712
     return query.order_by(SubscriptionPlan.created_on.desc()).all()
 
 
@@ -82,12 +99,16 @@ def delete_subscription_plan(db: Session, plan_id: int) -> SubscriptionPlan:
         return None
     
     # Check if any active subscriptions are using this plan
-    active_subscriptions = db.query(AdminSubscription).filter(
-        and_(
-            AdminSubscription.plan_id == plan_id,
-            AdminSubscription.is_active == True
-        )
+    active_admin = db.query(AdminSubscription).filter(
+        and_(AdminSubscription.plan_id == plan_id, AdminSubscription.is_active == True)  # noqa: E712
     ).count()
+    active_company = db.query(CompanySubscription).filter(
+        and_(CompanySubscription.plan_id == plan_id, CompanySubscription.is_active == True)  # noqa: E712
+    ).count()
+    active_branch = db.query(BranchSubscription).filter(
+        and_(BranchSubscription.plan_id == plan_id, BranchSubscription.is_active == True)  # noqa: E712
+    ).count()
+    active_subscriptions = active_admin + active_company + active_branch
     
     if active_subscriptions > 0:
         # Soft delete instead of hard delete
@@ -131,10 +152,12 @@ def create_admin_subscription(
         current_end = existing.end_date
         scheduled_start = current_end if current_end and current_end > datetime.now() else datetime.now()
 
-        # Distinguish trial vs paid by duration (<=31 days treated as trial)
-        existing_duration = (existing.end_date - existing.start_date) if (existing.end_date and existing.start_date) else None
-        is_trial = bool(existing_duration and existing_duration.days <= 31)
-        default_duration = timedelta(days=30) if is_trial else timedelta(days=365)
+        existing_duration = (
+            (existing.end_date - existing.start_date)
+            if (existing.end_date and existing.start_date)
+            else None
+        )
+        default_duration = timedelta(days=365)
 
         existing.plan_id = subscription.plan_id
         existing.start_date = scheduled_start
@@ -142,7 +165,7 @@ def create_admin_subscription(
             # Use provided end date but ensure it isn't before the scheduled start
             existing.end_date = max(subscription.end_date, scheduled_start)
         else:
-            # Preserve the previous duration; fall back based on trial/paid heuristic
+            # Preserve the previous duration; fall back to 1 year
             preserved_duration = existing_duration or default_duration
             existing.end_date = scheduled_start + preserved_duration
         existing.is_active = True
@@ -151,11 +174,11 @@ def create_admin_subscription(
         db.refresh(existing)
         return existing
     
-    # If no subscription exists, do NOT auto-assign a trial here.
-    # A trial is assigned during admin creation; require explicit end_date when creating first subscription via this API.
+    # If no subscription exists, do NOT auto-assign any free trial.
+    # Require explicit end_date (or set end_date to NULL via DB if you intend "no expiry").
     scheduled_start = datetime.now()
     if subscription.end_date is None:
-        raise ValueError("No existing subscription found. Provide an explicit end_date for the new subscription (trials are assigned during admin creation).")
+        raise ValueError("No existing subscription found. Provide an explicit end_date for the new subscription.")
 
     db_subscription = AdminSubscription(
         admin_id=subscription.admin_id,
@@ -169,36 +192,6 @@ def create_admin_subscription(
     db.commit()
     db.refresh(db_subscription)
     return db_subscription
-
-
-def assign_trial_subscription_to_admin(
-    db: Session,
-    admin_id: int,
-    created_by: Optional[int] = None
-) -> Optional[AdminSubscription]:
-    """
-    Assign a 1-month trial subscription to the given admin.
-    Picks the first active subscription plan (oldest created) for the trial.
-    Returns None if no active plan exists.
-    """
-    plan = (
-        db.query(SubscriptionPlan)
-        .filter(SubscriptionPlan.is_active == True)
-        .order_by(SubscriptionPlan.created_on.asc())
-        .first()
-    )
-
-    if not plan:
-        return None
-
-    # Set trial end_date to 1 month (30 days) from now
-    trial_end_date = datetime.now() + timedelta(days=30)
-    trial_request = AdminSubscriptionCreate(
-        admin_id=admin_id,
-        plan_id=plan.plan_id,
-        end_date=trial_end_date
-    )
-    return create_admin_subscription(db, trial_request, created_by=created_by)
 
 
 def get_admin_subscription(
@@ -332,14 +325,6 @@ def get_admin_subscription_info(
 ) -> dict:
     """Get comprehensive subscription information for an admin"""
     subscription = get_admin_subscription(db, admin_id)
-    
-    def _is_trial(sub: AdminSubscription) -> bool:
-        """Heuristic: subscription created via trial helper (30-day window)."""
-        if not sub or not sub.start_date or not sub.end_date:
-            return False
-        duration = sub.end_date - sub.start_date
-        # Accept small drift (<= 31 days) as trial
-        return duration.days <= 31
 
     # Use check_admin_subscription_limit to get accurate limits (handles no subscription case)
     can_create, current_count, max_allowed = check_admin_subscription_limit(db, admin_id)
@@ -362,7 +347,209 @@ def get_admin_subscription_info(
         "can_create": can_create,
         "subscription": subscription,
         "plan": subscription.plan,
-        "is_trial": _is_trial(subscription),
-        "trial_ends_on": subscription.end_date,
+        # No free trial concept: keep fields for backwards compatibility but always false.
+        "is_trial": False,
+        "trial_ends_on": None,
     }
+
+
+# ==================== Company/Branch Subscription CRUD ====================
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Add calendar months to a datetime (keeps time, clamps day)."""
+    if months <= 0:
+        return dt
+    year = dt.year + (dt.month - 1 + months) // 12
+    month = (dt.month - 1 + months) % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    day = min(dt.day, last_day)
+    return dt.replace(year=year, month=month, day=day)
+
+
+def assign_company_subscription(
+    db: Session,
+    subscription: CompanySubscriptionCreate,
+    created_by: int | None = None,
+) -> CompanySubscription:
+    """Assign (or replace) a subscription plan for a company."""
+    company = db.query(Company).filter(Company.company_id == subscription.company_id).first()
+    if not company:
+        raise ValueError("Company not found")
+
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.plan_id == subscription.plan_id).first()
+    if not plan or not plan.is_active:
+        raise ValueError("Subscription plan not found or inactive")
+
+    existing = db.query(CompanySubscription).filter(CompanySubscription.company_id == subscription.company_id).first()
+    start = datetime.now()
+    end = _add_months(start, int(plan.duration_months))
+
+    if existing:
+        existing.plan_id = subscription.plan_id
+        existing.start_date = start
+        existing.end_date = end
+        existing.is_active = True
+        existing.updated_by = created_by
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    db_sub = CompanySubscription(
+        company_id=subscription.company_id,
+        plan_id=subscription.plan_id,
+        start_date=start,
+        end_date=end,
+        is_active=True,
+        created_by=created_by,
+    )
+    db.add(db_sub)
+    db.commit()
+    db.refresh(db_sub)
+    return db_sub
+
+
+def assign_branch_subscription(
+    db: Session,
+    subscription: BranchSubscriptionCreate,
+    created_by: int | None = None,
+) -> BranchSubscription:
+    """Assign (or replace) a subscription plan for a branch."""
+    branch = db.query(CompanyBranch).filter(CompanyBranch.branch_id == subscription.branch_id).first()
+    if not branch or getattr(branch, "is_deleted", False):
+        raise ValueError("Branch not found")
+
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.plan_id == subscription.plan_id).first()
+    if not plan or not plan.is_active:
+        raise ValueError("Subscription plan not found or inactive")
+
+    existing = db.query(BranchSubscription).filter(BranchSubscription.branch_id == subscription.branch_id).first()
+    start = datetime.now()
+    end = _add_months(start, int(plan.duration_months))
+
+    if existing:
+        existing.plan_id = subscription.plan_id
+        existing.start_date = start
+        existing.end_date = end
+        existing.is_active = True
+        existing.updated_by = created_by
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    db_sub = BranchSubscription(
+        branch_id=subscription.branch_id,
+        plan_id=subscription.plan_id,
+        start_date=start,
+        end_date=end,
+        is_active=True,
+        created_by=created_by,
+    )
+    db.add(db_sub)
+    db.commit()
+    db.refresh(db_sub)
+    return db_sub
+
+
+def get_company_subscription(db: Session, company_id: int) -> Optional[CompanySubscription]:
+    return db.query(CompanySubscription).filter(CompanySubscription.company_id == company_id).first()
+
+
+def get_branch_subscription(db: Session, branch_id: int) -> Optional[BranchSubscription]:
+    return db.query(BranchSubscription).filter(BranchSubscription.branch_id == branch_id).first()
+
+
+def update_company_subscription(
+    db: Session,
+    subscription_id: int,
+    update: CompanySubscriptionUpdate,
+    updated_by: int | None = None,
+) -> Optional[CompanySubscription]:
+    sub = db.query(CompanySubscription).filter(CompanySubscription.subscription_id == subscription_id).first()
+    if not sub:
+        return None
+    data = update.model_dump(exclude_unset=True)
+    if "plan_id" in data and data["plan_id"] is not None:
+        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.plan_id == data["plan_id"]).first()
+        if not plan or not plan.is_active:
+            raise ValueError("Subscription plan not found or inactive")
+        # Reset term on plan change
+        start = datetime.now()
+        sub.plan_id = data["plan_id"]
+        sub.start_date = start
+        sub.end_date = _add_months(start, int(plan.duration_months))
+        data.pop("plan_id", None)
+    for k, v in data.items():
+        setattr(sub, k, v)
+    sub.updated_by = updated_by
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+def update_branch_subscription(
+    db: Session,
+    subscription_id: int,
+    update: BranchSubscriptionUpdate,
+    updated_by: int | None = None,
+) -> Optional[BranchSubscription]:
+    sub = db.query(BranchSubscription).filter(BranchSubscription.subscription_id == subscription_id).first()
+    if not sub:
+        return None
+    data = update.model_dump(exclude_unset=True)
+    if "plan_id" in data and data["plan_id"] is not None:
+        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.plan_id == data["plan_id"]).first()
+        if not plan or not plan.is_active:
+            raise ValueError("Subscription plan not found or inactive")
+        start = datetime.now()
+        sub.plan_id = data["plan_id"]
+        sub.start_date = start
+        sub.end_date = _add_months(start, int(plan.duration_months))
+        data.pop("plan_id", None)
+    for k, v in data.items():
+        setattr(sub, k, v)
+    sub.updated_by = updated_by
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+def check_company_branch_subscription_limit(
+    db: Session,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> tuple[bool, int, int]:
+    """
+    Check if a scoped tenant can create more users based on subscription.
+    Rule: if branch_id has active, non-expired subscription -> use it, else use company subscription.
+    If no subscription found -> unlimited (current behavior).
+    """
+    now = datetime.now()
+
+    # Count current users in scope
+    if branch_id is not None:
+        current_count = db.query(User).filter(User.company_id == company_id, User.branch_id == branch_id).count()
+    else:
+        current_count = db.query(User).filter(User.company_id == company_id).count()
+
+    def _active_and_valid(end_date: Optional[datetime], is_active: bool) -> bool:
+        if not is_active:
+            return False
+        if end_date is None:
+            return True
+        return end_date >= now
+
+    # Prefer branch subscription when branch scope is present
+    if branch_id is not None:
+        bsub = get_branch_subscription(db, branch_id)
+        if bsub and _active_and_valid(bsub.end_date, bsub.is_active) and bsub.plan and bsub.plan.is_active:
+            max_allowed = int(bsub.plan.max_users)
+            return (current_count < max_allowed, current_count, max_allowed)
+
+    csub = get_company_subscription(db, company_id)
+    if csub and _active_and_valid(csub.end_date, csub.is_active) and csub.plan and csub.plan.is_active:
+        max_allowed = int(csub.plan.max_users)
+        return (current_count < max_allowed, current_count, max_allowed)
+
+    # No subscription -> unlimited
+    return (True, current_count, float("inf"))
 

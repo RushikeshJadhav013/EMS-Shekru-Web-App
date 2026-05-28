@@ -10,19 +10,24 @@ from app.dependencies import get_current_super_admin
 from app.crud.branch_admin_assignment_crud import (
     assign_admin_to_branch,
     deactivate_admin_assignment,
+    get_active_admin_assignments_count,
+    list_branches_for_admin,
+    list_companies_for_admin,
     list_active_branch_admins,
 )
 from app.schemas.branch_admin_assignment_schema import (
     BranchAdminAssignmentCreate,
     BranchAdminAssignmentOut,
 )
+from app.schemas.company_branch_schema import CompanyBranchOut
+from app.schemas.company_schema import CompanyOut
 from app.schemas.user_schema import UserOut
 
 
-router = APIRouter(prefix="/company-branches", tags=["Branch Admin Assignments"])
+router = APIRouter(tags=["Branch Admin Assignments"])
 
 
-@router.post("/{branch_id}/admins", response_model=BranchAdminAssignmentOut, status_code=status.HTTP_201_CREATED)
+@router.post("/company-branches/{branch_id}/admins", response_model=BranchAdminAssignmentOut, status_code=status.HTTP_201_CREATED)
 def assign_admin_to_branch_route(
     branch_id: int,
     payload: BranchAdminAssignmentCreate,
@@ -40,7 +45,7 @@ def assign_admin_to_branch_route(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.get("/{branch_id}/admins", response_model=List[UserOut])
+@router.get("/company-branches/{branch_id}/admins", response_model=List[UserOut])
 def list_branch_admins_route(
     branch_id: int,
     db: Session = Depends(get_db),
@@ -51,7 +56,17 @@ def list_branch_admins_route(
     return list_active_branch_admins(db=db, branch_id=branch_id)
 
 
-@router.delete("/{branch_id}/admins/{admin_user_id}", response_model=BranchAdminAssignmentOut)
+@router.get("/company-branches/{branch_id}/admin-count")
+def get_branch_admin_count_route(
+    branch_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    count = get_active_admin_assignments_count(db, branch_id)
+    return {"branch_id": branch_id, "active_admin_count": count}
+
+
+@router.delete("/company-branches/{branch_id}/admins/{admin_user_id}", response_model=BranchAdminAssignmentOut)
 def remove_branch_admin_route(
     branch_id: int,
     admin_user_id: int,
@@ -67,4 +82,22 @@ def remove_branch_admin_route(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.get("/admins/{admin_user_id}/branches", response_model=List[CompanyBranchOut])
+def list_admin_branches_route(
+    admin_user_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    return list_branches_for_admin(db=db, admin_user_id=admin_user_id)
+
+
+@router.get("/admins/{admin_user_id}/companies", response_model=List[CompanyOut])
+def list_admin_companies_route(
+    admin_user_id: int,
+    db: Session = Depends(get_db),
+    current_super_admin: SuperAdmin = Depends(get_current_super_admin),
+):
+    return list_companies_for_admin(db=db, admin_user_id=admin_user_id)
 

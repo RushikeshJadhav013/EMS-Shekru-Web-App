@@ -11,11 +11,31 @@ from app.db.database import get_db
 from app.db.models.task import Task
 from app.db.models.task_comment import TaskComment
 from app.db.models.user import User
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_tenant_scope
 from pydantic import BaseModel
+from sqlalchemy.orm import aliased
 
 
 router = APIRouter(prefix="/tasks", tags=["Task Comments"])
+
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _task_in_scope_query(db: Session, scope: dict):
+    creator = aliased(User)
+    assignee = aliased(User)
+    return (
+        db.query(Task)
+        .outerjoin(creator, Task.assigned_by == creator.user_id)
+        .outerjoin(assignee, Task.assigned_to == assignee.user_id)
+        .filter(*_user_scope_filters(scope, creator), *_user_scope_filters(scope, assignee))
+    )
 
 # Create uploads directory if it doesn't exist
 UPLOAD_DIR = Path("static/task_comments")
@@ -49,14 +69,15 @@ class TaskCommentOut(BaseModel):
 def get_task_comments(
     task_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all comments for a task.
     Only accessible by task assignee, assigned_to, or users involved in task passing.
     """
     # Get the task
-    task = db.query(Task).filter(Task.task_id == task_id).first()
+    task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -114,7 +135,8 @@ async def create_task_comment(
     comment: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Add a comment to a task with optional file attachment.
@@ -128,7 +150,7 @@ async def create_task_comment(
         )
     
     # Get the task
-    task = db.query(Task).filter(Task.task_id == task_id).first()
+    task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -209,11 +231,19 @@ def delete_task_comment(
     task_id: int,
     comment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Delete a comment. Only the comment author can delete their own comment.
     """
+    task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found"
+        )
+
     comment = db.query(TaskComment).filter(
         TaskComment.id == comment_id,
         TaskComment.task_id == task_id

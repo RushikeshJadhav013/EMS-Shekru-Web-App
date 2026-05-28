@@ -12,6 +12,7 @@ import traceback
 import io
 import csv
 import json
+from xml.sax.saxutils import escape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, KeepTogether
@@ -24,7 +25,7 @@ from app.db.models.user import User
 from app.db.models.attendance import Attendance
 from app.db.models.task import Task, TaskHistory
 from app.db.models.leave import Leave
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum, TaskStatus, TaskAction
 from app.config.company_config import (
     COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
@@ -32,6 +33,31 @@ from app.config.company_config import (
 from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+
+def _pdf_paragraph(text, style: ParagraphStyle) -> Paragraph:
+    """Build a ReportLab Paragraph so table cell text wraps within column width."""
+    safe = escape(str(text if text is not None else ""))
+    return Paragraph(safe, style)
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _scoped_user_query(db: Session, scope: dict):
+    return db.query(User).filter(User.is_active.is_(True), *_user_scope_filters(scope))
+
+
+def _scoped_user_lookup(db: Session, scope: dict, user_id: int) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
 
 
 @router.get("/leave")
@@ -42,6 +68,7 @@ def export_leave_report(
     department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export Leave Report in CSV or PDF format.
@@ -83,6 +110,8 @@ def export_leave_report(
                 end_date=end_dt,
                 department=department,
                 requester=current_user,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
             )
             filename = "leave_report.csv"
             return StreamingResponse(
@@ -98,6 +127,8 @@ def export_leave_report(
                 department=department,
                 generated_by=current_user.name,
                 requester=current_user,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
             )
             filename = f"leave_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             return StreamingResponse(
@@ -127,6 +158,7 @@ def get_employee_performance(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get employee performance metrics for a specific month/year.
@@ -166,7 +198,7 @@ def get_employee_performance(
     
     try:
         # Base query for active employees, filtered by viewer role
-        query = db.query(User).filter(User.is_active == True)
+        query = _scoped_user_query(db, scope)
 
         # Employment-window filter:
         # - Exclude users who joined after the selected period ends
@@ -192,7 +224,9 @@ def get_employee_performance(
         
         # Apply filters
         if department and department != 'all':
-            query = query.filter(User.department == department)
+            dept_token = department.strip().lower()
+            query = query.filter(User.department.isnot(None))
+            query = query.filter(func.lower(User.department).like(f"%{dept_token}%"))
         
         if employee_id:
             query = query.filter(User.employee_id == employee_id)
@@ -284,6 +318,7 @@ def get_department_metrics(
     year: int = Query(..., description="Year"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get department-wise performance metrics.
@@ -339,6 +374,7 @@ def get_department_metrics(
         or_(User.joining_date.is_(None), User.joining_date < end_date),
         # Not resigned before the period starts
         or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
+        *_user_scope_filters(scope),
     )
 
     # Admin viewer: cannot see any Admin users or self
@@ -429,6 +465,7 @@ def get_executive_summary(
     year: int = Query(..., description="Year"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get executive summary with top 5 performers and comprehensive metrics.
@@ -470,6 +507,7 @@ def get_executive_summary(
         or_(User.joining_date.is_(None), User.joining_date < end_date),
         # Not resigned before the period starts
         or_(User.resignation_date.is_(None), User.resignation_date >= start_date),
+        *_user_scope_filters(scope),
     )
 
     # Admin viewer: cannot see any Admin users or self
@@ -592,9 +630,13 @@ def get_executive_summary(
     avg_performance = round(total_performance / len(employee_scores)) if employee_scores else 0
     
     # Total tasks completed
-    total_tasks_completed = db.query(Task).filter(
-        Task.status == TaskStatus.COMPLETED.value
-    ).count()
+    # Option A: tasks have no company_id; scope by joining assignee user
+    total_tasks_completed = (
+        db.query(Task)
+        .join(User, Task.assigned_to == User.user_id)
+        .filter(Task.status == TaskStatus.COMPLETED.value, User.is_active.is_(True), *_user_scope_filters(scope))
+        .count()
+    )
     
     # Find best department
     dept_scores = {}
@@ -646,6 +688,7 @@ def get_executive_summary(
 def get_departments_list(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get list of all departments with active employees"""
 
@@ -657,11 +700,16 @@ def get_departments_list(
         )
 
     # Support multiple departments stored as comma-separated values
-    raw_departments = db.query(User.department).filter(
-        User.is_active == True,
-        User.department.isnot(None),
-        User.department != ''
-    ).all()
+    raw_departments = (
+        db.query(User.department)
+        .filter(
+            User.is_active == True,
+            User.department.isnot(None),
+            User.department != '',
+            *_user_scope_filters(scope),
+        )
+        .all()
+    )
 
     dept_set = set()
     for (dept_str,) in raw_departments:
@@ -685,6 +733,7 @@ async def export_performance_report(
     employee_id: Optional[str] = Query(None, description="Specific employee ID (optional)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export comprehensive performance report in CSV or PDF format.
@@ -715,6 +764,8 @@ async def export_performance_report(
         # - joined on/before period end, and
         # - not resigned before period start.
         query = db.query(User).filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(scope),
             or_(User.joining_date.is_(None), User.joining_date <= end),
             or_(User.resignation_date.is_(None), User.resignation_date >= start),
         )
@@ -968,6 +1019,24 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         spaceAfter=12,
         spaceBefore=12
     )
+
+    cell_style = ParagraphStyle(
+        'PerfReportCell',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=12,
+        alignment=TA_LEFT,
+    )
+    cell_label_style = ParagraphStyle(
+        'PerfReportLabel',
+        parent=cell_style,
+        fontName='Helvetica-Bold',
+    )
+    cell_center_style = ParagraphStyle(
+        'PerfReportCellCenter',
+        parent=cell_style,
+        alignment=TA_CENTER,
+    )
     
     # Title
     title = Paragraph("Performance Report", title_style)
@@ -975,9 +1044,18 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     
     # Report info
     info_data = [
-        ['Report Period:', f'{start_date} to {end_date}'],
-        ['Generated:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-        ['Total Employees:', str(len(data))]
+        [
+            _pdf_paragraph('Report Period:', cell_label_style),
+            _pdf_paragraph(f'{start_date} to {end_date}', cell_style),
+        ],
+        [
+            _pdf_paragraph('Generated:', cell_label_style),
+            _pdf_paragraph(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), cell_style),
+        ],
+        [
+            _pdf_paragraph('Total Employees:', cell_label_style),
+            _pdf_paragraph(str(len(data)), cell_style),
+        ],
     ]
     
     info_table = Table(info_data, colWidths=[table_width * 0.4, table_width * 0.6], hAlign='CENTER')
@@ -985,8 +1063,7 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#d1d5db')),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         # Consistent inner spacing on all sides
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1023,10 +1100,20 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         ]))
         elements.append(emp_heading)
         
-        # Employee details
+        # Employee details (Paragraph cells wrap long values e.g. comma-separated departments)
         emp_details = [
-            ['Department:', emp['department'], 'Designation:', emp['designation']],
-            ['Email:', emp['email'], 'Role:', emp['role']],
+            [
+                _pdf_paragraph('Department:', cell_label_style),
+                _pdf_paragraph(emp['department'], cell_style),
+                _pdf_paragraph('Designation:', cell_label_style),
+                _pdf_paragraph(emp['designation'], cell_style),
+            ],
+            [
+                _pdf_paragraph('Email:', cell_label_style),
+                _pdf_paragraph(emp['email'], cell_style),
+                _pdf_paragraph('Role:', cell_label_style),
+                _pdf_paragraph(emp['role'], cell_style),
+            ],
         ]
         
         details_table = Table(
@@ -1042,9 +1129,8 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         details_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#d1d5db')),
             ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#d1d5db')),
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             # Consistent inner padding
             ('TOPPADDING', (0, 0), (-1, -1), 6),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1057,25 +1143,50 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         elements.append(Spacer(1, 10))
         
         # Performance metrics
+        header_label = ParagraphStyle(
+            'PerfReportHeader',
+            parent=cell_center_style,
+            fontName='Helvetica-Bold',
+            fontSize=10,
+        )
+
+        def _metric_row(m1: str, v1: str, m2: str, v2: str) -> list:
+            return [
+                _pdf_paragraph(m1, cell_center_style),
+                _pdf_paragraph(v1, cell_center_style),
+                _pdf_paragraph(m2, cell_center_style),
+                _pdf_paragraph(v2, cell_center_style),
+            ]
+
         metrics_data = [
-            ['Metric', 'Value', 'Metric', 'Value'],
-            ['Attendance Score', f"{emp['attendance_score']}%", 'Task Completion', f"{emp['task_completion_rate']}%"],
-            ['Total Days', str(total_days), 'Total Working Days', str(total_working_days)],
-            ['Attendance Days', f"{emp['attendance_days']}/{emp['working_days']}", 'Completed Tasks', f"{emp['completed_tasks']}/{emp['total_tasks']}"],
-            ['Late Arrivals', str(emp['late_arrivals']), 'Pending Tasks', str(emp['pending_tasks'])],
-            ['Early Departures', str(emp['early_departures']), 'In Progress Tasks', str(emp['in_progress_tasks'])],
-            ['Absent Days', str(emp['absent_days']), 'Total Leaves', str(emp['total_leaves'])],
-            ['Approved Leaves', str(emp['approved_leaves']), 'Total Leave Days', str(emp['total_leave_days'])],
+            [
+                _pdf_paragraph('Metric', header_label),
+                _pdf_paragraph('Value', header_label),
+                _pdf_paragraph('Metric', header_label),
+                _pdf_paragraph('Value', header_label),
+            ],
         ]
+        metrics_data.extend([
+            _metric_row('Attendance Score', f"{emp['attendance_score']}%", 'Task Completion', f"{emp['task_completion_rate']}%"),
+            _metric_row('Total Days', str(total_days), 'Total Working Days', str(total_working_days)),
+            _metric_row(
+                'Attendance Days',
+                f"{emp['attendance_days']}/{emp['working_days']}",
+                'Completed Tasks',
+                f"{emp['completed_tasks']}/{emp['total_tasks']}",
+            ),
+            _metric_row('Late Arrivals', str(emp['late_arrivals']), 'Pending Tasks', str(emp['pending_tasks'])),
+            _metric_row('Early Departures', str(emp['early_departures']), 'In Progress Tasks', str(emp['in_progress_tasks'])),
+            _metric_row('Absent Days', str(emp['absent_days']), 'Total Leaves', str(emp['total_leaves'])),
+            _metric_row('Approved Leaves', str(emp['approved_leaves']), 'Total Leave Days', str(emp['total_leave_days'])),
+        ])
         
         metrics_table = Table(metrics_data, colWidths=[table_width / 4] * 4, hAlign='CENTER')
         metrics_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#d1d5db')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             # Consistent inner padding
             ('TOPPADDING', (0, 0), (-1, -1), 6),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1104,9 +1215,17 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
             ]))
             elements.append(leave_heading)
             
-            leave_data = [['Leave Type', 'Count']]
+            leave_data = [
+                [
+                    _pdf_paragraph('Leave Type', header_label),
+                    _pdf_paragraph('Count', header_label),
+                ]
+            ]
             for leave_type, count in emp['leave_types'].items():
-                leave_data.append([leave_type.title(), str(count)])
+                leave_data.append([
+                    _pdf_paragraph(leave_type.title(), cell_style),
+                    _pdf_paragraph(str(count), cell_center_style),
+                ])
             
             leave_table = Table(
                 leave_data,
@@ -1117,8 +1236,7 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#d1d5db')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 # Consistent inner padding
                 ('TOPPADDING', (0, 0), (-1, -1), 6),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
@@ -1182,6 +1300,7 @@ async def export_task_management_report(
     status: Optional[str] = Query(None, description="Filter by task status"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Export Task Management Report in PDF format.
@@ -1278,9 +1397,24 @@ async def export_task_management_report(
         # -----------------------------
         # Scope to tasks directly related to current user only
         # -----------------------------
+        # Ensure current user is in the selected tenant scope
+        if _scoped_user_lookup(db, scope, int(current_user.user_id)) is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Current user is outside selected tenant scope",
+            )
+
+        # Option A: tasks have no company_id; scope by joining creator/assignee users in scope
+        from sqlalchemy.orm import aliased
+
+        creator = aliased(User)
+        assignee = aliased(User)
         query = (
             db.query(Task)
             .outerjoin(TaskHistory, TaskHistory.task_id == Task.task_id)
+            .outerjoin(creator, Task.assigned_by == creator.user_id)
+            .outerjoin(assignee, Task.assigned_to == assignee.user_id)
+            .filter(*_user_scope_filters(scope, creator), *_user_scope_filters(scope, assignee))
             .filter(
                 or_(
                     Task.assigned_to == current_user.user_id,
@@ -1327,7 +1461,8 @@ async def export_task_management_report(
             department=report_department,
             generated_by=current_user.name,
             period_label=period_label,
-            db=db
+            db=db,
+            scope=scope,
         )
     
     except ValueError as e:
@@ -1344,7 +1479,7 @@ async def export_task_management_report(
         )
 
 
-def generate_task_management_pdf(tasks, department, generated_by, period_label, db):
+def generate_task_management_pdf(tasks, department, generated_by, period_label, db, scope: dict):
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -1381,18 +1516,24 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
 
     # Info block
     info_data = [
-        ['Company Name', COMPANY_NAME or ''],
-        ['Department', department or 'Any'],
-        ['Period', period_label],
-        ['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-        ['Generated By', generated_by],
+        ['Company Name', ':', COMPANY_NAME or ''],
+        ['Department', ':', department or 'Any'],
+        ['Period', ':', period_label],
+        ['Generated On', ':', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+        ['Generated By', ':', generated_by],
     ]
-    info_table = Table(info_data, colWidths=[1.5*inch, (page_size[0] - left_margin - right_margin) - 1.5*inch])
+    total_info_width = page_size[0] - left_margin - right_margin
+    label_col_width = 1.5 * inch
+    colon_col_width = 0.2 * inch
+    value_col_width = total_info_width - label_col_width - colon_col_width
+    info_table = Table(info_data, colWidths=[label_col_width, colon_col_width, value_col_width])
     info_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+        ('ALIGN', (2, 0), (2, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ('TOPPADDING', (0, 0), (-1, -1), 6),
@@ -1408,9 +1549,12 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
     ]
     all_rows = []
     for task in tasks:
-        assigned_by = db.query(User).filter(User.user_id == task.assigned_by).first().name if task.assigned_by else "N/A"
-        assigned_to = db.query(User).filter(User.user_id == task.assigned_to).first().name if task.assigned_to else "N/A"
-        last_passed_to = db.query(User).filter(User.user_id == task.last_passed_to).first().name if task.last_passed_to else "N/A"
+        assigned_by_user = _scoped_user_lookup(db, scope, int(task.assigned_by)) if task.assigned_by else None
+        assigned_to_user = _scoped_user_lookup(db, scope, int(task.assigned_to)) if task.assigned_to else None
+        last_passed_to_user = _scoped_user_lookup(db, scope, int(task.last_passed_to)) if task.last_passed_to else None
+        assigned_by = assigned_by_user.name if assigned_by_user else "N/A"
+        assigned_to = assigned_to_user.name if assigned_to_user else "N/A"
+        last_passed_to = last_passed_to_user.name if last_passed_to_user else "N/A"
         completed_by = "N/A"
         created_date = task.created_at.strftime('%Y-%m-%d') if task.created_at else ""
         modified_date = task.last_passed_at.strftime('%Y-%m-%d') if task.last_passed_at else created_date
@@ -1484,7 +1628,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
     table = Table(table_rows, repeatRows=1, colWidths=col_widths)
     table.setStyle(TableStyle([
         # Header
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f1f5f9')),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#d1d5db')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
@@ -1499,7 +1643,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
         ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
         ('TOPPADDING', (0, 1), (-1, -1), 6),
         # Thin gray grid
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e6edf3')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
     ]))
     elements.append(table)
 
@@ -1525,7 +1669,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
         copyright_text = f"© {datetime.now().year} {COMPANY_NAME}. All rights reserved."
         page_text = f"Page {canvas.getPageNumber()}"
         canvas.setFont("Helvetica", footer_font_size)
-        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.setFillColor(colors.HexColor('#1e40af'))
         canvas.setFont("Helvetica-Bold", footer_font_size)
         page_num_width = canvas.stringWidth(page_text, "Helvetica-Bold", footer_font_size)
         canvas.setFont("Helvetica", footer_font_size)
@@ -1561,7 +1705,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
         canvas.setLineWidth(footer_line_thickness)
         canvas.line(horizontal_padding, footer_line_y, page_size[0] - horizontal_padding, footer_line_y)
         canvas.setFont("Helvetica", footer_font_size)
-        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.setFillColor(colors.HexColor('#1e40af'))
         canvas.drawString(horizontal_padding, footer_text_top, first_line_final)
         canvas.drawString(horizontal_padding, footer_text_bottom, copyright_final)
         canvas.setFont("Helvetica-Bold", footer_font_size)
@@ -1614,7 +1758,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
         
         # Set footer text style
         canvas.setFont("Helvetica", footer_font_size)
-        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.setFillColor(colors.HexColor('#1e40af'))
         
         # Calculate page number width for proper spacing
         canvas.setFont("Helvetica-Bold", footer_font_size)
@@ -1670,7 +1814,7 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
         
         # Draw first line (Address | Website | Email | Contact)
         canvas.setFont("Helvetica", footer_font_size)
-        canvas.setFillColor(colors.HexColor('#64748b'))
+        canvas.setFillColor(colors.HexColor('#1e40af'))
         canvas.drawString(horizontal_padding, footer_text_top, first_line_final)
         
         # Draw second line: Copyright (left) + Page number (right)

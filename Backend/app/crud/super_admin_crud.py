@@ -38,8 +38,11 @@ def get_super_admin(db: Session, super_admin_id: int):
     return db.query(SuperAdmin).filter(SuperAdmin.super_admin_id == super_admin_id).first()
 
 
-def list_super_admins(db: Session):
-    return db.query(SuperAdmin).all()
+def list_super_admins(db: Session, status: bool | None = None):
+    q = db.query(SuperAdmin)
+    if status is not None:
+        q = q.filter(SuperAdmin.is_active == status)
+    return q.all()
 
 
 def set_super_admin_status(db: Session, super_admin_id: int, is_active: bool, updated_by: int):

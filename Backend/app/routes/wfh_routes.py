@@ -10,7 +10,7 @@ from typing import Optional, Literal
 from app.db.database import get_db
 from app.db.models.user import User
 from app.db.models.wfh_request import WFHRequest, WFHStatus
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.utils.timezone import now_ist
 from app.utils.department_utils import department_tokens_lower
@@ -44,6 +44,30 @@ from app.crud.wfh_crud import (
 
 
 router = APIRouter(prefix="/wfh", tags=["Work From Home"])
+
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _get_user_in_scope(db: Session, *, user_id: int, scope: dict) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+
+
+def _assert_current_in_scope(db: Session, *, current_user: User, scope: dict) -> None:
+    # Admin tenant scope is assignment-based and validated by get_tenant_scope.
+    if current_user.role == RoleEnum.ADMIN:
+        return
+    if _get_user_in_scope(db, user_id=int(current_user.user_id), scope=scope) is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
+
 
 def _can_approver_handle_target(approver: User, target: User) -> bool:
     """
@@ -89,7 +113,8 @@ def _can_approver_handle_target(approver: User, target: User) -> bool:
 def submit_wfh_request(
     payload: WFHRequestCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Submit a Work From Home request.
@@ -108,6 +133,8 @@ def submit_wfh_request(
             detail="Admins are not permitted to submit WFH requests"
         )
     
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+
     start_dt = datetime.combine(payload.start_date, time.min)
     # Use 23:59:59 with no microseconds to avoid DB rounding into next day (00:00:00)
     end_dt = datetime.combine(payload.end_date, time(23, 59, 59))
@@ -123,7 +150,14 @@ def submit_wfh_request(
         )
     
     # Check for overlapping requests
-    if check_overlapping_wfh(db, current_user.user_id, start_dt, end_dt):
+    if check_overlapping_wfh(
+        db,
+        current_user.user_id,
+        start_dt,
+        end_dt,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You already have a pending or approved WFH request for the selected dates."
@@ -136,7 +170,9 @@ def submit_wfh_request(
         start_date=start_dt,
         end_date=end_dt,
         reason=payload.reason,
-        wfh_type=payload.wfh_type
+        wfh_type=payload.wfh_type,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     create_wfh_request_notifications(db, wfh_request, current_user)
     
@@ -163,13 +199,21 @@ def get_my_wfh_requests(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all WFH requests submitted by the current user.
     Supports filtering by status and date range.
     """
-    requests = get_user_wfh_requests(db, current_user.user_id, status_filter)
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+    requests = get_user_wfh_requests(
+        db,
+        current_user.user_id,
+        status_filter,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     # Apply date range filter if provided
     if date_range:
@@ -267,12 +311,19 @@ def get_my_wfh_requests(
 def get_my_wfh_request_detail(
     wfh_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get details of a specific WFH request submitted by the current user.
     """
-    wfh_request = get_wfh_request_by_id(db, wfh_id)
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+    wfh_request = get_wfh_request_by_id(
+        db,
+        wfh_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not wfh_request:
         raise HTTPException(
@@ -307,12 +358,19 @@ def update_my_wfh_request(
     wfh_id: int,
     payload: WFHRequestUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Update a pending WFH request (only the owner can update).
     """
-    wfh_request = get_wfh_request_by_id(db, wfh_id)
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+    wfh_request = get_wfh_request_by_id(
+        db,
+        wfh_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not wfh_request:
         raise HTTPException(
@@ -353,7 +411,15 @@ def update_my_wfh_request(
         check_start = start_dt or wfh_request.start_date
         check_end = end_dt or wfh_request.end_date
         
-        if check_overlapping_wfh(db, current_user.user_id, check_start, check_end, exclude_wfh_id=wfh_id):
+        if check_overlapping_wfh(
+            db,
+            current_user.user_id,
+            check_start,
+            check_end,
+            exclude_wfh_id=wfh_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="The updated dates overlap with another pending or approved WFH request."
@@ -366,7 +432,9 @@ def update_my_wfh_request(
         start_date=start_dt,
         end_date=end_dt,
         wfh_type=payload.wfh_type,
-        reason=payload.reason
+        reason=payload.reason,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     if not updated:
@@ -396,12 +464,19 @@ def update_my_wfh_request(
 def delete_my_wfh_request(
     wfh_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Delete a pending WFH request (only the owner can delete).
     """
-    wfh_request = get_wfh_request_by_id(db, wfh_id)
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+    wfh_request = get_wfh_request_by_id(
+        db,
+        wfh_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not wfh_request:
         raise HTTPException(
@@ -420,8 +495,20 @@ def delete_my_wfh_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only pending requests can be deleted"
         )
-    create_wfh_deletion_notification(db, wfh_request, current_user)
-    deleted = delete_wfh_request(db, wfh_id, current_user.user_id)
+    create_wfh_deletion_notification(
+        db,
+        wfh_request,
+        current_user,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
+    deleted = delete_wfh_request(
+        db,
+        wfh_id,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not deleted:
         raise HTTPException(
@@ -445,7 +532,8 @@ def get_all_requests(
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     role_filter: Optional[Literal["ADMIN", "HR", "MANAGER", "TEAM_LEAD", "EMPLOYEE"]] = Query(None, description="Filter by requester role"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all WFH requests (for TeamLead/Manager/HR/Admin).
@@ -462,7 +550,9 @@ def get_all_requests(
         db=db,
         status_filter=status_filter,
         department_filter=department,
-        requester_user=current_user
+        requester_user=current_user,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     # Apply date range filter if provided
@@ -593,12 +683,18 @@ def get_all_requests(
 def get_request_detail(
     wfh_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get details of a specific WFH request (for TeamLead/Manager/HR/Admin).
     """
-    wfh_request = get_wfh_request_by_id(db, wfh_id)
+    wfh_request = get_wfh_request_by_id(
+        db,
+        wfh_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not wfh_request:
         raise HTTPException(
@@ -607,7 +703,7 @@ def get_request_detail(
         )
     
     # Get user details
-    user = db.query(User).filter(User.user_id == wfh_request.user_id).first()
+    user = _get_user_in_scope(db, user_id=int(wfh_request.user_id), scope=scope)
     
     if not user:
         raise HTTPException(
@@ -698,7 +794,8 @@ def approve_or_reject_request(
     wfh_id: int,
     payload: WFHRequestApprove,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Approve or reject a WFH request (for TeamLead/Manager/HR/Admin).
@@ -707,7 +804,12 @@ def approve_or_reject_request(
     - TeamLead: Can approve/reject Employee requests from their department only
     - HR/Admin: Can approve/reject all requests
     """
-    wfh_request = get_wfh_request_by_id(db, wfh_id)
+    wfh_request = get_wfh_request_by_id(
+        db,
+        wfh_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not wfh_request:
         raise HTTPException(
@@ -722,7 +824,7 @@ def approve_or_reject_request(
         )
     
     # Get user to check department
-    user = db.query(User).filter(User.user_id == wfh_request.user_id).first()
+    user = _get_user_in_scope(db, user_id=int(wfh_request.user_id), scope=scope)
     
     if not user:
         raise HTTPException(
@@ -750,7 +852,9 @@ def approve_or_reject_request(
         wfh_id=wfh_id,
         approver_id=current_user.user_id,
         approved=payload.approved,
-        rejection_reason=payload.rejection_reason
+        rejection_reason=payload.rejection_reason,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     if not updated:
@@ -763,6 +867,8 @@ def approve_or_reject_request(
         wfh_request=updated,
         approver=current_user,
         approved=payload.approved,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     return WFHRequestWithUserOut(
@@ -789,13 +895,24 @@ def approve_or_reject_request(
 @router.get("/pending-count")
 def get_pending_count(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get count of pending WFH requests (for TeamLead/Manager/HR/Admin).
     Useful for showing notification badges.
     """
-    count = get_pending_wfh_count_for_user(db, current_user)
+    # Tenant scoping is applied in /wfh/requests; for pending-count keep consistent by reusing that view.
+    # (Counts visible pending requests within selected tenant scope.)
+    _, pending_count = get_all_wfh_requests(
+        db=db,
+        status_filter=None,
+        department_filter=None,
+        requester_user=current_user,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
+    count = pending_count
     return {"pending_count": count}
 
 
@@ -803,9 +920,16 @@ def get_pending_count(
 def get_wfh_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get all WFH notifications for the current user."""
-    return list_wfh_notifications(db, current_user.user_id)
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+    return list_wfh_notifications(
+        db,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
 
 
 @router.put("/notifications/{notification_id}/read", response_model=WFHNotificationOut)
@@ -813,9 +937,17 @@ def read_wfh_notification(
     notification_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Mark a WFH notification as read."""
-    notification = mark_wfh_notification_as_read(db, notification_id, current_user.user_id)
+    _assert_current_in_scope(db, current_user=current_user, scope=scope)
+    notification = mark_wfh_notification_as_read(
+        db,
+        notification_id,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if not notification:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
     return notification

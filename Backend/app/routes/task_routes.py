@@ -17,7 +17,7 @@ from app.crud.task_crud import (
     update_task,
     update_task_status,
 )
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_tenant_scope
 from app.utils.timezone import now_ist
 
 from app.schemas.task_schema import (
@@ -39,6 +39,35 @@ from app.db.models.project_member import ProjectMember
 from app.utils.department_utils import department_tokens_lower
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
+
+# -------------------------------------------------------------------
+# Tenant scoping helpers (Option A: no DB-level company_id on tasks)
+# -------------------------------------------------------------------
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _get_user_in_scope(db: Session, user_id: int, scope: dict) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+
+
+def _task_in_scope_query(db: Session, scope: dict):
+    creator = aliased(User)
+    assignee = aliased(User)
+    return (
+        db.query(Task)
+        .outerjoin(creator, Task.assigned_by == creator.user_id)
+        .outerjoin(assignee, Task.assigned_to == assignee.user_id)
+        .filter(*_user_scope_filters(scope, creator), *_user_scope_filters(scope, assignee))
+    )
 
 
 def _ensure_project_member(db: Session, project_id: int | None, user_id: int | None, added_by: int | None) -> None:
@@ -104,9 +133,16 @@ def _serialize_task_notification(notification: TaskNotificationOut | Task):
 
 
 @router.post("/", response_model=TaskOut)
-def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(get_current_user)):
+def assign_task(
+    task: TaskCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    if _get_user_in_scope(db, int(user.user_id), scope) is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
     # Fetch assignee user
-    assignee = db.query(User).filter(User.user_id == task.assigned_to).first()
+    assignee = _get_user_in_scope(db, int(task.assigned_to), scope)
     if not assignee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
 
@@ -142,6 +178,8 @@ def assign_task(task: TaskCreate, db: Session = Depends(get_db), user = Depends(
         due_date=datetime.combine(task.due_date, datetime.min.time()) if task.due_date else None,
         priority=task.priority or "Medium",
         project_id=task.project_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     # Ensure assignee is added as a project member when task is linked to a project
     _ensure_project_member(db, t.project_id, t.assigned_to, user.user_id)
@@ -173,6 +211,7 @@ def assign_tasks_bulk(
     payload: TaskBulkCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Assign the same task to multiple users.
@@ -185,7 +224,13 @@ def assign_tasks_bulk(
     assignee_ids = list({uid for uid in payload.assigned_to_ids if uid is not None})
 
     # Pre-load all assignees and validate existence
-    assignees = db.query(User).filter(User.user_id.in_(assignee_ids)).all()
+    if _get_user_in_scope(db, int(user.user_id), scope) is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
+    assignees = (
+        db.query(User)
+        .filter(User.user_id.in_(assignee_ids), *_user_scope_filters(scope))
+        .all()
+    )
     found_ids = {u.user_id for u in assignees}
     missing = [uid for uid in assignee_ids if uid not in found_ids]
     if missing:
@@ -214,7 +259,7 @@ def assign_tasks_bulk(
         if assignee_index <= assigner_index:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Cannot assign task to same or higher role (assignee_id={assignee.user_id})",
+                detail=f"Cannot asstcsign task to same or higher role (assignee_id={assignee.user_id})",
             )
 
         if user.role == RoleEnum.MANAGER and user.department:
@@ -243,6 +288,8 @@ def assign_tasks_bulk(
             due_date=datetime.combine(payload.due_date, datetime.min.time()) if payload.due_date else None,
             priority=payload.priority or "Medium",
             project_id=payload.project_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
         )
         # Ensure each assignee is added as a project member when task is linked to a project
         _ensure_project_member(db, t.project_id, t.assigned_to, user.user_id)
@@ -278,6 +325,7 @@ def assign_tasks_bulk(
 def my_tasks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     List standalone tasks for the current user (non-project tasks only).
@@ -303,6 +351,7 @@ def my_tasks(
             .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
             .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
             .filter(Task.project_id.is_(None))
+            .filter(*_user_scope_filters(scope, TaskCreator), *_user_scope_filters(scope, TaskAssignee))
         )
 
         # Exclude tasks involving other admins only (creator or assignee is ADMIN)
@@ -326,6 +375,7 @@ def my_tasks(
             .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
             .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
             .filter(Task.project_id.is_(None))
+            .filter(*_user_scope_filters(scope, TaskCreator), *_user_scope_filters(scope, TaskAssignee))
         )
 
         q = q.filter(
@@ -348,6 +398,7 @@ def my_tasks(
                 .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
                 .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
                 .filter(Task.project_id.is_(None))
+                .filter(*_user_scope_filters(scope, TaskCreator), *_user_scope_filters(scope, TaskAssignee))
                 .all()
             )
 
@@ -365,7 +416,13 @@ def my_tasks(
 
     else:
         # Team Leads / Employees: keep existing per-user visibility via list_tasks
-        tasks = list_tasks(db, user.user_id, project_only=False)
+        tasks = list_tasks(
+            db,
+            user.user_id,
+            project_only=False,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
 
     return [
         TaskOut(
@@ -397,6 +454,7 @@ def project_tasks(
     project_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     List project-linked tasks for a given project that are visible to the current user.
@@ -446,6 +504,7 @@ def project_tasks(
             .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
             .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
             .filter(Task.project_id == project_id)
+            .filter(*_user_scope_filters(scope, TaskCreator), *_user_scope_filters(scope, TaskAssignee))
         )
 
         q = q.filter(
@@ -468,6 +527,7 @@ def project_tasks(
             .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
             .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
             .filter(Task.project_id == project_id)
+            .filter(*_user_scope_filters(scope, TaskCreator), *_user_scope_filters(scope, TaskAssignee))
         )
 
         q = q.filter(
@@ -490,6 +550,7 @@ def project_tasks(
                 .outerjoin(TaskCreator, Task.assigned_by == TaskCreator.user_id)
                 .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
                 .filter(Task.project_id == project_id)
+                .filter(*_user_scope_filters(scope, TaskCreator), *_user_scope_filters(scope, TaskAssignee))
                 .all()
             )
 
@@ -507,7 +568,14 @@ def project_tasks(
 
     else:
         # Team Leads / Employees: per-user, per-project visibility via list_tasks
-        tasks = list_tasks(db, user.user_id, project_only=True, project_id=project_id)
+        tasks = list_tasks(
+            db,
+            user.user_id,
+            project_only=True,
+            project_id=project_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
 
     return [
         TaskOut(
@@ -563,9 +631,15 @@ def _ensure_can_pass(current_user: User, new_assignee: User) -> None:
 
 
 @router.put("/{task_id}/status", response_model=TaskOut)
-def update_status(task_id: int, status: TaskStatus, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def update_status(
+    task_id: int,
+    status: TaskStatus,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
     # Fetch current task
-    existing_task = db.query(Task).filter(Task.task_id == task_id).first()
+    existing_task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not existing_task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -583,7 +657,14 @@ def update_status(task_id: int, status: TaskStatus, db: Session = Depends(get_db
         if current_index >= assignee_index:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to update this task's status")
 
-    task = update_task_status(db, task_id, status, user.user_id)
+    task = update_task_status(
+        db,
+        task_id,
+        status,
+        user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return TaskOut(
@@ -614,6 +695,7 @@ def update_tasks_bulk(
     payload: BulkTaskUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Bulk update multiple tasks. Assigned users are preserved; this endpoint no longer
@@ -622,7 +704,7 @@ def update_tasks_bulk(
     updates = payload.updates.model_dump(exclude_unset=True)
     if not updates:
         # Nothing to update; return current tasks
-        tasks = db.query(Task).filter(Task.task_id.in_(payload.task_ids)).all()
+        tasks = _task_in_scope_query(db, scope).filter(Task.task_id.in_(payload.task_ids)).all()
         return [
             TaskOut(
                 task_id=t.task_id,
@@ -650,7 +732,7 @@ def update_tasks_bulk(
 
     updated_tasks: list[Task] = []
     for task_id in payload.task_ids:
-        existing: Task | None = db.query(Task).filter(Task.task_id == task_id).first()
+        existing: Task | None = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
         if not existing:
             raise HTTPException(status_code=404, detail=f"Task not found (task_id={task_id})")
 
@@ -676,7 +758,14 @@ def update_tasks_bulk(
                     detail=f"Only the task creator or higher roles can edit this task (task_id={task_id})",
                 )
 
-        updated = update_task(db, task_id=task_id, updates=updates, updated_by=user.user_id)
+        updated = update_task(
+            db,
+            task_id=task_id,
+            updates=updates,
+            updated_by=user.user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not updated:
             raise HTTPException(status_code=404, detail=f"Task not found (task_id={task_id})")
         updated_tasks.append(updated)
@@ -713,8 +802,9 @@ def edit_task(
     payload: TaskUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    existing: Task | None = db.query(Task).filter(Task.task_id == task_id).first()
+    existing: Task | None = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -737,7 +827,7 @@ def edit_task(
     # If the update includes changing the assignee, enforce role hierarchy rules
     if "assigned_to" in updates:
         new_assignee_id = updates["assigned_to"]
-        assignee = db.query(User).filter(User.user_id == new_assignee_id).first()
+        assignee = _get_user_in_scope(db, int(new_assignee_id), scope)
         if not assignee:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
 
@@ -760,7 +850,14 @@ def edit_task(
                 if not manager_tokens.intersection(assignee_tokens):
                     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
 
-    updated = update_task(db, task_id=task_id, updates=updates, updated_by=user.user_id)
+    updated = update_task(
+        db,
+        task_id=task_id,
+        updates=updates,
+        updated_by=user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if not updated:
         raise HTTPException(status_code=400, detail="Task update failed")
     return TaskOut(
@@ -786,8 +883,13 @@ def edit_task(
     )
 
 @router.delete("/{task_id}")
-def delete_my_task(task_id: int, db: Session = Depends(get_db), user = Depends(get_current_user)):
-    existing = db.query(Task).filter(Task.task_id == task_id).first()
+def delete_my_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    existing = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -804,7 +906,12 @@ def delete_my_task(task_id: int, db: Session = Depends(get_db), user = Depends(g
         if current_index >= creator_index:
             raise HTTPException(status_code=403, detail="Only the task creator or higher roles can delete this task")
 
-    task = delete_task(db, task_id)
+    task = delete_task(
+        db,
+        task_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"message": "Task deleted successfully"}
@@ -816,8 +923,9 @@ def pass_task_route(
     payload: TaskPassRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    task = db.query(Task).filter(Task.task_id == task_id).first()
+    task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
@@ -831,7 +939,7 @@ def pass_task_route(
     if current_user.role != RoleEnum.ADMIN and task.assigned_to != current_user.user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the current assignee can pass this task")
 
-    new_assignee = db.query(User).filter(User.user_id == payload.new_assignee_id).first()
+    new_assignee = _get_user_in_scope(db, int(payload.new_assignee_id), scope)
     if not new_assignee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="New assignee not found")
 
@@ -845,6 +953,8 @@ def pass_task_route(
         current_user_id=current_user.user_id,
         new_assignee_id=payload.new_assignee_id,
         note=payload.note,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     if not updated_task:
@@ -870,6 +980,8 @@ def pass_task_route(
         title=title,
         message=message,
         pass_details=pass_details,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     return TaskOut(
@@ -900,8 +1012,9 @@ def task_history(
     task_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    task = db.query(Task).filter(Task.task_id == task_id).first()
+    task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
@@ -921,7 +1034,12 @@ def task_history(
         if not participated:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this task history")
 
-    entries = get_task_history(db, task_id)
+    entries = get_task_history(
+        db,
+        task_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     history: list[TaskHistoryOut] = []
     for entry in entries:
         details = None
@@ -947,8 +1065,14 @@ def task_history(
 def task_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    notifications = list_task_notifications(db, current_user.user_id)
+    notifications = list_task_notifications(
+        db,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return [_serialize_task_notification(notification) for notification in notifications]
 
 
@@ -957,11 +1081,14 @@ def mark_task_notification(
     notification_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     notification = mark_task_notification_as_read(
         db,
         notification_id=notification_id,
         user_id=current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     if not notification:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
@@ -972,7 +1099,8 @@ def mark_task_notification(
 def get_deadline_warnings(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get tasks with upcoming or overdue deadlines for a user"""
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
@@ -981,13 +1109,23 @@ def get_deadline_warnings(
     today = date.today()
     three_days_from_now = today + timedelta(days=3)
     
+    if _get_user_in_scope(db, int(user_id), scope) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found in selected tenant scope")
+
     # Get tasks assigned to user with deadlines within 3 days or overdue
-    tasks = db.query(Task).filter(
-        Task.assigned_to == user_id,
-        Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
-        Task.due_date.isnot(None),
-        Task.due_date <= three_days_from_now
-    ).all()
+    TaskAssignee = aliased(User)
+    tasks = (
+        db.query(Task)
+        .join(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+        .filter(
+            Task.assigned_to == user_id,
+            Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+            Task.due_date.isnot(None),
+            Task.due_date <= three_days_from_now,
+            *_user_scope_filters(scope, TaskAssignee),
+        )
+        .all()
+    )
     
     warnings = []
     for task in tasks:

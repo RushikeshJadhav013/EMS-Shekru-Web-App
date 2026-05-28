@@ -18,6 +18,8 @@ class CompanyBranch(Base):
         UniqueConstraint("company_id", "branch_name", name="uq_company_branch_name"),
         # Global uniqueness: same contact number cannot exist in multiple companies/branches.
         UniqueConstraint("contact_number", name="uq_company_branch_contact_global"),
+        # Global uniqueness: branch email cannot repeat across branches.
+        UniqueConstraint("branch_email", name="uq_company_branch_email_global"),
     )
 
     branch_id = Column(Integer, primary_key=True, index=True, autoincrement=True)

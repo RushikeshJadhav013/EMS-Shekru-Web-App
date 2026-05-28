@@ -30,6 +30,7 @@ from app.db.models.shift import Shift, ShiftAssignment, ShiftNotification
 from app.db.models.user import User
 from app.db.models.leave import Leave
 from app.enums import RoleEnum
+from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
 
 
 def create_shift(
@@ -68,25 +69,72 @@ def get_shift(db: Session, shift_id: int) -> Optional[Shift]:
     return db.query(Shift).filter(Shift.shift_id == shift_id).first()
 
 
-def get_shifts_by_department(db: Session, department: Optional[str] = None) -> List[Shift]:
-    """Get shifts for a department (or global) supporting comma‑separated department strings.
-    If *department* contains commas, each token is treated as a separate department.
-    Global shifts (department IS NULL) are always included.
+def get_shifts_by_department(
+    db: Session,
+    department: Optional[str] = None,
+    *,
+    allowed_departments: Optional[list[str]] = None,
+) -> List[Shift]:
+    """Get shifts for a department (or global shifts if department is None).
+
+    Option A tenant scoping: because shifts are department-based templates with no company_id,
+    callers can pass allowed_departments to restrict visibility to only departments within a tenant.
     """
     query = db.query(Shift).filter(Shift.is_active == True)
     if department:
-        # Parse possible comma‑separated list
-        depts = department_tokens_lower(department)
-        if depts:
-            # Build equality filters for each token (case‑insensitive)
-            dept_filters = [func.lower(Shift.department) == d for d in depts]
-            query = query.filter(or_(*dept_filters, Shift.department.is_(None)))
-        else:
-            # Fallback to original behavior (single exact match)
-            query = query.filter(Shift.department == department)
+        # Get department-specific shifts and global shifts (where department is NULL)
+        # Use case-insensitive comparison for department matching
+        query = query.filter(
+            or_(
+                func.lower(Shift.department) == func.lower(department),
+                Shift.department.is_(None)
+            )
+        )
     else:
-        query = query.filter(Shift.department.is_(None))
+        # If no department requested, return shifts for allowed departments + global shifts.
+        if allowed_departments:
+            lowered = [d.lower() for d in allowed_departments if d]
+            query = query.filter(
+                or_(
+                    Shift.department.is_(None),
+                    func.lower(Shift.department).in_(lowered),
+                )
+            )
+        else:
+            # Get only global shifts
+            query = query.filter(Shift.department.is_(None))
+    
     return query.order_by(Shift.start_time).all()
+
+
+def get_shifts_for_department_tokens(db: Session, department_tokens: List[str]) -> List[Shift]:
+    """Return active shifts for any of the given department tokens (plus global shifts)."""
+    tokens = [t.strip().lower() for t in department_tokens if t and t.strip()]
+    if not tokens:
+        return get_shifts_by_department(db, None)
+
+    query = db.query(Shift).filter(Shift.is_active == True)
+    query = query.filter(
+        or_(
+            Shift.department.is_(None),
+            func.lower(Shift.department).in_(tokens),
+        )
+    )
+    return query.order_by(Shift.start_time).all()
+
+
+def user_has_department_token(user_department: Optional[str], department: str) -> bool:
+    """True if user's comma-separated departments include the given department token."""
+    token = (department or "").strip().lower()
+    if not token:
+        return False
+    return token in department_tokens_lower(user_department)
+
+
+def _department_token_rlike_filter(department: str):
+    """SQLAlchemy filter: User.department contains department as a comma-separated token."""
+    pattern = department_token_regex_pattern(department.strip())
+    return and_(User.department.isnot(None), User.department.op("RLIKE")(pattern))
 
 
 def update_shift(
@@ -218,31 +266,54 @@ def get_department_shift_schedule(
     db: Session,
     department: str,
     schedule_date: date,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> dict:
     """Get shift schedule for a department on a specific date"""
     # Get all shifts for the department
     shifts = get_shifts_by_department(db, department)
     
     # Get all assignments for this date
-    assignments = db.query(ShiftAssignment).filter(
-        ShiftAssignment.assignment_date == schedule_date
-    ).all()
-    
-    # Get users in the department
-    department_users = db.query(User).filter(
-        User.department == department,
+    assignments_q = (
+        db.query(ShiftAssignment)
+        .join(User, User.user_id == ShiftAssignment.user_id)
+        .filter(
+            ShiftAssignment.assignment_date == schedule_date,
+            _department_token_rlike_filter(department),
+        )
+    )
+    if company_id is not None:
+        assignments_q = assignments_q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        assignments_q = assignments_q.filter(User.branch_id == branch_id)
+    assignments = assignments_q.all()
+
+    # Get users whose department list includes this department token
+    dept_users_q = db.query(User).filter(
+        _department_token_rlike_filter(department),
         User.is_active == True,
         User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD])
-    ).all()
+    )
+    if company_id is not None:
+        dept_users_q = dept_users_q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        dept_users_q = dept_users_q.filter(User.branch_id == branch_id)
+    department_users = dept_users_q.all()
     
     # Get users on leave for this date
-    users_on_leave = db.query(User).join(Leave).filter(
-        User.department == department,
+    users_on_leave_q = db.query(User).join(Leave).filter(
+        _department_token_rlike_filter(department),
         User.is_active == True,
         Leave.start_date <= schedule_date,
         Leave.end_date >= schedule_date,
         Leave.status == "Approved"
-    ).all()
+    )
+    if company_id is not None:
+        users_on_leave_q = users_on_leave_q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        users_on_leave_q = users_on_leave_q.filter(User.branch_id == branch_id)
+    users_on_leave = users_on_leave_q.all()
     
     # Build shift schedule
     shift_schedule = []
@@ -275,6 +346,9 @@ def get_department_shift_schedule_range(
     department: str,
     start_date: date,
     end_date: date,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
 ) -> dict:
     """Get shift schedules for a department across a date range"""
     if end_date < start_date:
@@ -283,7 +357,13 @@ def get_department_shift_schedule_range(
     days = []
     current_date = start_date
     while current_date <= end_date:
-        day_schedule = get_department_shift_schedule(db, department, current_date)
+        day_schedule = get_department_shift_schedule(
+            db,
+            department,
+            current_date,
+            company_id=company_id,
+            branch_id=branch_id,
+        )
         days.append(day_schedule)
         current_date += timedelta(days=1)
     
@@ -355,19 +435,49 @@ def create_shift_notification(
     return notification
 
 
-def get_shift_notifications(db: Session, user_id: int) -> List[ShiftNotification]:
+def get_shift_notifications(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> List[ShiftNotification]:
     """Get all shift notifications for a user"""
-    return db.query(ShiftNotification).filter(
-        ShiftNotification.user_id == user_id
-    ).order_by(ShiftNotification.created_at.desc()).all()
+    q = (
+        db.query(ShiftNotification)
+        .join(ShiftAssignment, ShiftAssignment.assignment_id == ShiftNotification.shift_assignment_id)
+        .join(User, User.user_id == ShiftNotification.user_id)
+        .filter(ShiftNotification.user_id == user_id)
+    )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.order_by(ShiftNotification.created_at.desc()).all()
 
 
-def mark_notification_as_read(db: Session, notification_id: int, user_id: int) -> bool:
+def mark_notification_as_read(
+    db: Session,
+    notification_id: int,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> bool:
     """Mark a notification as read"""
-    notification = db.query(ShiftNotification).filter(
-        ShiftNotification.notification_id == notification_id,
-        ShiftNotification.user_id == user_id
-    ).first()
+    q = (
+        db.query(ShiftNotification)
+        .join(User, User.user_id == ShiftNotification.user_id)
+        .filter(
+            ShiftNotification.notification_id == notification_id,
+            ShiftNotification.user_id == user_id,
+        )
+    )
+    if company_id is not None:
+        q = q.filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    notification = q.first()
     
     if not notification:
         return False

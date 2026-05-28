@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, APIRouter, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.database import engine, SessionLocal, Base
 from app.realtime.socketio_app import socket_app
+from app.dependencies import get_tenant_scope
 
 # Import models so SQLAlchemy knows about all tables before create_all
 from app.db.models import (  # noqa: F401
@@ -33,7 +34,6 @@ from app.db.models import (  # noqa: F401
     company,
     company_branch,
     branch_admin_assignment,
-    chat,
 )
 from app.routes import (
     user_routes,
@@ -52,6 +52,7 @@ from app.routes import (
     super_admin_routes,
     subscription_routes,
     company_routes,
+    company_salary_structure_routes,
     company_branch_routes,
     branch_admin_assignment_routes,
     chat_routes,
@@ -136,8 +137,49 @@ try:
             conn.execute(
                 text("ALTER TABLE meetings ADD COLUMN project_id INT NULL")
             )
+
+        # Check if 'company_slug' exists on 'companies' table; if not, add it
+        result = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'companies'
+                  AND COLUMN_NAME = 'company_slug'
+                """
+            )
+        )
+        row = result.first()
+        has_company_slug = bool(row[0] if row else 0)
+        if not has_company_slug:
+            conn.execute(
+                text("ALTER TABLE companies ADD COLUMN company_slug VARCHAR(128) NULL")
+            )
 except Exception as _e:
     # Fail-soft: app will still boot; detailed error returned via middleware if used
+    pass
+
+# Populate missing `company_slug` values (best-effort).
+try:
+    from app.db.models.company import Company
+    from app.utils.slug import generate_unique_company_slug
+
+    with SessionLocal() as db:
+        # Only update rows with missing/empty slug to avoid unnecessary collisions.
+        companies = db.query(Company).all()
+        updated_any = False
+        for c in companies:
+            if getattr(c, "company_slug", None):
+                continue
+            c.company_slug = generate_unique_company_slug(
+                db, c.company_name, exclude_company_id=int(c.company_id)
+            )
+            updated_any = True
+        if updated_any:
+            db.commit()
+except Exception:
+    # Fail-soft; slug-based routing might 404 until slugs are present.
     pass
 
 # Initialize FastAPI
@@ -194,15 +236,16 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 origins = [
     "https://staffly.space",    # Direct backend access
     "https://stafflyhrms.netlify.app",  # Production deployment
-    # "http://localhost:8080",
-    # "https://testing.staffly.space",           # Allow all origins (for development)
-    # "https://stafflytesting.netlify.app"       # Testing deployment
+    # "https://testing.staffly.space",           # Frontend (new custom domain on Netlify)
+    # "https://stafflytesting.netlify.app",       # Temporary fallback during migration
+    # "https://api-testing.staffly.space",    # Optional: backend domain (Swagger/tests)
+    # "https://stafflysuperadmin.netlify.app"     # Super Admin frontend
 ]
 
 # Configure CORS middleware with detailed settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=origins,  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
@@ -228,6 +271,7 @@ app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
 app.include_router(company_routes.router)
+app.include_router(company_salary_structure_routes.router)
 app.include_router(company_branch_routes.router)
 app.include_router(branch_admin_assignment_routes.router)
 app.include_router(chat_routes.router)
@@ -237,6 +281,40 @@ app.include_router(interview_feedback_routes.router)
 app.include_router(project_routes.router)
 app.include_router(meeting_routes.router)
 app.include_router(project_meeting_routes.router)
+
+# -------------------------------------------------------------------
+# Tenant routing (path-based): /{company_slug}/<tenant-endpoint>
+# -------------------------------------------------------------------
+# This keeps your existing root endpoints working, while also exposing
+# a tenant-aware URL structure for Swagger/testing + frontend calls.
+tenant_router = APIRouter(
+    prefix="/{company_slug}",
+    # Validate that the authenticated user can access this company.
+    # get_tenant_scope() resolves slug -> company_id automatically.
+    dependencies=[Depends(get_tenant_scope)],
+)
+
+tenant_router.include_router(user_routes.router)
+tenant_router.include_router(attendance_routes.router)
+tenant_router.include_router(leave_routes.router)
+tenant_router.include_router(leave_calendar_routes.router)
+tenant_router.include_router(task_routes.router)
+tenant_router.include_router(task_comment_routes.router)
+tenant_router.include_router(dashboard_routes.router)
+tenant_router.include_router(hiring_routes.router)
+tenant_router.include_router(interview_routes.router)
+tenant_router.include_router(shift_routes.router)
+tenant_router.include_router(department_routes.router)
+tenant_router.include_router(report_routes.router)
+tenant_router.include_router(chat_routes.router)
+tenant_router.include_router(wfh_routes.router)
+tenant_router.include_router(salary_routes.router)  # Salary slip & increment endpoints
+tenant_router.include_router(interview_feedback_routes.router)
+tenant_router.include_router(project_routes.router)
+tenant_router.include_router(meeting_routes.router)
+tenant_router.include_router(project_meeting_routes.router)
+
+app.include_router(tenant_router)
 
 # Global exception handlers to ensure CORS headers are always included
 @app.exception_handler(StarletteHTTPException)

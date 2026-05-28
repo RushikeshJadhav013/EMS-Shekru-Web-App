@@ -55,6 +55,11 @@ def format_currency_int(amount: float) -> str:
     return f"{int(amount):,}"
 
 
+def _salary_component_float(value: float | None) -> float:
+    """DB/ORM may return NULL for Float columns; keep PDF math from mixing float with None."""
+    return float(value or 0.0)
+
+
 def get_month_name(month: int) -> str:
     """Get month name from number"""
     months = ['January', 'February', 'March', 'April', 'May', 'June',
@@ -559,6 +564,17 @@ def _build_salary_annexure_elements(
     4. Monthly In-Hand = (Total Gross - PT - Other Tax - PF) / 12
     5. Employer PF is part of CTC, NEVER deducted from employee
     """
+    basic_annual = _salary_component_float(basic_annual)
+    hra_annual = _salary_component_float(hra_annual)
+    special_allowance_annual = _salary_component_float(special_allowance_annual)
+    conveyance_annual = _salary_component_float(conveyance_annual)
+    medical_allowance_annual = _salary_component_float(medical_allowance_annual)
+    other_allowance_annual = _salary_component_float(other_allowance_annual)
+    professional_tax_annual = _salary_component_float(professional_tax_annual)
+    other_deduction_annual = _salary_component_float(other_deduction_annual)
+    employer_pf_annual = _salary_component_float(employer_pf_annual)
+    variable_pay_annual = _salary_component_float(variable_pay_annual)
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -1650,6 +1666,17 @@ def generate_offer_letter_pdf(
     )
     elements.append(Paragraph("Salary Annexure", annexure_title_style))
     
+    basic_annual = _salary_component_float(basic_annual)
+    hra_annual = _salary_component_float(hra_annual)
+    special_allowance_annual = _salary_component_float(special_allowance_annual)
+    conveyance_annual = _salary_component_float(conveyance_annual)
+    medical_allowance_annual = _salary_component_float(medical_allowance_annual)
+    other_allowance_annual = _salary_component_float(other_allowance_annual)
+    professional_tax_annual = _salary_component_float(professional_tax_annual)
+    other_deduction_annual = _salary_component_float(other_deduction_annual)
+    employer_pf_annual = _salary_component_float(employer_pf_annual)
+    variable_pay_annual = _salary_component_float(variable_pay_annual)
+
     # Calculate monthly values
     basic_monthly = round(basic_annual / 12, 2)
     hra_monthly = round(hra_annual / 12, 2)

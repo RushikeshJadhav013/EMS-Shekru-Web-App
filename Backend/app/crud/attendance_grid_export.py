@@ -42,41 +42,27 @@ def export_monthly_grid_csv(
     year,
     department=None,
     employee_id=None,
-    date_from=None,
-    date_to=None,
     status=None,
     current_user=None,
+    company_id=None,
+    branch_id=None,
 ):
     """
     Export Monthly Attendance Grid to CSV (Excel-style layout exactly like image)
     Applies filters to the data after generation, not during.
     """
-    from datetime import datetime as dt
-
     data = build_monthly_attendance_grid(
         db,
         month,
         year,
         department,
         current_user=current_user,
+        company_id=company_id,
+        branch_id=branch_id,
     )
     
     # Apply additional filters to rows
     filtered_rows = []
-    filter_start = None
-    filter_end = None
-    
-    if date_from:
-        try:
-            filter_start = dt.strptime(date_from, "%Y-%m-%d").date()
-        except ValueError:
-            pass
-    if date_to:
-        try:
-            filter_end = dt.strptime(date_to, "%Y-%m-%d").date()
-        except ValueError:
-            pass
-    
     for row in data["rows"]:
         # Filter by employee_id
         if employee_id and row["employee_id"] != employee_id:
@@ -85,15 +71,6 @@ def export_monthly_grid_csv(
         # Filter attendance by date range and status
         filtered_attendance = {}
         for day_str, attendance_value in row["attendance"].items():
-            day_num = int(day_str)
-            day_date = date(year, month, day_num)
-            
-            # Check date range
-            if filter_start and day_date < filter_start:
-                continue
-            if filter_end and day_date > filter_end:
-                continue
-            
             # Check status filter
             if status:
                 status_upper = status.upper()
@@ -146,17 +123,15 @@ def export_monthly_grid_pdf(
     year,
     department=None,
     employee_id=None,
-    date_from=None,
-    date_to=None,
     status=None,
     current_user=None,
+    company_id=None,
+    branch_id=None,
 ):
     """
     Export Monthly Attendance Grid to PDF (Excel-like layout, landscape)
     Applies filters to the data after generation, not during.
     """
-    from datetime import datetime as dt
-
     # Get base data without extra filters
     data = build_monthly_attendance_grid(
         db,
@@ -164,24 +139,12 @@ def export_monthly_grid_pdf(
         year,
         department,
         current_user=current_user,
+        company_id=company_id,
+        branch_id=branch_id,
     )
     
     # Apply additional filters to rows
     filtered_rows = []
-    filter_start = None
-    filter_end = None
-    
-    if date_from:
-        try:
-            filter_start = dt.strptime(date_from, "%Y-%m-%d").date()
-        except ValueError:
-            pass
-    if date_to:
-        try:
-            filter_end = dt.strptime(date_to, "%Y-%m-%d").date()
-        except ValueError:
-            pass
-    
     for row in data["rows"]:
         # Filter by employee_id
         if employee_id and row["employee_id"] != employee_id:
@@ -190,15 +153,6 @@ def export_monthly_grid_pdf(
         # Filter attendance by date range and status
         filtered_attendance = {}
         for day_str, attendance_value in row["attendance"].items():
-            day_num = int(day_str)
-            day_date = date(year, month, day_num)
-            
-            # Check date range
-            if filter_start and day_date < filter_start:
-                continue
-            if filter_end and day_date > filter_end:
-                continue
-            
             # Check status filter
             if status:
                 status_upper = status.upper()
@@ -358,10 +312,10 @@ def export_monthly_detailed_pdf(
     year,
     department=None,
     employee_id=None,
-    date_from=None,
-    date_to=None,
     status=None,
     current_user=None,
+    company_id=None,
+    branch_id=None,
 ):
     """
     Export Monthly Detailed Attendance Grid to PDF.
@@ -373,6 +327,10 @@ def export_monthly_detailed_pdf(
 
     # fetch users (respect role-based visibility and multi-department filtering)
     user_query = db.query(User).filter(User.is_active.is_(True))
+    if company_id is not None:
+        user_query = user_query.filter(User.company_id == company_id)
+    if branch_id is not None:
+        user_query = user_query.filter(User.branch_id == branch_id)
 
     if current_user is not None:
         from app.enums import RoleEnum

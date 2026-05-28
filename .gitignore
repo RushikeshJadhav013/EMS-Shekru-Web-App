@@ -200,9 +200,6 @@ Backend/attendance.db
 *.sqlite
 *.sqlite3
 
-# Alembic
-!Backend/alembic/versions/__init__.py
-
 # PyInstaller
 Backend/*.manifest
 Backend/*.spec

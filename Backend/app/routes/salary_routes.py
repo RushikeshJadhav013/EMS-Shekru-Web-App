@@ -16,7 +16,7 @@ from app.db.database import get_db
 from app.db.models.user import User
 from app.db.models.department import Department
 from app.db.models.salary import EmployeeSalary, SalaryIncrement
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.schemas.salary_schema import (
     EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryManualFullUpdate, EmployeeSalaryOut,
@@ -45,7 +45,6 @@ from app.services.salary_email_service import (
     send_salary_slip_email, send_increment_letter_email, send_salary_annexure_email
 )
 from app.services.salary_calculation_service import SalaryCalculator
-from app.crud.user_crud import get_user
 from app.utils.department_utils import department_tokens_lower
 from app.utils.timezone import now_ist
 
@@ -54,16 +53,110 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/salary", tags=["Salary Management"])
 
 
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
+    clauses = [user_alias.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _get_user_in_scope(db: Session, user_id: int, scope: dict) -> Optional[User]:
+    return (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+
+
+def _enforce_admin_block_by_user_id(db: Session, current_user: User, user_id: int, action: str) -> None:
+    """Admin cannot perform salary CRUD on Admin targets (including self), irrespective of slug."""
+    if current_user.role != RoleEnum.ADMIN:
+        return
+    target = db.query(User.user_id, User.role).filter(User.user_id == user_id).first()
+    if target and target.role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Admins are not allowed to {action} for Admin users (including themselves).",
+        )
+
+
+def _enforce_admin_block_by_increment_id(
+    db: Session, current_user: User, increment_id: int, action: str
+) -> None:
+    """Admin cannot perform salary operations on increments belonging to Admin users."""
+    if current_user.role != RoleEnum.ADMIN:
+        return
+    row = (
+        db.query(SalaryIncrement.user_id)
+        .filter(SalaryIncrement.id == increment_id)
+        .first()
+    )
+    if row:
+        _enforce_admin_block_by_user_id(db, current_user, row.user_id, action)
+
+
+def _exclude_admin_user_salaries(db: Session, salaries: list) -> list:
+    """Remove salary rows whose user is an Admin (used for Admin/HR list endpoints)."""
+    if not salaries:
+        return salaries
+    user_ids = [s.user_id for s in salaries]
+    admin_ids = {
+        uid
+        for (uid,) in db.query(User.user_id)
+        .filter(User.user_id.in_(user_ids), User.role == RoleEnum.ADMIN)
+        .all()
+    }
+    return [s for s in salaries if s.user_id not in admin_ids]
+
+
+def _exclude_hr_and_admin_user_salaries(db: Session, salaries: list) -> list:
+    """Remove salary rows for Admin/HR users (HR list endpoint)."""
+    if not salaries:
+        return salaries
+    user_ids = [s.user_id for s in salaries]
+    disallowed_ids = {
+        uid
+        for (uid,) in db.query(User.user_id)
+        .filter(User.user_id.in_(user_ids), User.role.in_([RoleEnum.ADMIN, RoleEnum.HR]))
+        .all()
+    }
+    return [s for s in salaries if s.user_id not in disallowed_ids]
+
+
+def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
+    if current_user.role == RoleEnum.ADMIN:
+        # Admin tenant access is assignment-based and validated by get_tenant_scope.
+        # Do not enforce users.company_id/users.branch_id for admin rows.
+        return
+    if _get_user_in_scope(db, int(current_user.user_id), scope) is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
+
+
+
 def _enforce_hr_non_privileged_target(current_user: User, target_user: User, action: str) -> None:
-    """HR can manage salary only for non-Admin and non-HR users."""
-    # Allow HR to view/read their own salary record.
-    # For other actions (create/update/status), HR is still restricted.
+    """
+    Enforce salary-related permission rules for HR.
+
+    - HR can manage salary only for non-Admin and non-HR users.
+    - HR may view their own records (action starting with "view").
+    """
     if current_user.user_id == target_user.user_id and action.startswith("view"):
         return
+
     if current_user.role == RoleEnum.HR and target_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"HR can only {action} for non-Admin and non-HR users",
+        )
+
+
+def _enforce_hr_notification_target(current_user: User, target_user: User) -> None:
+    """HR cannot view salary notifications for Admin or HR users (including themselves)."""
+    if current_user.role == RoleEnum.HR and target_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR cannot view salary notifications for Admin or HR users.",
         )
 
 
@@ -162,14 +255,17 @@ def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncremen
 def create_salary_from_ctc(
     salary_data: EmployeeSalaryCTCCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Create salary record from Annual CTC with automatic component calculation.
     HR enters only CTC amount and system calculates all components automatically.
     """
+    _enforce_admin_block_by_user_id(db, current_user, salary_data.user_id, "create salary")
     # Verify user exists
-    user = get_user(db, salary_data.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, salary_data.user_id, scope)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -198,12 +294,15 @@ def update_salary_from_ctc(
     user_id: int,
     ctc_update: EmployeeSalaryCTCUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Update salary by changing CTC - recalculates all components automatically.
     """
-    user = get_user(db, user_id)
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "update salary")
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, user_id, scope)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -238,14 +337,17 @@ def update_salary_from_ctc(
 def create_salary_record(
     salary_data: EmployeeSalaryCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Create salary record manually (legacy method).
     Use /employee/from-ctc for automatic calculation instead.
     """
+    _enforce_admin_block_by_user_id(db, current_user, salary_data.user_id, "create salary")
     # Verify user exists
-    user = get_user(db, salary_data.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, salary_data.user_id, scope)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -275,7 +377,8 @@ def get_salary_record(
     month: Optional[int] = Query(default=None, ge=1, le=12, description="Optional month (1-12) for month-specific in-hand"),
     year: Optional[int] = Query(default=None, ge=2000, le=2100, description="Optional year for month-specific in-hand"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get salary record for an employee.
@@ -286,23 +389,27 @@ def get_salary_record(
       specific month (Professional Tax = 300 in Feb, 200 in other months).
     - when omitted, default `monthly_in_hand` remains annual-average based.
     """
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view salary")
+    _assert_current_in_scope(db, current_user, scope)
+    target_user = _get_user_in_scope(db, user_id, scope)
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id {user_id} not found")
+
     # Check permissions
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view your own salary information"
         )
-    if current_user.role == RoleEnum.HR:
-        target_user = get_user(db, user_id)
-        if not target_user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with id {user_id} not found"
-            )
-        _enforce_hr_non_privileged_target(current_user, target_user, "view salary")
+    _enforce_hr_non_privileged_target(current_user, target_user, "view salary")
     
     # Fetch salary regardless of active status (include inactive too)
-    salary = db.query(EmployeeSalary).filter(EmployeeSalary.user_id == user_id).first()
+    salary = (
+        db.query(EmployeeSalary)
+        .join(User, EmployeeSalary.user_id == User.user_id)
+        .filter(EmployeeSalary.user_id == user_id, *_user_scope_filters(scope))
+        .first()
+    )
     if not salary:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -343,13 +450,16 @@ def update_salary_record(
     user_id: int,
     salary_update: EmployeeSalaryUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Update salary record (only non-calculated fields like bank details, variable pay).
     Use /employee/{user_id}/update-ctc to change CTC and recalculate components.
     """
-    user = get_user(db, user_id)
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "update salary")
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, user_id, scope)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -372,14 +482,17 @@ def update_salary_record_manual_full(
     user_id: int,
     salary_update: EmployeeSalaryManualFullUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Manual full-edit update for salary components.
     Allows direct editing of component amounts (basic/hra/special/conveyance/medical/other etc.)
     without triggering automatic CTC-based recomputation.
     """
-    user = get_user(db, user_id)
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "update salary")
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, user_id, scope)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -406,12 +519,22 @@ def update_salary_record_manual_full(
 def delete_salary_record(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Delete salary record for an employee.
     Admin only.
     """
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "delete salary")
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, user_id, scope)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
+    _enforce_hr_non_privileged_target(current_user, user, "delete salary")
     if not delete_employee_salary(db, user_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -426,18 +549,26 @@ def update_salary_status(
     status_update: EmployeeSalaryStatusUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Activate/deactivate an employee salary record.
     Admin only.
     """
-    salary = db.query(EmployeeSalary).filter(EmployeeSalary.user_id == user_id).first()
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "update salary status")
+    _assert_current_in_scope(db, current_user, scope)
+    salary = (
+        db.query(EmployeeSalary)
+        .join(User, EmployeeSalary.user_id == User.user_id)
+        .filter(EmployeeSalary.user_id == user_id, *_user_scope_filters(scope))
+        .first()
+    )
     if not salary:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Salary record not found for this employee",
         )
-    target_user = get_user(db, user_id)
+    target_user = _get_user_in_scope(db, user_id, scope)
     if not target_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -462,8 +593,10 @@ def list_salaries(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _assert_current_in_scope(db, current_user, scope)
     """
     List all employee salaries.
     Admin/HR only.
@@ -495,15 +628,18 @@ def list_salaries(
         # Use canonical department names from master data for filtering
         departments = [name for (name,) in rows]
 
-    salaries = list_employee_salaries(db, departments, skip, limit)
+    salaries = list_employee_salaries(
+        db,
+        departments,
+        skip,
+        limit,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if current_user.role == RoleEnum.HR and salaries:
-        user_ids = [s.user_id for s in salaries]
-        disallowed_ids = {
-            uid for (uid,) in db.query(User.user_id)
-            .filter(User.user_id.in_(user_ids), User.role.in_([RoleEnum.ADMIN, RoleEnum.HR]))
-            .all()
-        }
-        salaries = [s for s in salaries if s.user_id not in disallowed_ids]
+        salaries = _exclude_hr_and_admin_user_salaries(db, salaries)
+    elif current_user.role == RoleEnum.ADMIN and salaries:
+        salaries = _exclude_admin_user_salaries(db, salaries)
     return [_salary_to_response(s) for s in salaries]
 
 
@@ -513,7 +649,8 @@ def list_salaries(
 def create_increment(
     increment_data: SalaryIncrementCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Create salary increment record with automatic CTC calculation and update.
@@ -530,8 +667,10 @@ def create_increment(
     
     Admin/HR only.
     """
+    _enforce_admin_block_by_user_id(db, current_user, increment_data.user_id, "create increment")
     # Verify user exists
-    user = get_user(db, increment_data.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    user = _get_user_in_scope(db, increment_data.user_id, scope)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -573,12 +712,20 @@ def create_increment(
 def get_increment(
     increment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get increment record by ID.
     """
-    increment = get_salary_increment(db, increment_id)
+    _enforce_admin_block_by_increment_id(db, current_user, increment_id, "view increment")
+    _assert_current_in_scope(db, current_user, scope)
+    increment = get_salary_increment(
+        db,
+        increment_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     if not increment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -592,7 +739,7 @@ def get_increment(
             detail="You can only view your own increment records"
         )
     if current_user.role == RoleEnum.HR:
-        target_user = get_user(db, increment.user_id)
+        target_user = _get_user_in_scope(db, increment.user_id, scope)
         if not target_user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -607,11 +754,20 @@ def get_increment(
 def get_user_increment_history(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all increment records for a user.
     """
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view increment history")
+    _assert_current_in_scope(db, current_user, scope)
+    target_user = _get_user_in_scope(db, user_id, scope)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found"
+        )
     # Check permissions
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
         raise HTTPException(
@@ -619,15 +775,14 @@ def get_user_increment_history(
             detail="You can only view your own increment history"
         )
     if current_user.role == RoleEnum.HR:
-        target_user = get_user(db, user_id)
-        if not target_user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with id {user_id} not found"
-            )
         _enforce_hr_non_privileged_target(current_user, target_user, "view increment history")
     
-    increments = get_user_increments(db, user_id)
+    increments = get_user_increments(
+        db,
+        user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return [_increment_to_out(inc, db) for inc in increments]
 
 
@@ -710,8 +865,11 @@ def download_salary_slip(
     ),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view salary slip")
+    _assert_current_in_scope(db, current_user, scope)
     """
     Download or view salary slip PDF for an employee.
     Pass `inline=true` to open in the browser instead of forcing a file download.
@@ -737,7 +895,7 @@ def download_salary_slip(
     
     try:
         # Get user and salary info
-        user = get_user(db, user_id)
+        user = _get_user_in_scope(db, user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -748,7 +906,12 @@ def download_salary_slip(
         # HR is allowed to download their own (target == current_user) slip.
         _enforce_hr_non_privileged_target(current_user, user, "view salary slip")
         
-        salary = get_employee_salary(db, user_id)
+        salary = get_employee_salary(
+            db,
+            user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -834,7 +997,8 @@ def send_salary_slip(
     manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Generate and send salary slip via email.
@@ -845,11 +1009,13 @@ def send_salary_slip(
     - optional_deduction_1/2/3 _label and _amount (monthly)
     - manual_leave_days (monthly deduction by calendar days in selected month)
     """
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "send salary slip")
     _reject_future_salary_slip_period(month, year)
 
     try:
+        _assert_current_in_scope(db, current_user, scope)
         # Get user and salary info
-        user = get_user(db, user_id)
+        user = _get_user_in_scope(db, user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -873,7 +1039,12 @@ def send_salary_slip(
                 detail="Employee email is not verified. Employee must login via OTP at least once before receiving salary documents."
             )
         
-        salary = get_employee_salary(db, user_id)
+        salary = get_employee_salary(
+            db,
+            user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -963,10 +1134,12 @@ def send_salary_slip(
 def download_salary_annexure(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view salary annexure")
+    _assert_current_in_scope(db, current_user, scope)
     """
-    Download salary annexure PDF for an employee.
     Employees can download their own, Admin/HR can download any.
     """
     # Check permissions
@@ -978,7 +1151,7 @@ def download_salary_annexure(
     
     try:
         # Get user and salary info
-        user = get_user(db, user_id)
+        user = _get_user_in_scope(db, user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -989,7 +1162,12 @@ def download_salary_annexure(
         # HR is allowed to download their own (target == current_user) annexure.
         _enforce_hr_non_privileged_target(current_user, user, "view salary annexure")
         
-        salary = get_employee_salary(db, user_id)
+        salary = get_employee_salary(
+            db,
+            user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1035,14 +1213,17 @@ def download_salary_annexure(
 def send_salary_annexure(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Generate and send salary annexure via email.
     Admin/HR only. Requires employee email to be verified.
     """
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "send salary annexure")
     try:
-        user = get_user(db, user_id)
+        _assert_current_in_scope(db, current_user, scope)
+        user = _get_user_in_scope(db, user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1066,7 +1247,12 @@ def send_salary_annexure(
                 detail="Employee email is not verified. Employee must login via OTP at least once before receiving salary documents."
             )
         
-        salary = get_employee_salary(db, user_id)
+        salary = get_employee_salary(
+            db,
+            user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1137,14 +1323,22 @@ def download_increment_letter(
     increment_id: int,
     title: Optional[Literal['Mr', 'Mrs', 'Miss']] = Query(None, description="Optional title to use before the employee name (Mr, Mrs, Miss)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Download increment letter PDF.
     Employees can download their own, Admin/HR can download any.
     """
+    _enforce_admin_block_by_increment_id(db, current_user, increment_id, "view increment letter")
     try:
-        increment = get_salary_increment(db, increment_id)
+        _assert_current_in_scope(db, current_user, scope)
+        increment = get_salary_increment(
+            db,
+            increment_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not increment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1158,7 +1352,7 @@ def download_increment_letter(
                 detail="You can only download your own increment letter"
             )
         
-        user = get_user(db, increment.user_id)
+        user = _get_user_in_scope(db, increment.user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1170,7 +1364,12 @@ def download_increment_letter(
         _enforce_hr_non_privileged_target(current_user, user, "view increment letter")
         
         # Fetch employee salary record for annexure details
-        salary = get_employee_salary(db, increment.user_id)
+        salary = get_employee_salary(
+            db,
+            increment.user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         
         # Generate PDF with salary annexure if salary record exists
         if salary:
@@ -1232,21 +1431,29 @@ def send_increment_letter(
     increment_id: int,
     title: Optional[Literal['Mr', 'Mrs', 'Miss']] = Query(None, description="Optional title to use before the employee name (Mr, Mrs, Miss)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Generate and send increment letter via email.
     Admin/HR only. Requires employee email to be verified.
     """
+    _enforce_admin_block_by_increment_id(db, current_user, increment_id, "send increment letter")
     try:
-        increment = get_salary_increment(db, increment_id)
+        _assert_current_in_scope(db, current_user, scope)
+        increment = get_salary_increment(
+            db,
+            increment_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not increment:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Increment record not found"
             )
         
-        user = get_user(db, increment.user_id)
+        user = _get_user_in_scope(db, increment.user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1268,7 +1475,12 @@ def send_increment_letter(
             )
         
         # Fetch employee salary record for annexure details
-        salary = get_employee_salary(db, increment.user_id)
+        salary = get_employee_salary(
+            db,
+            increment.user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         
         # Generate PDF with salary annexure if salary record exists
         if salary:
@@ -1359,14 +1571,17 @@ def download_offer_letter(
     letter_date: str = Query(..., description="Letter creation date (YYYY-MM-DD)."),
     joining_date: str = Query(..., description="Joining date (YYYY-MM-DD). Must be same or later than letter_date"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Download offer letter with salary annexure PDF.
     Admin/HR only.
     """
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "download offer letter")
     try:
-        user = get_user(db, user_id)
+        _assert_current_in_scope(db, current_user, scope)
+        user = _get_user_in_scope(db, user_id, scope)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1377,7 +1592,12 @@ def download_offer_letter(
         # HR cannot download offer letters for Admins, other HRs, or even themselves.
         _enforce_hr_non_privileged_target(current_user, user, "download offer letter")
         
-        salary = get_employee_salary(db, user_id)
+        salary = get_employee_salary(
+            db,
+            user_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1442,8 +1662,11 @@ def get_slip_history(
     user_id: int,
     year: Optional[int] = Query(None, description="Filter by year"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view salary slip history")
+    _assert_current_in_scope(db, current_user, scope)
     """
     Get salary slip generation history for an employee.
     """
@@ -1456,7 +1679,7 @@ def get_slip_history(
 
     # HR restriction: HR cannot view Admin/other-HR details.
     # HR can view their own history (handled inside the helper).
-    target_user = get_user(db, user_id)
+    target_user = _get_user_in_scope(db, user_id, scope)
     if not target_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1464,7 +1687,13 @@ def get_slip_history(
         )
     _enforce_hr_non_privileged_target(current_user, target_user, "view salary slip history")
     
-    history = get_user_salary_slip_history(db, user_id, year)
+    history = get_user_salary_slip_history(
+        db,
+        user_id,
+        year,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return {"history": history}
 
 
@@ -1473,13 +1702,21 @@ def get_slip_history(
 @router.get("/notifications", response_model=List[SalaryNotificationOut])
 def get_my_salary_notifications(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all salary notifications for the current user.
-    Employees can view their own notifications.
+    Employees and HR can view their own notifications.
     """
-    notifications = list_salary_notifications(db, current_user.user_id)
+    _enforce_admin_block_by_user_id(db, current_user, current_user.user_id, "view salary notifications")
+    _assert_current_in_scope(db, current_user, scope)
+    notifications = list_salary_notifications(
+        db,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return notifications
 
 
@@ -1487,20 +1724,32 @@ def get_my_salary_notifications(
 def get_user_salary_notifications(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view salary notifications")
+    _assert_current_in_scope(db, current_user, scope)
+    target_user = _get_user_in_scope(db, user_id, scope)
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id {user_id} not found")
     """
     Get all salary notifications for a specific user.
-    Employees can view their own, Admin/HR can view any.
+    Employees can view their own; Admin can view non-Admin users in scope;
+    HR can view notifications only for non-Admin and non-HR employees.
     """
-    # Check permissions
     if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view your own notifications"
+            detail="You can only view your own notifications",
         )
-    
-    notifications = list_salary_notifications(db, user_id)
+    _enforce_hr_notification_target(current_user, target_user)
+
+    notifications = list_salary_notifications(
+        db,
+        user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return notifications
 
 
@@ -1508,13 +1757,24 @@ def get_user_salary_notifications(
 def mark_notification_read(
     notification_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Mark a salary notification as read.
     Users can only mark their own notifications as read.
     """
-    notification = mark_salary_notification_as_read(db, notification_id, current_user.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _enforce_admin_block_by_user_id(
+        db, current_user, current_user.user_id, "update salary notifications"
+    )
+    notification = mark_salary_notification_as_read(
+        db,
+        notification_id,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     
     if not notification:
         raise HTTPException(
@@ -1528,12 +1788,22 @@ def mark_notification_read(
 @router.get("/notifications/unread/count")
 def get_unread_notifications_count(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get count of unread salary notifications for the current user.
     """
-    count = get_unread_salary_notifications_count(db, current_user.user_id)
+    _assert_current_in_scope(db, current_user, scope)
+    _enforce_admin_block_by_user_id(
+        db, current_user, current_user.user_id, "view salary notification count"
+    )
+    count = get_unread_salary_notifications_count(
+        db,
+        current_user.user_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
     return {"unread_count": count}
 
 

@@ -4,7 +4,7 @@ from app.db.models.user import User
 from app.enums import RoleEnum
 from passlib.context import CryptContext
 from app.schemas.user_schema import UserCreate, AdminCreate, AdminUpdate
-from app.crud.subscription_crud import check_admin_subscription_limit
+from app.crud.subscription_crud import check_company_branch_subscription_limit
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, letter
@@ -111,7 +111,16 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
     if created_by is not None:
         creator = db.query(User).filter(User.user_id == created_by).first()
         if creator and creator.role == RoleEnum.ADMIN:
-            can_create, current_count, max_allowed = check_admin_subscription_limit(db, created_by)
+            # Enforce subscription limits based on the tenant scope being created into.
+            company_id = getattr(user, "company_id", None)
+            branch_id = getattr(user, "branch_id", None)
+            if company_id is not None:
+                can_create, current_count, max_allowed = check_company_branch_subscription_limit(
+                    db, int(company_id), int(branch_id) if branch_id is not None else None
+                )
+            else:
+                # No tenant scope on the user -> skip subscription enforcement (shouldn't happen)
+                can_create, current_count, max_allowed = (True, 0, float("inf"))
             if not can_create:
                 raise ValueError(
                     f"Subscription limit reached. You have created {current_count} out of {max_allowed} allowed users. "
@@ -126,9 +135,12 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
         email=user.email,
         password_hash=None,
         role=user.role,
+        company_id=getattr(user, "company_id", None),
+        branch_id=getattr(user, "branch_id", None),
         department=normalize_department_string(user.department),
         designation=user.designation,
         resignation_date=user.resignation_date,
+        joining_date=user.joining_date,
         phone=user.phone,
         address=user.address,
         pan_card=user.pan_card,
@@ -144,6 +156,20 @@ def create_user(db: Session, user: UserCreate, created_by: int = None):
 
 def list_users(db: Session):
     return db.query(User).all()
+
+
+def list_users_scoped(db: Session, company_id: int, branch_id: Optional[int] = None) -> list[User]:
+    q = db.query(User).filter(User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.all()
+
+
+def get_user_scoped(db: Session, user_id: int, company_id: int, branch_id: Optional[int] = None) -> Optional[User]:
+    q = db.query(User).filter(User.user_id == user_id, User.company_id == company_id)
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.first()
 
 def get_employees(db: Session, search: str = None, department: str = None, role: RoleEnum = None):
     query = db.query(User)
@@ -211,8 +237,11 @@ def create_admin_user(db: Session, admin: AdminCreate, created_by: int = None):
     return db_admin
 
 
-def list_admin_users(db: Session):
-    return db.query(User).filter(User.role == RoleEnum.ADMIN).all()
+def list_admin_users(db: Session, status: bool | None = None):
+    q = db.query(User).filter(User.role == RoleEnum.ADMIN)
+    if status is not None:
+        q = q.filter(User.is_active == status)
+    return q.all()
 
 
 def get_admin_user(db: Session, admin_id: int):
@@ -306,6 +335,8 @@ def export_users_pdf(
     role: Optional[str] = None,
     designation: Optional[str] = None,
     status: Optional[bool] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
     exclude_user_ids: Optional[list[int]] = None,
     exclude_roles: Optional[list[RoleEnum]] = None
 ):
@@ -461,6 +492,12 @@ def export_users_pdf(
     
     # Filter logic
     query = db.query(User)
+
+    # Tenant scope filter
+    if company_id is not None:
+        query = query.filter(User.company_id == int(company_id))
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
 
     # Department filter: user has at least one of the requested departments (token-based)
     # Supports users with multiple comma-separated departments (e.g. "Sales, HR")
@@ -619,6 +656,8 @@ def export_users_csv(
     departments: Optional[List[str]] = None,
     role: Optional[str] = None,
     status: Optional[bool] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
     exclude_user_ids: Optional[list[int]] = None,
     exclude_roles: Optional[list[RoleEnum]] = None
 ):
@@ -627,6 +666,12 @@ def export_users_csv(
 
     # Filter logic
     query = db.query(User)
+
+    # Tenant scope filter
+    if company_id is not None:
+        query = query.filter(User.company_id == int(company_id))
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
 
     # Department filter: user has at least one of the requested departments (token-based)
     # Supports users with multiple comma-separated departments (e.g. "Sales, HR")

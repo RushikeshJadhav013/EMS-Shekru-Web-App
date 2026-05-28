@@ -11,7 +11,7 @@ from app.schemas.interview_schema import (
     InterviewStatusOnlyUpdate,
 )
 from app.db.database import get_db
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.db.models.interview import Interview
 from app.db.models.hiring import Vacancy, Candidate
@@ -24,21 +24,109 @@ router = APIRouter(
     dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))]
 )
 
+# Allowed status transitions (target statuses from each source status).
+_INTERVIEW_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    "scheduled": {"completed", "cancelled", "no_show"},
+    "rescheduled": {"completed", "cancelled", "no_show"},
+    "cancelled": {"rescheduled"},
+    "no_show": {"rescheduled"},
+    "completed": set(),
+}
+
+
+def _validate_interview_status_transition(current_status: str, new_status: str) -> None:
+    """Raise HTTP 400 when a status change is not permitted."""
+    if current_status == new_status:
+        return
+    allowed = _INTERVIEW_STATUS_TRANSITIONS.get(current_status)
+    if allowed is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown interview status '{current_status}'.",
+        )
+    if new_status not in allowed:
+        if current_status == "completed":
+            detail = "Cannot change status of a completed interview."
+        elif current_status == "scheduled" and new_status == "rescheduled":
+            detail = (
+                "Cannot change status from 'scheduled' to 'rescheduled'. "
+                "Update interview times instead, or cancel and create a new interview."
+            )
+        elif current_status in ("cancelled", "no_show"):
+            detail = (
+                f"Cannot change status from '{current_status}' to '{new_status}'. "
+                f"'{current_status}' interviews can only be rescheduled."
+            )
+        elif current_status == "rescheduled":
+            detail = (
+                f"Cannot change status from 'rescheduled' to '{new_status}'. "
+                "Allowed targets: completed, cancelled, no_show."
+            )
+        else:
+            allowed_list = ", ".join(sorted(allowed)) if allowed else "none"
+            detail = (
+                f"Cannot change status from '{current_status}' to '{new_status}'. "
+                f"Allowed targets: {allowed_list}."
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def _interview_scope_query(db: Session, scope: dict):
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(Interview)
+        .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(User.company_id == company_id)
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q
+
+
+def _candidate_in_scope(db: Session, scope: dict, candidate_id: int) -> Candidate | None:
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(Candidate)
+        .join(Vacancy, Vacancy.vacancy_id == Candidate.vacancy_id)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(Candidate.candidate_id == candidate_id, User.company_id == company_id)
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.first()
+
+
+def _vacancy_in_scope(db: Session, scope: dict, vacancy_id: int) -> Vacancy | None:
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    q = (
+        db.query(Vacancy)
+        .join(User, User.user_id == Vacancy.created_by)
+        .filter(Vacancy.vacancy_id == vacancy_id, User.company_id == company_id)
+    )
+    if branch_id is not None:
+        q = q.filter(User.branch_id == branch_id)
+    return q.first()
+
 
 @router.post("/", response_model=InterviewOutBasic, status_code=status.HTTP_201_CREATED)
 def schedule_interview(
     interview_data: InterviewCreate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Schedule a new interview for a candidate."""
     # Verify candidate exists
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == interview_data.candidate_id).first()
+    candidate = _candidate_in_scope(db, scope, interview_data.candidate_id)
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
     # Verify vacancy exists
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == interview_data.vacancy_id).first()
+    vacancy = _vacancy_in_scope(db, scope, interview_data.vacancy_id)
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
@@ -58,7 +146,7 @@ def schedule_interview(
             )
     
     # Optional: Check for overlapping interviews for the same candidate
-    overlapping = db.query(Interview).filter(
+    overlapping = _interview_scope_query(db, scope).filter(
         and_(
             Interview.candidate_id == interview_data.candidate_id,
             Interview.status != 'cancelled',
@@ -121,10 +209,11 @@ def get_interviews(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get all interviews with optional filters."""
-    query = db.query(Interview)
+    query = _interview_scope_query(db, scope)
     
     if candidate_id:
         query = query.filter(Interview.candidate_id == candidate_id)
@@ -165,15 +254,16 @@ def get_interviews(
 def get_interview(
     interview_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get a specific interview by ID."""
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_scope_query(db, scope).filter(Interview.interview_id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == interview.candidate_id).first()
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == interview.vacancy_id).first()
+    candidate = _candidate_in_scope(db, scope, interview.candidate_id)
+    vacancy = _vacancy_in_scope(db, scope, interview.vacancy_id)
     
     result = InterviewOutBasic.model_validate(interview)
     if candidate:
@@ -190,10 +280,11 @@ def update_interview(
     interview_id: int,
     interview_update: InterviewUpdate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Update interview details (reschedule, change location, etc.)."""
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_scope_query(db, scope).filter(Interview.interview_id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
@@ -217,6 +308,9 @@ def update_interview(
     
     # Update fields
     update_data = interview_update.model_dump(exclude_unset=True)
+
+    if "status" in update_data:
+        _validate_interview_status_transition(interview.status, update_data["status"])
     
     # Handle panel_members serialization
     if 'panel_members' in update_data and update_data['panel_members'] is not None:
@@ -229,8 +323,8 @@ def update_interview(
     db.commit()
     db.refresh(interview)
     
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == interview.candidate_id).first()
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == interview.vacancy_id).first()
+    candidate = _candidate_in_scope(db, scope, interview.candidate_id)
+    vacancy = _vacancy_in_scope(db, scope, interview.vacancy_id)
     
     result = InterviewOut.model_validate(interview)
     if candidate:
@@ -247,48 +341,25 @@ def update_interview_status(
     interview_id: int,
     status_update: InterviewStatusOnlyUpdate,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Update interview status with feedback and rating."""
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_scope_query(db, scope).filter(Interview.interview_id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
-    current_status = interview.status
-    new_status = status_update.status
-    
-    # Validate status transitions
-    if current_status != new_status:
-        # Completed interviews cannot be rescheduled or changed to any other status
-        if current_status == 'completed':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot change status of a completed interview."
-            )
-            
-        # Cancelled interviews can only transition to rescheduled
-        if current_status == 'cancelled' and new_status != 'rescheduled':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot change status from 'cancelled' to '{new_status}'. Cancelled interviews can only be rescheduled."
-            )
-            
-        # No-show interviews can only transition to rescheduled
-        if current_status == 'no_show' and new_status != 'rescheduled':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot change status from 'no_show' to '{new_status}'. No-show interviews can only be rescheduled."
-            )
-    
+    _validate_interview_status_transition(interview.status, status_update.status)
+
     # Update status only
-    interview.status = new_status
+    interview.status = status_update.status
     
     interview.updated_at = datetime.now()
     db.commit()
     db.refresh(interview)
     
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == interview.candidate_id).first()
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == interview.vacancy_id).first()
+    candidate = _candidate_in_scope(db, scope, interview.candidate_id)
+    vacancy = _vacancy_in_scope(db, scope, interview.vacancy_id)
     
     result = InterviewOut.model_validate(interview)
     if candidate:
@@ -304,10 +375,11 @@ def update_interview_status(
 def delete_interview(
     interview_id: int,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Delete an interview."""
-    interview = db.query(Interview).filter(Interview.interview_id == interview_id).first()
+    interview = _interview_scope_query(db, scope).filter(Interview.interview_id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
@@ -323,14 +395,15 @@ def get_candidate_interviews(
     candidate_id: int,
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get all interviews for a specific candidate."""
-    candidate = db.query(Candidate).filter(Candidate.candidate_id == candidate_id).first()
+    candidate = _candidate_in_scope(db, scope, candidate_id)
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
-    query = db.query(Interview).filter(Interview.candidate_id == candidate_id)
+    query = _interview_scope_query(db, scope).filter(Interview.candidate_id == candidate_id)
     
     if status_filter:
         query = query.filter(Interview.status == status_filter)
@@ -338,7 +411,7 @@ def get_candidate_interviews(
     interviews = query.order_by(Interview.start_time.asc()).all()
     
     result = []
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    vacancy = _vacancy_in_scope(db, scope, candidate.vacancy_id)
     
     for interview in interviews:
         interview_out = InterviewOut.model_validate(interview)
@@ -356,14 +429,15 @@ def get_vacancy_interviews(
     vacancy_id: int,
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
     """Get all interviews for a specific vacancy."""
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == vacancy_id).first()
+    vacancy = _vacancy_in_scope(db, scope, vacancy_id)
     if not vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
-    query = db.query(Interview).filter(Interview.vacancy_id == vacancy_id)
+    query = _interview_scope_query(db, scope).filter(Interview.vacancy_id == vacancy_id)
     
     if status_filter:
         query = query.filter(Interview.status == status_filter)
@@ -372,7 +446,7 @@ def get_vacancy_interviews(
     
     result = []
     for interview in interviews:
-        candidate = db.query(Candidate).filter(Candidate.candidate_id == interview.candidate_id).first()
+        candidate = _candidate_in_scope(db, scope, interview.candidate_id)
         
         interview_out = InterviewOut.model_validate(interview)
         if candidate:

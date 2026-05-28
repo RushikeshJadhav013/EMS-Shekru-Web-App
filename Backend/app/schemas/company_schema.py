@@ -7,6 +7,8 @@ GSTIN_REGEX = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[0-9A-Z]{1}Z[0-9]{1}
 
 class CompanyBase(BaseModel):
     company_name: str
+    # URL-safe identifier (used in tenant path routing). Generated from `company_name` if omitted.
+    company_slug: str | None = None
     company_email: EmailStr
     contact_number: str
     address: str
@@ -28,8 +30,8 @@ class CompanyBase(BaseModel):
     @validator("contact_number")
     def validate_contact_number(cls, v: str) -> str:
         value = v.strip()
-        if not re.fullmatch(r"\d{10}", value):
-            raise ValueError("Contact number must be exactly 10 digits")
+        if not re.fullmatch(r"[6-9]\d{9}", value):
+            raise ValueError("Contact number must be exactly 10 digits and start with 6, 7, 8, or 9")
         return value
 
     @validator("address")
@@ -93,8 +95,8 @@ class CompanyUpdate(BaseModel):
         if v is None:
             return None
         value = v.strip()
-        if not re.fullmatch(r"\d{10}", value):
-            raise ValueError("Contact number must be exactly 10 digits")
+        if not re.fullmatch(r"[6-9]\d{9}", value):
+            raise ValueError("Contact number must be exactly 10 digits and start with 6, 7, 8, or 9")
         return value
 
     @validator("address")
@@ -134,6 +136,7 @@ class CompanyStatusUpdate(BaseModel):
 class CompanyOut(BaseModel):
     company_id: int
     company_name: str
+    company_slug: str | None = None
     company_email: EmailStr
     contact_number: str
     address: str
@@ -145,6 +148,21 @@ class CompanyOut(BaseModel):
     created_by: int | None = None
     updated_at: datetime | None = None
     updated_by: int | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class AccessibleCompanyOut(BaseModel):
+    """
+    Lightweight company payload for tenant selection (admin multi-company).
+    """
+
+    company_id: int
+    company_name: str
+    company_slug: str | None = None
+    company_logo: str | None = None
+    status: bool = True
 
     class Config:
         from_attributes = True

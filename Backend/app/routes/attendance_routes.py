@@ -9,7 +9,7 @@ from app.db.models.user import User
 from app.db.models.office_timing import OfficeTiming
 from app.schemas.attendance_schema import AttendanceOut, LocationData
 from fastapi.responses import StreamingResponse, JSONResponse
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.enums import RoleEnum
 from typing import Optional, List, Dict, Any, Union, Tuple, Literal
 from decimal import Decimal
@@ -31,76 +31,101 @@ from app.utils.department_utils import department_tokens_lower, department_token
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
+# -------------------------------------------------------------------
+# Tenant scoping helpers (Option A: no DB-level company_id on attendances)
+# -------------------------------------------------------------------
+def _user_scope_filters(scope: dict) -> list:
+    """
+    Build SQLAlchemy filter clauses to restrict queries to the resolved tenant scope.
+    Scope comes from `get_tenant_scope()` and always includes company_id; branch_id may be None.
+    """
+    clauses = [User.company_id == scope["company_id"]]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(User.branch_id == branch_id)
+    return clauses
+
+
+def _ensure_user_in_scope(db: Session, user_id: int, scope: dict) -> User:
+    user = (
+        db.query(User)
+        .filter(User.user_id == user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found in this company scope")
+    return user
+
 # Logout endpoint that handles pause/resume functionality
 class LogoutPayload(BaseModel):
     user_id: int
     logout_timestamp: str
 
-# @router.post("/logout")
-# async def logout_with_pause(
-#     payload: LogoutPayload,
-#     db: Session = Depends(get_db),
-#     current_user=Depends(get_current_user)
-# ):
-#     """
-#     Logout endpoint that treats logout as a pause in online status.
-#     Records logout timestamp to pause Online time and start Offline time tracking.
-#     """
-#     try:
-#         from app.db.models.online_status import OnlineStatus
+@router.post("/logout")
+async def logout_with_pause(
+    payload: LogoutPayload,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Logout endpoint that treats logout as a pause in online status.
+    Records logout timestamp to pause Online time and start Offline time tracking.
+    """
+    try:
+        from app.db.models.online_status import OnlineStatus
         
-#         # Verify user matches current user
-#         if current_user.user_id != payload.user_id:
-#             raise HTTPException(
-#                 status_code=status.HTTP_403_FORBIDDEN,
-#                 detail="Cannot logout for another user"
-#             )
+        # Verify user matches current user
+        if current_user.user_id != payload.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot logout for another user"
+            )
         
-#         # Find today's active attendance record
-#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-#         today_end = today_start + timedelta(days=1)
+        # Find today's active attendance record
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
         
-#         attendance = db.query(Attendance).filter(
-#             Attendance.user_id == payload.user_id,
-#             Attendance.check_in >= today_start,
-#             Attendance.check_in < today_end,
-#             Attendance.check_out.is_(None)  # Only active attendance
-#         ).first()
+        attendance = db.query(Attendance).filter(
+            Attendance.user_id == payload.user_id,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            Attendance.check_out.is_(None)  # Only active attendance
+        ).first()
         
-#         if attendance:
-#             # Get current online status
-#             latest_status = db.query(OnlineStatus).filter(
-#                 OnlineStatus.user_id == payload.user_id,
-#                 OnlineStatus.timestamp >= today_start,
-#                 OnlineStatus.timestamp < today_end
-#             ).order_by(OnlineStatus.timestamp.desc()).first()
+        if attendance:
+            # Get current online status
+            latest_status = db.query(OnlineStatus).filter(
+                OnlineStatus.user_id == payload.user_id,
+                OnlineStatus.timestamp >= today_start,
+                OnlineStatus.timestamp < today_end
+            ).order_by(OnlineStatus.timestamp.desc()).first()
             
-#             # If user is currently online, record logout as going offline
-#             current_online_status = True if not latest_status else latest_status.is_online
+            # If user is currently online, record logout as going offline
+            current_online_status = True if not latest_status else latest_status.is_online
             
-#             if current_online_status:
-#                 # Use server-side IST timestamp to avoid timezone and client clock issues
-#                 logout_timestamp = now_ist()
+            if current_online_status:
+                # Use server-side IST timestamp to avoid timezone and client clock issues
+                logout_timestamp = now_ist()
                 
-#                 # Create offline status entry for logout
-#                 offline_status = OnlineStatus(
-#                     attendance_id=attendance.attendance_id,
-#                     user_id=payload.user_id,
-#                     is_online=False,
-#                     reason="Logout - session paused",
-#                     timestamp=logout_timestamp
-#                 )
-#                 db.add(offline_status)
-#                 db.commit()
+                # Create offline status entry for logout
+                offline_status = OnlineStatus(
+                    attendance_id=attendance.attendance_id,
+                    user_id=payload.user_id,
+                    is_online=False,
+                    reason="Logout - session paused",
+                    timestamp=logout_timestamp
+                )
+                db.add(offline_status)
+                db.commit()
                 
-#                 logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
+                logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
             
-#         return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
+        return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
         
-#     except Exception as e:
-#         logger.error(f"Logout error for user {current_user.user_id}: {e}")
-#         # Always allow logout even if pause recording fails
-#         return {"message": "Logout successful", "user_id": current_user.user_id}
+    except Exception as e:
+        logger.error(f"Logout error for user {current_user.user_id}: {e}")
+        # Always allow logout even if pause recording fails
+        return {"message": "Logout successful", "user_id": current_user.user_id}
 
 
 # Login resume endpoint to handle resume functionality
@@ -108,80 +133,80 @@ class LoginResumePayload(BaseModel):
     user_id: int
     login_timestamp: str
 
-# @router.post("/login-resume")
-# async def login_resume(
-#     payload: LoginResumePayload,
-#     db: Session = Depends(get_db),
-#     current_user=Depends(get_current_user)
-# ):
-#     """
-#     Login resume endpoint that treats login as resuming from a pause.
-#     Records login timestamp to resume Online time and add offline duration to Offline time.
-#     """
-#     try:
-#         from app.db.models.online_status import OnlineStatus
+@router.post("/login-resume")
+async def login_resume(
+    payload: LoginResumePayload,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Login resume endpoint that treats login as resuming from a pause.
+    Records login timestamp to resume Online time and add offline duration to Offline time.
+    """
+    try:
+        from app.db.models.online_status import OnlineStatus
         
-#         # Verify user matches current user
-#         if current_user.user_id != payload.user_id:
-#             raise HTTPException(
-#                 status_code=status.HTTP_403_FORBIDDEN,
-#                 detail="Cannot resume for another user"
-#             )
+        # Verify user matches current user
+        if current_user.user_id != payload.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot resume for another user"
+            )
         
-#         # Find today's active attendance record
-#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-#         today_end = today_start + timedelta(days=1)
+        # Find today's active attendance record
+        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
         
-#         attendance = db.query(Attendance).filter(
-#             Attendance.user_id == payload.user_id,
-#             Attendance.check_in >= today_start,
-#             Attendance.check_in < today_end,
-#             Attendance.check_out.is_(None)  # Only active attendance
-#         ).first()
+        attendance = db.query(Attendance).filter(
+            Attendance.user_id == payload.user_id,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            Attendance.check_out.is_(None)  # Only active attendance
+        ).first()
         
-#         if attendance:
-#             # Get current online status
-#             latest_status = db.query(OnlineStatus).filter(
-#                 OnlineStatus.user_id == payload.user_id,
-#                 OnlineStatus.timestamp >= today_start,
-#                 OnlineStatus.timestamp < today_end
-#             ).order_by(OnlineStatus.timestamp.desc()).first()
+        if attendance:
+            # Get current online status
+            latest_status = db.query(OnlineStatus).filter(
+                OnlineStatus.user_id == payload.user_id,
+                OnlineStatus.timestamp >= today_start,
+                OnlineStatus.timestamp < today_end
+            ).order_by(OnlineStatus.timestamp.desc()).first()
             
-#             # If user is currently offline (from logout), record login as going online
-#             current_online_status = True if not latest_status else latest_status.is_online
+            # If user is currently offline (from logout), record login as going online
+            current_online_status = True if not latest_status else latest_status.is_online
             
-#             if not current_online_status and latest_status:
-#                 # Use server-side IST timestamp to avoid timezone and client clock issues
-#                 login_timestamp = now_ist()
+            if not current_online_status and latest_status:
+                # Use server-side IST timestamp to avoid timezone and client clock issues
+                login_timestamp = now_ist()
                 
-#                 # Calculate offline duration between last offline log and this login
-#                 offline_duration = login_timestamp - latest_status.timestamp
-#                 offline_seconds = offline_duration.total_seconds()
+                # Calculate offline duration between last offline log and this login
+                offline_duration = login_timestamp - latest_status.timestamp
+                offline_seconds = offline_duration.total_seconds()
                 
-#                 # Create online status entry for login resume
-#                 online_status = OnlineStatus(
-#                     attendance_id=attendance.attendance_id,
-#                     user_id=payload.user_id,
-#                     is_online=True,
-#                     reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
-#                     timestamp=login_timestamp
-#                 )
-#                 db.add(online_status)
-#                 db.commit()
+                # Create online status entry for login resume
+                online_status = OnlineStatus(
+                    attendance_id=attendance.attendance_id,
+                    user_id=payload.user_id,
+                    is_online=True,
+                    reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
+                    timestamp=login_timestamp
+                )
+                db.add(online_status)
+                db.commit()
                 
-#                 logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
+                logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
                 
-#                 return {
-#                     "message": "Login successful - session resumed", 
-#                     "user_id": current_user.user_id,
-#                     "offline_duration_seconds": int(offline_seconds)
-#                 }
+                return {
+                    "message": "Login successful - session resumed", 
+                    "user_id": current_user.user_id,
+                    "offline_duration_seconds": int(offline_seconds)
+                }
             
-#         return {"message": "Login successful", "user_id": current_user.user_id}
+        return {"message": "Login successful", "user_id": current_user.user_id}
         
-#     except Exception as e:
-#         logger.error(f"Login resume error for user {current_user.user_id}: {e}")
-#         return {"message": "Login successful", "user_id": current_user.user_id}
+    except Exception as e:
+        logger.error(f"Login resume error for user {current_user.user_id}: {e}")
+        return {"message": "Login successful", "user_id": current_user.user_id}
 
 
 class AttendanceJSONPayload(BaseModel):
@@ -342,10 +367,13 @@ def _make_selfie_url(path: Optional[str]) -> Optional[str]:
     return f"/{normalized}"
 
 
-def _cleanup_broken_selfie_urls(db: Session) -> None:
+def _cleanup_broken_selfie_urls(db: Session, scope: dict | None = None) -> None:
     """Clean up broken selfie references in the database"""
     try:
-        attendances = db.query(Attendance).filter(Attendance.selfie.isnot(None)).all()
+        q = db.query(Attendance).filter(Attendance.selfie.isnot(None))
+        if scope is not None:
+            q = q.join(User, Attendance.user_id == User.user_id).filter(*_user_scope_filters(scope))
+        attendances = q.all()
         cleaned_count = 0
         
         for attendance in attendances:
@@ -706,8 +734,129 @@ def get_attendance_summary(db: Session, current_user: User) -> Dict[str, Any]:
         )
 
 
-def get_today_attendance_status(db: Session, department: Optional[str] = None) -> List[Dict[str, Any]]:
-    records = get_today_attendance_records(db)
+def get_attendance_summary_scoped(db: Session, current_user: User, scope: dict) -> Dict[str, Any]:
+    """
+    Tenant-scoped wrapper around `get_attendance_summary`.
+    Applies company/branch filters before role-based visibility.
+    """
+    # Scope the population query by mutating current_user visibility within the tenant.
+    # We duplicate only the minimal tenant scoping here to keep changes contained.
+    try:
+        today = now_ist().date()
+
+        pop_query = db.query(User).filter(User.is_active.is_(True), *_user_scope_filters(scope))
+
+        user_role = current_user.role
+        if user_role == RoleEnum.ADMIN:
+            pop_query = pop_query.filter(User.user_id != current_user.user_id, User.role != RoleEnum.ADMIN)
+        elif user_role == RoleEnum.HR:
+            pop_query = pop_query.filter(
+                User.user_id != current_user.user_id,
+                ~User.role.in_([RoleEnum.ADMIN, RoleEnum.HR]),
+            )
+        elif user_role == RoleEnum.MANAGER:
+            dept_tokens = department_tokens_lower(getattr(current_user, "department", None))
+            if not dept_tokens:
+                return {
+                    "total_employees": 0,
+                    "present_today": 0,
+                    "absent_today": 0,
+                    "late_arrivals": 0,
+                    "early_departures": 0,
+                    "average_work_hours": 0.0,
+                    "date": today.isoformat(),
+                }
+            patterns = [department_token_regex_pattern(d) for d in dept_tokens]
+            dept_filters = [User.department.op("RLIKE")(pat) for pat in patterns]
+            pop_query = pop_query.filter(
+                User.role.in_([RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE]),
+                User.department.isnot(None),
+                or_(*dept_filters),
+            )
+        else:
+            pop_query = pop_query.filter(User.user_id == current_user.user_id)
+
+        total_employees = pop_query.count()
+        if total_employees == 0:
+            return {
+                "total_employees": 0,
+                "present_today": 0,
+                "absent_today": 0,
+                "late_arrivals": 0,
+                "early_departures": 0,
+                "average_work_hours": 0.0,
+                "date": today.isoformat(),
+            }
+
+        today_start = datetime.combine(today, datetime.min.time())
+        today_end = datetime.combine(today, datetime.max.time())
+
+        allowed_user_ids = [uid for (uid,) in pop_query.with_entities(User.user_id).all()]
+        if not allowed_user_ids:
+            return {
+                "total_employees": 0,
+                "present_today": 0,
+                "absent_today": 0,
+                "late_arrivals": 0,
+                "early_departures": 0,
+                "average_work_hours": 0.0,
+                "date": today.isoformat(),
+            }
+
+        records = (
+            db.query(Attendance, User)
+            .join(User, Attendance.user_id == User.user_id)
+            .filter(
+                Attendance.check_in >= today_start,
+                Attendance.check_in <= today_end,
+                User.is_active.is_(True),
+                User.user_id.in_(allowed_user_ids),
+                *_user_scope_filters(scope),
+            )
+            .all()
+        )
+
+        timing_cache = _build_office_timing_cache(db)
+        present_user_ids = set()
+        late_arrivals = 0
+        early_departures = 0
+        work_durations: list[float] = []
+
+        for attendance, user in records:
+            present_user_ids.add(user.user_id)
+            timing = _resolve_office_timing(db, user.department, cache=timing_cache)
+            evaluation = _evaluate_attendance_status(attendance.check_in, attendance.check_out, timing)
+            if evaluation["check_in_status"] == "late":
+                late_arrivals += 1
+            if evaluation["check_out_status"] == "early":
+                early_departures += 1
+            if attendance.check_in and attendance.check_out:
+                duration = attendance.check_out - attendance.check_in
+                work_durations.append(duration.total_seconds() / 3600.0)
+
+        present_today = len(present_user_ids)
+        absent_today = max(total_employees - present_today, 0)
+        average_work_hours = sum(work_durations) / len(work_durations) if work_durations else 0.0
+
+        return {
+            "total_employees": total_employees,
+            "present_today": present_today,
+            "absent_today": absent_today,
+            "late_arrivals": late_arrivals,
+            "early_departures": early_departures,
+            "average_work_hours": round(average_work_hours, 2),
+            "date": today.isoformat(),
+        }
+    except Exception as exc:
+        logger.error("Error calculating attendance summary (scoped): %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to compute attendance summary",
+        )
+
+
+def get_today_attendance_status(db: Session, department: Optional[str] = None, scope: dict | None = None) -> List[Dict[str, Any]]:
+    records = get_today_attendance_records(db, scope=scope)
     if department:
         dept_key = _normalize_department_value(department)
         if dept_key:
@@ -733,7 +882,7 @@ class ReverseGeocodePayload(BaseModel):
 #         logger.error("Reverse geocode failed: %s", exc, exc_info=True)
 #         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Unable to fetch location details")
 
-def get_today_attendance_records(db: Session, target_date: Optional[date] = None) -> List[Dict[str, Any]]:
+def get_today_attendance_records(db: Session, target_date: Optional[date] = None, scope: dict | None = None) -> List[Dict[str, Any]]:
     """
     Return today's attendance records with user details, selfie, and location.
     Only shows users who have checked in today.
@@ -742,10 +891,10 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
         # Auto-checkout overdue open attendances so "today" views reflect
         # the latest persisted check_out/total_hours.
         from app.crud.attendance_crud import auto_checkout_overdue_attendances
-        auto_checkout_overdue_attendances(db)
+        auto_checkout_overdue_attendances(db, scope=scope)
 
         # Clean up broken selfie references periodically
-        _cleanup_broken_selfie_urls(db)
+        _cleanup_broken_selfie_urls(db, scope=scope)
         
         if target_date:
             today_start = datetime.combine(target_date, datetime.min.time())
@@ -774,11 +923,39 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
             .filter(
                 Attendance.check_in >= today_start,
                 Attendance.check_in < today_end,
-                User.is_active == True
+                User.is_active == True,
             )
             .order_by(Attendance.check_in.desc())
             .all()
         )
+        if scope is not None:
+            # Re-run the query with tenant filters (kept explicit for clarity)
+            raw_records = (
+                db.query(
+                    User.user_id,
+                    User.employee_id,
+                    User.name,
+                    User.email,
+                    User.department,
+                    Attendance.attendance_id,
+                    Attendance.check_in,
+                    Attendance.check_out,
+                    Attendance.gps_location,
+                    Attendance.selfie,
+                    Attendance.total_hours,
+                    Attendance.work_summary,
+                    Attendance.work_report,
+                )
+                .join(Attendance, User.user_id == Attendance.user_id)
+                .filter(
+                    Attendance.check_in >= today_start,
+                    Attendance.check_in < today_end,
+                    User.is_active == True,  # noqa: E712
+                    *_user_scope_filters(scope),
+                )
+                .order_by(Attendance.check_in.desc())
+                .all()
+            )
 
         # Prepare the final result with only users who have checked in today
         results: List[Dict[str, Any]] = []
@@ -1603,9 +1780,10 @@ def get_self_attendance(
 def attendance_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get attendance summary with statistics including late/early counts"""
-    return get_attendance_summary(db, current_user)
+    return get_attendance_summary_scoped(db, current_user, scope)
 
 # Today's Attendance Records (for Manager view)
 @router.get("/today")
@@ -1613,6 +1791,7 @@ def get_today_attendance(
     date: Optional[str] = Query(None, description="Date (YYYY-MM-DD) for which to fetch records"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get attendance records for the specified date (defaults to today).
@@ -1633,7 +1812,7 @@ def get_today_attendance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid date format. Use YYYY-MM-DD",
             )
-    records = get_today_attendance_records(db, target_date)
+    records = get_today_attendance_records(db, target_date, scope=scope)
 
     user_role = current_user.role
 
@@ -1642,7 +1821,7 @@ def get_today_attendance(
         allowed_ids = {
             u.user_id
             for u in db.query(User.user_id)
-            .filter(User.is_active.is_(True))
+            .filter(User.is_active.is_(True), *_user_scope_filters(scope))
             .filter(User.role != RoleEnum.ADMIN)
             .filter(User.user_id != current_user.user_id)
             .all()
@@ -1654,7 +1833,7 @@ def get_today_attendance(
         allowed_ids = {
             u.user_id
             for u in db.query(User.user_id)
-            .filter(User.is_active.is_(True))
+            .filter(User.is_active.is_(True), *_user_scope_filters(scope))
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
             .filter(User.user_id != current_user.user_id)
             .all()
@@ -1669,7 +1848,7 @@ def get_today_attendance(
 
         candidates = (
             db.query(User.user_id, User.department)
-            .filter(User.is_active.is_(True))
+            .filter(User.is_active.is_(True), *_user_scope_filters(scope))
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
             .filter(User.user_id != current_user.user_id)
             .all()
@@ -1694,7 +1873,8 @@ def download_attendance_csv(
     department: Optional[str] = Query(None, description="Filter by department"),
     date_range: Optional[str] = Query(None, description="Optional date range: 'last_6_months' or 'last_1_year'"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Download attendance data as a CSV file with optional filters. Only accessible by Admin and HR."""
     from app.crud.attendance_crud import export_attendance_csv
@@ -1723,6 +1903,9 @@ def download_attendance_csv(
              # 1 year ~ 365 days
             start_dt = now - timedelta(days=365)
     
+    # If a specific user_id is requested, ensure it's in scope.
+    if user_id is not None:
+        _ensure_user_in_scope(db, int(user_id), scope)
     output = export_attendance_csv(
         db,
         user_id=user_id,
@@ -1730,6 +1913,8 @@ def download_attendance_csv(
         end_date=end_dt,
         employee_id=employee_id,
         department=department.strip() if department else None,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     # Generate filename with date range
@@ -1760,7 +1945,8 @@ def download_attendance_pdf(
     year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     department: Optional[str] = Query(None, description="Filter by department"),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Download attendance data as a PDF file with optional filters. Only accessible by Admin and HR."""
     from app.crud.attendance_crud import export_attendance_pdf
@@ -1836,6 +2022,8 @@ def download_attendance_pdf(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid date parameters: {str(e)}")
     
+    if user_id is not None:
+        _ensure_user_in_scope(db, int(user_id), scope)
     buffer = export_attendance_pdf(
         db,
         user_id=user_id,
@@ -1844,6 +2032,8 @@ def download_attendance_pdf(
         employee_id=employee_id,
         department=department.strip() if department else None,
         generated_by=current_user.name,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
     
     # Generate filename with date range
@@ -1865,7 +2055,8 @@ def download_attendance_pdf(
 @router.get("/today-status")
 def get_today_status(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get today's attendance status for employees who have checked in today.
@@ -1881,16 +2072,16 @@ def get_today_status(
     
     if user_role == RoleEnum.ADMIN:
         # Admin can see all employees
-        return get_today_attendance_status(db)
+        return get_today_attendance_status(db, scope=scope)
 
-    records = get_today_attendance_status(db)
+    records = get_today_attendance_status(db, scope=scope)
 
     if user_role == RoleEnum.HR:
         # HR can see all employees, excluding Admins, HRs, and themselves.
         allowed_ids = {
             u.user_id
             for u in db.query(User.user_id)
-            .filter(User.is_active.is_(True))
+            .filter(User.is_active.is_(True), *_user_scope_filters(scope))
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]))
             .filter(User.user_id != current_user.user_id)
             .all()
@@ -1906,7 +2097,7 @@ def get_today_status(
 
         candidates = (
             db.query(User.user_id, User.department)
-            .filter(User.is_active.is_(True))
+            .filter(User.is_active.is_(True), *_user_scope_filters(scope))
             .filter(User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]))
             .filter(User.user_id != current_user.user_id)
             .all()
@@ -1926,7 +2117,8 @@ def get_today_status(
 def get_all_attendance_history(
     department: Optional[str] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all attendance history
@@ -1939,7 +2131,7 @@ def get_all_attendance_history(
     # Auto-checkout overdue open attendances so /attendance/all reflects
     # latest persisted check_out/total_hours.
     from app.crud.attendance_crud import auto_checkout_overdue_attendances
-    auto_checkout_overdue_attendances(db)
+    auto_checkout_overdue_attendances(db, scope=scope)
 
     user_role = current_user.role
     user_department = current_user.department
@@ -1953,6 +2145,7 @@ def get_all_attendance_history(
             User.email,
         )
         .join(User, Attendance.user_id == User.user_id)
+        .filter(*_user_scope_filters(scope))
     )
 
     if user_role == RoleEnum.ADMIN:
@@ -2237,6 +2430,7 @@ def get_online_status_history(
     attendance_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get online/offline status history for an attendance record.
@@ -2245,9 +2439,12 @@ def get_online_status_history(
     from app.db.models.online_status import OnlineStatus
     
     # Verify attendance belongs to user or user has permission
-    attendance = db.query(Attendance).filter(
-        Attendance.attendance_id == attendance_id
-    ).first()
+    attendance = (
+        db.query(Attendance)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(Attendance.attendance_id == attendance_id, *_user_scope_filters(scope))
+        .first()
+    )
     
     if not attendance:
         raise HTTPException(
@@ -2286,6 +2483,7 @@ def get_online_status_history(
 def get_all_current_online_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get current online/offline status for all users who are checked in today.
@@ -2306,11 +2504,17 @@ def get_all_current_online_status(
     today_end = today_start + timedelta(days=1)
     
     # Get all attendance records for today that haven't checked out
-    today_attendances = db.query(Attendance).filter(
-        Attendance.check_in >= today_start,
-        Attendance.check_in < today_end,
-        Attendance.check_out.is_(None)  # Only checked-in users
-    ).all()
+    today_attendances = (
+        db.query(Attendance)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            Attendance.check_out.is_(None),
+            *_user_scope_filters(scope),
+        )
+        .all()
+    )
     
     status_map = {}
     
@@ -2340,6 +2544,7 @@ def get_user_current_online_status(
     user_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get current online/offline status for a specific user.
@@ -2353,16 +2558,24 @@ def get_user_current_online_status(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied"
             )
+        # Ensure target user is within current tenant scope
+        _ensure_user_in_scope(db, user_id, scope)
     
     # Get today's attendance for this user
     today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
-    attendance = db.query(Attendance).filter(
-        Attendance.user_id == user_id,
-        Attendance.check_in >= today_start,
-        Attendance.check_in < today_end
-    ).first()
+    attendance = (
+        db.query(Attendance)
+        .join(User, Attendance.user_id == User.user_id)
+        .filter(
+            Attendance.user_id == user_id,
+            Attendance.check_in >= today_start,
+            Attendance.check_in < today_end,
+            *_user_scope_filters(scope),
+        )
+        .first()
+    )
     
     if not attendance:
         return {
@@ -2409,6 +2622,7 @@ def working_hours_summary(
     end_date: Optional[str] = Query(None, description="Custom end date (YYYY-MM-DD). Required when period=custom"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Aggregate working hours for a user across a date range.
@@ -2424,9 +2638,13 @@ def working_hours_summary(
     # - HR: can view all except Admins + HRs
     # - MANAGER: can view non-privileged users (not Admin/HR/Manager) in their department(s) (supports comma-separated)
     if target_user_id != current_user.user_id:
-        target_user = db.query(User).filter(User.user_id == target_user_id).first()
+        target_user = (
+            db.query(User)
+            .filter(User.user_id == target_user_id, User.is_active.is_(True), *_user_scope_filters(scope))
+            .first()
+        )
         if not target_user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found in this company scope")
 
         if current_user.role == RoleEnum.ADMIN:
             if target_user.role == RoleEnum.ADMIN:
@@ -2648,6 +2866,7 @@ def calculate_working_hours(
     attendance_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
     Calculate actual working hours based on online/offline status.
@@ -2657,9 +2876,12 @@ def calculate_working_hours(
         from app.db.models.online_status import OnlineStatus
         
         # Verify attendance
-        attendance = db.query(Attendance).filter(
-            Attendance.attendance_id == attendance_id
-        ).first()
+        attendance = (
+            db.query(Attendance)
+            .join(User, Attendance.user_id == User.user_id)
+            .filter(Attendance.attendance_id == attendance_id, *_user_scope_filters(scope))
+            .first()
+        )
         
         if not attendance:
             raise HTTPException(
@@ -2768,9 +2990,18 @@ def attendance_monthly_grid_report(
     department: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_crud import build_monthly_attendance_grid
-    return build_monthly_attendance_grid(db, month, year, department)
+    return build_monthly_attendance_grid(
+        db,
+        month,
+        year,
+        department,
+        current_user=current_user if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR] else None,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
 
 @router.get("/report/monthly-grid/download/pdf")
 def download_monthly_grid_pdf(
@@ -2778,11 +3009,10 @@ def download_monthly_grid_pdf(
     year: int = Query(...),
     department: Optional[str] = Query(None, description="Filter by department"),
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
-    date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
 
@@ -2792,10 +3022,10 @@ def download_monthly_grid_pdf(
         year,
         department=department,
         employee_id=employee_id,
-        date_from=date_from,
-        date_to=date_to,
         status=status,
         current_user=current_user,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     filename = f"attendance_grid_{month:02d}_{year}.pdf"
@@ -2812,11 +3042,10 @@ def download_monthly_detailed_grid_pdf(
     year: int = Query(...),
     department: Optional[str] = Query(None, description="Filter by department"),
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
-    date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_grid_export import export_monthly_detailed_pdf
 
@@ -2826,10 +3055,10 @@ def download_monthly_detailed_grid_pdf(
         year,
         department=department,
         employee_id=employee_id,
-        date_from=date_from,
-        date_to=date_to,
         status=status,
         current_user=current_user,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     filename = f"attendance_detailed_grid_{month:02d}_{year}.pdf"
@@ -2846,11 +3075,10 @@ def download_monthly_grid_csv(
     year: int = Query(...),
     department: Optional[str] = Query(None, description="Filter by department"),
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
-    date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_csv
 
@@ -2860,10 +3088,10 @@ def download_monthly_grid_csv(
         year,
         department=department,
         employee_id=employee_id,
-        date_from=date_from,
-        date_to=date_to,
         status=status,
         current_user=current_user,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
     )
 
     filename = f"attendance_grid_{month:02d}_{year}.csv"

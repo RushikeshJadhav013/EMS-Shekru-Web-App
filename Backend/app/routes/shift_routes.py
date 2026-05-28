@@ -9,6 +9,7 @@ from app.crud.shift_crud import (
     create_shift,
     get_shift,
     get_shifts_by_department,
+    get_shifts_for_department_tokens,
     update_shift,
     delete_shift,
     assign_shift,
@@ -23,7 +24,8 @@ from app.crud.shift_crud import (
     get_shift_notifications,
     mark_notification_as_read,
 )
-from app.dependencies import get_current_user, require_roles
+from app.utils.department_utils import department_tokens_lower
+from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.schemas.shift_schema import (
     ShiftCreate,
     ShiftUpdate,
@@ -44,12 +46,106 @@ from app.enums import RoleEnum
 router = APIRouter(prefix="/shift", tags=["Shift Management"])
 
 
+def _user_scope_filters(scope: dict):
+    company_id = scope.get("company_id")
+    branch_id = scope.get("branch_id")
+    filters = [User.company_id == company_id]
+    if branch_id is not None:
+        filters.append(User.branch_id == branch_id)
+    return filters
+
+
+def _tenant_departments(db: Session, scope: dict) -> list[str]:
+    rows = (
+        db.query(User.department)
+        .filter(*_user_scope_filters(scope), User.is_active.is_(True), User.department.isnot(None))
+        .distinct()
+        .all()
+    )
+    return [r[0] for r in rows if r and r[0]]
+
+
+def _tenant_department_tokens(db: Session, scope: dict) -> set[str]:
+    tokens: set[str] = set()
+    for raw in _tenant_departments(db, scope):
+        tokens.update(department_tokens_lower(raw))
+    return tokens
+
+
+def _departments_overlap(a: Optional[str], b: Optional[str]) -> bool:
+    ta = set(department_tokens_lower(a))
+    tb = set(department_tokens_lower(b))
+    return bool(ta & tb) if ta and tb else False
+
+
+def _shift_in_tenant(shift_department: Optional[str], tenant_tokens: set[str]) -> bool:
+    if not shift_department:
+        return True
+    return bool(set(department_tokens_lower(shift_department)) & tenant_tokens)
+
+
+def _manager_can_access_department(manager: User, department: Optional[str]) -> bool:
+    if not department:
+        return True
+    return _departments_overlap(manager.department, department)
+
+
+def _first_department_label(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p and p.strip()]
+    return parts[0] if parts else None
+
+
+def _resolve_schedule_department(
+    current_user: User,
+    department_query: Optional[str],
+    db: Session,
+    scope: dict,
+) -> str:
+    """Resolve a single department token for schedule views."""
+    if current_user.role == RoleEnum.ADMIN:
+        if not department_query:
+            raise HTTPException(status_code=400, detail="Department must be specified for Admin")
+        dept = department_query.strip()
+        token = dept.lower()
+        if token not in _tenant_department_tokens(db, scope) and dept not in set(_tenant_departments(db, scope)):
+            raise HTTPException(status_code=403, detail="Department not in tenant scope")
+        return dept
+
+    if not current_user.department:
+        raise HTTPException(status_code=403, detail="User must belong to a department")
+
+    user_tokens = department_tokens_lower(current_user.department)
+
+    if department_query:
+        req = department_query.strip()
+        if req.lower() not in user_tokens:
+            raise HTTPException(status_code=403, detail="Department not in your assigned departments")
+        return req
+
+    if len(user_tokens) == 1:
+        label = _first_department_label(current_user.department)
+        if not label:
+            raise HTTPException(status_code=403, detail="User must belong to a department")
+        return label
+
+    if current_user.role == RoleEnum.MANAGER:
+        raise HTTPException(
+            status_code=400,
+            detail="department query parameter is required when you manage multiple departments",
+        )
+
+    return _first_department_label(current_user.department) or current_user.department
+
+
 # Shift CRUD Operations (Manager only)
 @router.post("/", response_model=ShiftOut)
 def create_new_shift(
     shift: ShiftCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Create a new shift (Manager/Admin only)"""
     try:
@@ -59,10 +155,30 @@ def create_new_shift(
                 detail="Manager must belong to a department to create shifts"
             )
         
-        # If manager, ensure shift is for their department
         department = shift.department
         if current_user.role == RoleEnum.MANAGER:
-            department = current_user.department
+            manager_tokens = department_tokens_lower(current_user.department)
+            if not manager_tokens:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager must belong to a department to create shifts",
+                )
+            if not department:
+                if len(manager_tokens) > 1:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="department is required when creating shifts for multiple departments",
+                    )
+                department = _first_department_label(current_user.department)
+            elif not _manager_can_access_department(current_user, department):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Can only create shifts for your assigned departments",
+                )
+        else:
+            tenant_tokens = _tenant_department_tokens(db, scope)
+            if department and not _shift_in_tenant(department, tenant_tokens):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in tenant scope")
         
         new_shift = create_shift(
             db,
@@ -96,25 +212,40 @@ def create_new_shift(
 def list_shifts(
     department: Optional[str] = Query(None, description="Filter by department"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get shifts for a department or all shifts (Admin)"""
     if current_user.role == RoleEnum.ADMIN:
-        # Admin can see all shifts
-        shifts = get_shifts_by_department(db, department)
+        tenant_tokens = _tenant_department_tokens(db, scope)
+        if department and department.strip().lower() not in tenant_tokens:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in tenant scope")
+        shifts = get_shifts_by_department(db, department, allowed_departments=_tenant_departments(db, scope))
     elif current_user.role == RoleEnum.MANAGER:
-        # Manager can only see shifts for their department
         if not current_user.department:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Manager must belong to a department"
+                detail="Manager must belong to a department",
             )
-        shifts = get_shifts_by_department(db, current_user.department)
+        manager_tokens = department_tokens_lower(current_user.department)
+        if department:
+            if department.strip().lower() not in manager_tokens:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in your assigned departments")
+            shifts = get_shifts_by_department(db, department.strip())
+        else:
+            shifts = get_shifts_for_department_tokens(db, manager_tokens)
     else:
-        # Employees and Team Leads can see shifts for their department
         if not current_user.department:
             return []
-        shifts = get_shifts_by_department(db, current_user.department)
+        user_tokens = department_tokens_lower(current_user.department)
+        if department:
+            if department.strip().lower() not in user_tokens:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in your assigned departments")
+            shifts = get_shifts_by_department(db, department.strip())
+        elif len(user_tokens) == 1:
+            shifts = get_shifts_by_department(db, _first_department_label(current_user.department))
+        else:
+            shifts = get_shifts_for_department_tokens(db, user_tokens)
     
     return shifts
 
@@ -122,11 +253,17 @@ def list_shifts(
 @router.get("/notifications")
 def get_my_shift_notifications(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get current user's shift notifications"""
     try:
-        notifications = get_shift_notifications(db, current_user.user_id)
+        notifications = get_shift_notifications(
+            db,
+            current_user.user_id,
+            company_id=scope.get("company_id"),
+            branch_id=scope.get("branch_id"),
+        )
         # Convert to plain dictionaries to avoid Pydantic validation issues
         result = []
         for notification in notifications:
@@ -172,16 +309,22 @@ def get_my_shift_notifications(
 def get_shift_by_id(
     shift_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get a specific shift by ID"""
     shift = get_shift(db, shift_id)
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
-    # Check access permissions
+    # Option A tenant check: shifts are department templates; only allow if shift.department is global
+    # or belongs to a department that exists within this tenant.
+    tenant_tokens = _tenant_department_tokens(db, scope)
+    if shift.department and not _shift_in_tenant(shift.department, tenant_tokens):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if current_user.role == RoleEnum.MANAGER:
-        if shift.department and shift.department != current_user.department:
+        if shift.department and not _manager_can_access_department(current_user, shift.department):
             raise HTTPException(status_code=403, detail="Access denied")
     
     return shift
@@ -192,16 +335,20 @@ def update_shift_by_id(
     shift_id: int,
     shift_update: ShiftUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Update a shift (Manager/Admin only)"""
     shift = get_shift(db, shift_id)
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
-    # Check access permissions
+    tenant_tokens = _tenant_department_tokens(db, scope)
+    if shift.department and not _shift_in_tenant(shift.department, tenant_tokens):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if current_user.role == RoleEnum.MANAGER:
-        if shift.department != current_user.department:
+        if shift.department and not _manager_can_access_department(current_user, shift.department):
             raise HTTPException(status_code=403, detail="Access denied")
     
     updated_shift = update_shift(
@@ -224,16 +371,20 @@ def update_shift_by_id(
 def delete_shift_by_id(
     shift_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Delete a shift (soft delete) (Manager/Admin only)"""
     shift = get_shift(db, shift_id)
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
-    # Check access permissions
+    tenant_tokens = _tenant_department_tokens(db, scope)
+    if shift.department and not _shift_in_tenant(shift.department, tenant_tokens):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if current_user.role == RoleEnum.MANAGER:
-        if shift.department != current_user.department:
+        if shift.department and not _manager_can_access_department(current_user, shift.department):
             raise HTTPException(status_code=403, detail="Access denied")
     
     success = delete_shift(db, shift_id)
@@ -248,7 +399,8 @@ def delete_shift_by_id(
 def assign_user_to_shift(
     assignment: ShiftAssignmentCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Assign a user to a shift (Manager/Admin only)"""
     # Verify shift exists
@@ -257,14 +409,26 @@ def assign_user_to_shift(
         raise HTTPException(status_code=404, detail="Shift not found")
     
     # Verify user exists
-    user = db.query(User).filter(User.user_id == assignment.user_id).first()
+    user = db.query(User).filter(User.user_id == assignment.user_id, *_user_scope_filters(scope)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    tenant_tokens = _tenant_department_tokens(db, scope)
+    if shift.department and not _shift_in_tenant(shift.department, tenant_tokens):
+        raise HTTPException(status_code=403, detail="Access denied")
     
-    # Check permissions
     if current_user.role == RoleEnum.MANAGER:
         if not current_user.department:
             raise HTTPException(status_code=403, detail="Manager must belong to a department")
+        if not _manager_can_access_department(current_user, user.department):
+            raise HTTPException(status_code=403, detail="Can only assign shifts to users in your department")
+        if shift.department and not _manager_can_access_department(current_user, shift.department):
+            raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
+        if shift.department and user.department and not _departments_overlap(shift.department, user.department):
+            raise HTTPException(
+                status_code=403,
+                detail="Shift department must overlap with the user's department",
+            )
         # Parse manager's department list
         manager_depts = department_tokens_lower(current_user.department)
         # Validate user's department
@@ -313,7 +477,8 @@ def assign_user_to_shift(
 def bulk_assign_users_to_shift(
     assignment: ShiftAssignmentBulkCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Bulk assign multiple users to a shift (Manager/Admin only)"""
     # Verify shift exists
@@ -321,10 +486,17 @@ def bulk_assign_users_to_shift(
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
-    # Check permissions
+    tenant_tokens = _tenant_department_tokens(db, scope)
+    if shift.department and not _shift_in_tenant(shift.department, tenant_tokens):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if current_user.role == RoleEnum.MANAGER:
         if not current_user.department:
             raise HTTPException(status_code=403, detail="Manager must belong to a department")
+        if shift.department and not _manager_can_access_department(current_user, shift.department):
+            raise HTTPException(status_code=403, detail="Can only assign shifts from your department")
+
+        users = db.query(User).filter(User.user_id.in_(assignment.user_ids), *_user_scope_filters(scope)).all()
         # Parse manager's department list
         manager_depts = department_tokens_lower(current_user.department)
         if shift.department:
@@ -336,6 +508,25 @@ def bulk_assign_users_to_shift(
         # Parse manager's department list
         manager_depts = department_tokens_lower(current_user.department)
         for user in users:
+            if not _manager_can_access_department(current_user, user.department):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Can only assign shifts to users in your department. User {user.name} is in {user.department}",
+                )
+            if shift.department and user.department and not _departments_overlap(shift.department, user.department):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Shift department must overlap with user {user.name}'s department",
+                )
+    else:
+        # Admin: ensure all target users are within tenant scope
+        tenant_user_ids = {
+            int(u[0])
+            for u in db.query(User.user_id).filter(User.user_id.in_(assignment.user_ids), *_user_scope_filters(scope)).all()
+        }
+        missing = [uid for uid in assignment.user_ids if int(uid) not in tenant_user_ids]
+        if missing:
+            raise HTTPException(status_code=403, detail="One or more users are outside tenant scope")
             if user.department:
                 if user.department.lower() not in manager_depts:
                     raise HTTPException(
@@ -380,26 +571,21 @@ def bulk_assign_users_to_shift(
 @router.get("/schedule/department", response_model=DepartmentShiftSchedule)
 def get_department_schedule(
     schedule_date: date = Query(..., description="Date for the schedule"),
-    department: Optional[str] = Query(None, description="Department name (optional, uses manager's department if not provided)"),
+    department: Optional[str] = Query(None, description="Department token (required for Admin and multi-dept managers)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get shift schedule for a department on a specific date"""
-    # Determine department
-    if current_user.role == RoleEnum.ADMIN:
-        if not department:
-            raise HTTPException(status_code=400, detail="Department must be specified for Admin")
-        dept = department
-    elif current_user.role == RoleEnum.MANAGER:
-        if not current_user.department:
-            raise HTTPException(status_code=403, detail="Manager must belong to a department")
-        dept = current_user.department
-    else:
-        if not current_user.department:
-            raise HTTPException(status_code=403, detail="User must belong to a department")
-        dept = current_user.department
+    dept = _resolve_schedule_department(current_user, department, db, scope)
     
-    schedule = get_department_shift_schedule(db, dept, schedule_date)
+    schedule = get_department_shift_schedule(
+        db,
+        dept,
+        schedule_date,
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+    )
     
     # Convert to response model
     from app.schemas.shift_schema import ShiftScheduleView
@@ -425,9 +611,10 @@ def get_department_schedule(
 def get_department_schedule_week(
     start_date: date = Query(..., description="Start date for the weekly schedule"),
     end_date: Optional[date] = Query(None, description="End date for the weekly schedule (defaults to 6 days after start)"),
-    department: Optional[str] = Query(None, description="Department name (Admin only; managers use their own department)"),
+    department: Optional[str] = Query(None, description="Department token (required for Admin and multi-dept managers)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get weekly shift schedule for a department"""
     if not end_date:
@@ -439,22 +626,17 @@ def get_department_schedule_week(
     if (end_date - start_date).days > 31:
         raise HTTPException(status_code=400, detail="Date range too large (max 31 days)")
     
-    # Determine department
-    if current_user.role == RoleEnum.ADMIN:
-        if not department:
-            raise HTTPException(status_code=400, detail="Department must be specified for Admin")
-        dept = department
-    elif current_user.role == RoleEnum.MANAGER:
-        if not current_user.department:
-            raise HTTPException(status_code=403, detail="Manager must belong to a department")
-        dept = current_user.department
-    else:
-        if not current_user.department:
-            raise HTTPException(status_code=403, detail="User must belong to a department")
-        dept = current_user.department
+    dept = _resolve_schedule_department(current_user, department, db, scope)
     
     try:
-        schedule = get_department_shift_schedule_range(db, dept, start_date, end_date)
+        schedule = get_department_shift_schedule_range(
+            db,
+            dept,
+            start_date,
+            end_date,
+            company_id=scope.get("company_id"),
+            branch_id=scope.get("branch_id"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     
@@ -491,7 +673,8 @@ def get_my_shift_schedule(
     start_date: Optional[date] = Query(None, description="Start date (default: today)"),
     end_date: Optional[date] = Query(None, description="End date (default: 30 days from start)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Get current user's shift schedule"""
     if not start_date:
@@ -518,7 +701,8 @@ def update_shift_assignment_by_id(
     assignment_id: int,
     assignment_update: ShiftAssignmentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Update a shift assignment (Manager/Admin only)"""
     assignment = get_shift_assignment(db, assignment_id)
@@ -527,8 +711,20 @@ def update_shift_assignment_by_id(
     
     # Check permissions
     if current_user.role == RoleEnum.MANAGER:
-        user = db.query(User).filter(User.user_id == assignment.user_id).first()
-        if not user or user.department != current_user.department:
+        user = db.query(User).filter(User.user_id == assignment.user_id, *_user_scope_filters(scope)).first()
+        if not user or not _manager_can_access_department(current_user, user.department):
+            raise HTTPException(status_code=403, detail="Access denied")
+        if assignment_update.shift_id:
+            new_shift = get_shift(db, assignment_update.shift_id)
+            if new_shift and new_shift.department and not _manager_can_access_department(current_user, new_shift.department):
+                raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        in_scope = (
+            db.query(User.user_id)
+            .filter(User.user_id == assignment.user_id, *_user_scope_filters(scope))
+            .first()
+        )
+        if not in_scope:
             raise HTTPException(status_code=403, detail="Access denied")
     
     updated_assignment = update_shift_assignment(
@@ -565,7 +761,8 @@ def update_shift_assignment_by_id(
 def delete_shift_assignment_by_id(
     assignment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.MANAGER, RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Delete a shift assignment (Manager/Admin only)"""
     # Validate assignment_id
@@ -581,11 +778,19 @@ def delete_shift_assignment_by_id(
     
     # Check permissions
     if current_user.role == RoleEnum.MANAGER:
-        user = db.query(User).filter(User.user_id == assignment.user_id).first()
+        user = db.query(User).filter(User.user_id == assignment.user_id, *_user_scope_filters(scope)).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found for this assignment")
-        if user.department != current_user.department:
+        if not _manager_can_access_department(current_user, user.department):
             raise HTTPException(status_code=403, detail="Access denied: Can only delete assignments for users in your department")
+    else:
+        in_scope = (
+            db.query(User.user_id)
+            .filter(User.user_id == assignment.user_id, *_user_scope_filters(scope))
+            .first()
+        )
+        if not in_scope:
+            raise HTTPException(status_code=403, detail="Access denied")
     
     # Delete the assignment
     try:
@@ -605,10 +810,17 @@ def delete_shift_assignment_by_id(
 def mark_shift_notification_as_read(
     notification_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """Mark a shift notification as read"""
-    success = mark_notification_as_read(db, notification_id, current_user.user_id)
+    success = mark_notification_as_read(
+        db,
+        notification_id,
+        current_user.user_id,
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Notification not found")
     return None
