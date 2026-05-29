@@ -235,7 +235,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Allowed origins for CORS
 origins = [
     "https://staffly.space",    # Direct backend access
+    "https://www.staffly.space",
     "https://stafflyhrms.netlify.app",  # Production deployment
+    "https://api.staffly.space",
     # "https://testing.staffly.space",           # Frontend (new custom domain on Netlify)
     # "https://stafflytesting.netlify.app",       # Temporary fallback during migration
     # "https://api-testing.staffly.space",    # Optional: backend domain (Swagger/tests)
