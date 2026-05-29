@@ -52,7 +52,7 @@ from app.schemas.leave_config_schema import (
 from app.db.models.user import User
 from app.db.models.leave import Leave
 from app.db.models.shift import Shift, ShiftAssignment
-from app.db.models.office_timing import OfficeTiming
+from app.services.office_timing_service import resolve_office_start_time
 from fastapi import Body
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
@@ -84,31 +84,6 @@ def _ensure_leave_in_scope(db: Session, leave_id: int, scope: dict) -> Leave:
     if not leave:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Leave not found in this company scope")
     return leave
-
-
-def _normalize_department_value(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
-
-
-def _resolve_office_start_time(db: Session, department: Optional[str]) -> Optional[time]:
-    records = (
-        db.query(OfficeTiming)
-        .filter(OfficeTiming.is_active.is_(True))
-        .order_by(OfficeTiming.updated_at.desc())
-        .all()
-    )
-    dept_key = _normalize_department_value(department)
-    global_entry: Optional[OfficeTiming] = None
-    for record in records:
-        record_dept = _normalize_department_value(record.department)
-        if record_dept is None and global_entry is None:
-            global_entry = record
-        if dept_key and record_dept and record_dept.lower() == dept_key.lower():
-            return record.start_time
-    return global_entry.start_time if global_entry else None
 
 
 def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optional[time]:
@@ -146,8 +121,11 @@ def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optio
         if shift_by_type:
             return shift_by_type.start_time
 
-    # 3) Final fallback to office timing (department-specific, then global).
-    return _resolve_office_start_time(db, getattr(user, "department", None))
+    # 3) Final fallback to office timing (department-specific, then company default).
+    company_id = getattr(user, "company_id", None)
+    if company_id is None:
+        return None
+    return resolve_office_start_time(db, getattr(user, "department", None), int(company_id))
 
 # Employee applies for leave
 @router.post("/", response_model=LeaveOut)

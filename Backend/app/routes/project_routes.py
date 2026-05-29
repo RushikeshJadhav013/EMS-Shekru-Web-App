@@ -346,7 +346,10 @@ def create_project(
 
     task_count = (
         db.query(Task)
-        .filter(Task.project_id == project.project_id)
+        .filter(
+            Task.project_id == project.project_id,
+            Task.company_id == int(project.company_id),
+        )
         .count()
     )
 
@@ -519,7 +522,10 @@ def get_project(
 
     task_count = (
         db.query(Task)
-        .filter(Task.project_id == project.project_id)
+        .filter(
+            Task.project_id == project.project_id,
+            Task.company_id == int(project.company_id),
+        )
         .count()
     )
 
@@ -623,7 +629,10 @@ def update_project(
 
     task_count = (
         db.query(Task)
-        .filter(Task.project_id == project.project_id)
+        .filter(
+            Task.project_id == project.project_id,
+            Task.company_id == int(project.company_id),
+        )
         .count()
     )
 
@@ -687,7 +696,10 @@ def update_project_status(
 
     task_count = (
         db.query(Task)
-        .filter(Task.project_id == project.project_id)
+        .filter(
+            Task.project_id == project.project_id,
+            Task.company_id == int(project.company_id),
+        )
         .count()
     )
 

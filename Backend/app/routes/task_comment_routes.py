@@ -28,14 +28,17 @@ def _user_scope_filters(scope: dict, user_alias=User) -> list:
 
 
 def _task_in_scope_query(db: Session, scope: dict):
-    creator = aliased(User)
-    assignee = aliased(User)
-    return (
-        db.query(Task)
-        .outerjoin(creator, Task.assigned_by == creator.user_id)
-        .outerjoin(assignee, Task.assigned_to == assignee.user_id)
-        .filter(*_user_scope_filters(scope, creator), *_user_scope_filters(scope, assignee))
-    )
+    q = db.query(Task).filter(Task.company_id == int(scope["company_id"]))
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        creator = aliased(User)
+        assignee = aliased(User)
+        q = (
+            q.outerjoin(creator, Task.assigned_by == creator.user_id)
+            .outerjoin(assignee, Task.assigned_to == assignee.user_id)
+            .filter(creator.branch_id == int(branch_id), assignee.branch_id == int(branch_id))
+        )
+    return q
 
 # Create uploads directory if it doesn't exist
 UPLOAD_DIR = Path("static/task_comments")

@@ -5,7 +5,10 @@ from pydantic import BaseModel, Field, ConfigDict, validator
 
 
 class OfficeTimingBase(BaseModel):
-    department: Optional[str] = Field(default=None, description="Department name or None for global setting")
+    department: Optional[str] = Field(
+        default=None,
+        description="Department name or None for the company-wide default",
+    )
     start_time: str = Field(..., description="Office start time in HH:MM format")
     end_time: str = Field(..., description="Office end time in HH:MM format")
     check_in_grace_minutes: int = Field(default=0, ge=0, le=180)
@@ -26,6 +29,7 @@ class OfficeTimingCreate(OfficeTimingBase):
 
 class OfficeTimingOut(OfficeTimingBase):
     id: int
+    company_id: int
 
     class Config:
         from_attributes = True

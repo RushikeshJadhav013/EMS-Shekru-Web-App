@@ -8,6 +8,11 @@ from datetime import date
 from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
 from app.db.models.office_timing import OfficeTiming
+from app.services.office_timing_service import (
+    build_office_timing_cache,
+    get_timing_for_user_department,
+    resolve_office_timing,
+)
 from app.utils.timezone import now_ist, get_today_bounds_ist
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
@@ -86,8 +91,8 @@ def auto_checkout_overdue_attendances(db: Session, scope: dict | None = None) ->
 
     now = now_ist()
 
-    # Build cache of office timings (global + per-department)
-    timing_cache = _build_office_timing_cache(db)
+    # Build per-company cache of office timings (company default + per-department)
+    timing_caches: dict[int, tuple] = {}
 
     # Find all open attendances (no check_out yet)
     q = (
@@ -108,7 +113,12 @@ def auto_checkout_overdue_attendances(db: Session, scope: dict | None = None) ->
 
     for attendance, user in open_records:
         # Resolve office timing for this user's department
-        timing = _resolve_office_timing(db, getattr(user, "department", None), timing_cache)
+        timing = get_timing_for_user_department(
+            db,
+            department=getattr(user, "department", None),
+            company_id=getattr(user, "company_id", None),
+            caches=timing_caches,
+        )
         if not timing or not attendance.check_in:
             continue
 
@@ -266,69 +276,6 @@ def get_all_attendance(db: Session, department: str = None):
     
     return query.order_by(Attendance.check_in.desc()).all()
 
-def _normalize_department_value(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
-
-
-def _build_office_timing_cache(db: Session) -> Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]:
-    records = (
-        db.query(OfficeTiming)
-        .filter(OfficeTiming.is_active.is_(True))
-        .order_by(OfficeTiming.updated_at.desc())
-        .all()
-    )
-    
-    global_entry: Optional[OfficeTiming] = None
-    department_entries: Dict[str, OfficeTiming] = {}
-
-    for entry in records:
-        dept_key = _normalize_department_value(entry.department)
-        if dept_key is None:
-            if global_entry is None or (
-                entry.updated_at and (global_entry.updated_at is None or entry.updated_at > global_entry.updated_at)
-            ):
-                global_entry = entry
-        else:
-            existing = department_entries.get(dept_key)
-            if existing is None or (
-                entry.updated_at and (existing.updated_at is None or entry.updated_at > existing.updated_at)
-            ):
-                department_entries[dept_key] = entry
-
-    return global_entry, department_entries
-
-
-def _resolve_office_timing(
-    db: Session,
-    department: Optional[str],
-    cache: Optional[Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]] = None,
-) -> Optional[OfficeTiming]:
-    if cache is None:
-        cache = _build_office_timing_cache(db)
-    global_entry, department_entries = cache
-    dept_key = _normalize_department_value(department)
-    if dept_key:
-        # Direct match on the full normalized department string
-        if dept_key in department_entries:
-            return department_entries[dept_key]
-
-        # Support users with comma-separated multi-departments by resolving
-        # against any single-department OfficeTiming whose key matches one
-        # of the department tokens.
-        tokens: List[str] = department_tokens_lower(dept_key)
-        if tokens:
-            for token in tokens:
-                for key, entry in department_entries.items():
-                    # Compare token-wise in a case-insensitive way
-                    key_tokens = department_tokens_lower(key)
-                    if token in key_tokens:
-                        return entry
-
-    return global_entry
-
 
 def _to_local_timezone(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
@@ -397,7 +344,7 @@ def _evaluate_attendance_status(
     }
 
 
-def get_today_attendance_status(db: Session, department: str = None):
+def get_today_attendance_status(db: Session, department: str = None, company_id: int | None = None):
     # First, auto-checkout any overdue open attendances so today's status
     # reflects accurate working hours and check-out information.
     auto_checkout_overdue_attendances(db)
@@ -419,9 +366,18 @@ def get_today_attendance_status(db: Session, department: str = None):
     records = records_query.order_by(Attendance.check_in.desc()).all()
 
     result = []
-    timing_cache = _build_office_timing_cache(db)
+    timing_caches: dict[int, tuple] = {}
     for att, name, dept, emp_id, email in records:
-        evaluation = _evaluate_attendance_status(att.check_in, att.check_out, _resolve_office_timing(db, dept, timing_cache))
+        evaluation = _evaluate_attendance_status(
+            att.check_in,
+            att.check_out,
+            get_timing_for_user_department(
+                db,
+                department=dept,
+                company_id=company_id,
+                caches=timing_caches,
+            ),
+        )
         payload = {
             "attendance_id": att.attendance_id,
             "user_id": att.user_id,
@@ -442,7 +398,7 @@ def get_today_attendance_status(db: Session, department: str = None):
     
     return result
 
-def get_today_attendance_records(db: Session):
+def get_today_attendance_records(db: Session, company_id: int | None = None):
     """Get today's attendance records with user details for manager view"""
     # Ensure overdue open attendances are auto-checked-out before
     # returning today's records.
@@ -459,10 +415,18 @@ def get_today_attendance_records(db: Session):
     )
     
     result = []
-    timing_cache = _build_office_timing_cache(db)
+    timing_caches: dict[int, tuple] = {}
     for attendance, user in records:
+        effective_company_id = company_id if company_id is not None else getattr(user, "company_id", None)
         evaluation = _evaluate_attendance_status(
-            attendance.check_in, attendance.check_out, _resolve_office_timing(db, user.department, timing_cache)
+            attendance.check_in,
+            attendance.check_out,
+            get_timing_for_user_department(
+                db,
+                department=user.department,
+                company_id=effective_company_id,
+                caches=timing_caches,
+            ),
         )
         
         result.append({
@@ -487,7 +451,7 @@ def get_today_attendance_records(db: Session):
     
     return result
 
-def get_attendance_summary(db: Session):
+def get_attendance_summary(db: Session, company_id: int | None = None):
     """Get attendance summary with statistics"""
     # Keep statistics consistent by auto-checking-out any overdue
     # open attendances before computing the summary.
@@ -504,7 +468,7 @@ def get_attendance_summary(db: Session):
         .all()
     )
 
-    timing_cache = _build_office_timing_cache(db)
+    timing_caches: dict[int, tuple] = {}
     present_user_ids = set()
     late_arrivals = 0
     early_departures = 0
@@ -512,8 +476,16 @@ def get_attendance_summary(db: Session):
 
     for attendance, user in records:
         present_user_ids.add(user.user_id)
+        effective_company_id = company_id if company_id is not None else getattr(user, "company_id", None)
         evaluation = _evaluate_attendance_status(
-            attendance.check_in, attendance.check_out, _resolve_office_timing(db, user.department, timing_cache)
+            attendance.check_in,
+            attendance.check_out,
+            get_timing_for_user_department(
+                db,
+                department=user.department,
+                company_id=effective_company_id,
+                caches=timing_caches,
+            ),
         )
         if evaluation["check_in_status"] == "late":
             late_arrivals += 1

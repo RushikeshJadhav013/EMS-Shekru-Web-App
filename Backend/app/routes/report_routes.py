@@ -263,11 +263,13 @@ def get_employee_performance(
             
             # Calculate task completion rate
             total_tasks = db.query(Task).filter(
-                Task.assigned_to == emp.user_id
+                Task.assigned_to == emp.user_id,
+                Task.company_id == int(scope["company_id"]),
             ).count()
             
             completed_tasks = db.query(Task).filter(
                 Task.assigned_to == emp.user_id,
+                Task.company_id == int(scope["company_id"]),
                 Task.status == TaskStatus.COMPLETED.value
             ).count()
             
@@ -428,11 +430,13 @@ def get_department_metrics(
         
         tasks_completed = db.query(Task).filter(
             Task.assigned_to.in_(dept_user_ids),
+            Task.company_id == int(scope["company_id"]),
             Task.status == TaskStatus.COMPLETED.value
         ).count()
         
         tasks_pending = db.query(Task).filter(
             Task.assigned_to.in_(dept_user_ids),
+            Task.company_id == int(scope["company_id"]),
             Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])
         ).count()
         
@@ -552,11 +556,13 @@ def get_executive_summary(
         
         # 2. Task Completion Rate (30% weight) - Highest weight for productivity
         total_tasks = db.query(Task).filter(
-            Task.assigned_to == emp.user_id
+            Task.assigned_to == emp.user_id,
+            Task.company_id == int(scope["company_id"]),
         ).count()
         
         completed_tasks = db.query(Task).filter(
             Task.assigned_to == emp.user_id,
+            Task.company_id == int(scope["company_id"]),
             Task.status == TaskStatus.COMPLETED.value
         ).count()
         
@@ -629,12 +635,13 @@ def get_executive_summary(
     # Calculate average performance
     avg_performance = round(total_performance / len(employee_scores)) if employee_scores else 0
     
-    # Total tasks completed
-    # Option A: tasks have no company_id; scope by joining assignee user
+    # Total tasks completed within tenant scope
     total_tasks_completed = (
         db.query(Task)
-        .join(User, Task.assigned_to == User.user_id)
-        .filter(Task.status == TaskStatus.COMPLETED.value, User.is_active.is_(True), *_user_scope_filters(scope))
+        .filter(
+            Task.status == TaskStatus.COMPLETED.value,
+            Task.company_id == int(scope["company_id"]),
+        )
         .count()
     )
     
@@ -836,7 +843,8 @@ async def export_performance_report(
             
             # Task data
             tasks = db.query(Task).filter(
-                Task.assigned_to == emp.user_id
+                Task.assigned_to == emp.user_id,
+                Task.company_id == int(scope["company_id"]),
             ).all()
             
             total_tasks = len(tasks)
@@ -1404,17 +1412,10 @@ async def export_task_management_report(
                 detail="Current user is outside selected tenant scope",
             )
 
-        # Option A: tasks have no company_id; scope by joining creator/assignee users in scope
-        from sqlalchemy.orm import aliased
-
-        creator = aliased(User)
-        assignee = aliased(User)
         query = (
             db.query(Task)
             .outerjoin(TaskHistory, TaskHistory.task_id == Task.task_id)
-            .outerjoin(creator, Task.assigned_by == creator.user_id)
-            .outerjoin(assignee, Task.assigned_to == assignee.user_id)
-            .filter(*_user_scope_filters(scope, creator), *_user_scope_filters(scope, assignee))
+            .filter(Task.company_id == int(scope["company_id"]))
             .filter(
                 or_(
                     Task.assigned_to == current_user.user_id,

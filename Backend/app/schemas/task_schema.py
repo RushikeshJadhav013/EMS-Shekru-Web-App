@@ -59,6 +59,7 @@ class TaskBulkCreate(TaskBase):
 
 class TaskOut(BaseModel):
     task_id: int = Field(..., gt=0, description="Unique task ID")
+    company_id: int = Field(..., gt=0, description="Company this task belongs to")
     title: constr(min_length=3, max_length=255, strip_whitespace=True) = Field(..., description="Task title (3-255 characters)")
     description: Optional[constr(max_length=2000, strip_whitespace=True)] = Field(None, description="Task description (max 2000 characters)")
     status: Optional[Literal['Pending', 'In Progress', 'Overdue', 'Completed', 'Cancelled']] = Field("Pending", description="Task status")

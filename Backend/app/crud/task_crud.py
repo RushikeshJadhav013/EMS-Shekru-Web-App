@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.db.models.task import Task, TaskHistory
 from app.db.models.notification import TaskNotification
+from app.db.models.project import Project
 from app.db.models.user import User
 from app.enums import TaskAction, TaskStatus
 from app.utils.timezone import now_ist
@@ -105,26 +106,49 @@ def _get_user_in_scope(
     return q.first()
 
 
+def _resolve_task_company_id(
+    db: Session,
+    *,
+    company_id: int,
+    project_id: int | None,
+    assigned_by: int,
+    assigned_to: int,
+) -> int:
+    resolved = int(company_id)
+    if project_id is not None:
+        project = db.query(Project).filter(Project.project_id == int(project_id)).first()
+        if not project:
+            raise ValueError("Project not found")
+        if project.company_id is not None and int(project.company_id) != resolved:
+            raise ValueError("Project is outside tenant scope")
+    else:
+        assignee = db.query(User).filter(User.user_id == int(assigned_to)).first()
+        assigner = db.query(User).filter(User.user_id == int(assigned_by)).first()
+        for user in (assignee, assigner):
+            if user is not None and user.company_id is not None and int(user.company_id) != resolved:
+                raise ValueError("Assigner/assignee not in tenant scope")
+    return resolved
+
+
 def _apply_task_scope(
     query,
     *,
     company_id: int | None = None,
     branch_id: int | None = None,
 ):
-    if company_id is None and branch_id is None:
-        return query
+    if company_id is not None:
+        query = query.filter(Task.company_id == int(company_id))
 
-    creator = aliased(User)
-    assignee = aliased(User)
-    query = query.outerjoin(creator, Task.assigned_by == creator.user_id).outerjoin(
-        assignee, Task.assigned_to == assignee.user_id
-    )
-    creator_clauses = _user_scope_clauses(creator, company_id, branch_id)
-    assignee_clauses = _user_scope_clauses(assignee, company_id, branch_id)
-    if creator_clauses:
-        query = query.filter(and_(*creator_clauses))
-    if assignee_clauses:
-        query = query.filter(and_(*assignee_clauses))
+    if branch_id is not None:
+        creator = aliased(User)
+        assignee = aliased(User)
+        query = query.outerjoin(creator, Task.assigned_by == creator.user_id).outerjoin(
+            assignee, Task.assigned_to == assignee.user_id
+        )
+        query = query.filter(
+            creator.branch_id == int(branch_id),
+            assignee.branch_id == int(branch_id),
+        )
     return query
 
 
@@ -143,13 +167,25 @@ def create_task(
     branch_id: int | None = None,
 ):
     _ensure_task_pass_columns(db)
-    if (company_id is not None or branch_id is not None) and (
+    if company_id is None:
+        raise ValueError("company_id is required")
+
+    if (
         _get_user_in_scope(db, user_id=assigned_by, company_id=company_id, branch_id=branch_id) is None
         or _get_user_in_scope(db, user_id=assigned_to, company_id=company_id, branch_id=branch_id) is None
     ):
         raise ValueError("Assigner/assignee not in tenant scope")
 
+    task_company_id = _resolve_task_company_id(
+        db,
+        company_id=int(company_id),
+        project_id=project_id,
+        assigned_by=assigned_by,
+        assigned_to=assigned_to,
+    )
+
     task = Task(
+        company_id=task_company_id,
         title=title,
         description=description,
         assigned_by=assigned_by,
