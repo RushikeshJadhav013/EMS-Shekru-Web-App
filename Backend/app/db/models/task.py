@@ -14,6 +14,7 @@ def get_now_ist():
 class Task(Base):
     __tablename__ = "tasks"
     task_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(String(1024))
     assigned_by = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))

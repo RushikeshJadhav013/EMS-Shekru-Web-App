@@ -132,7 +132,7 @@ def admin_dashboard(
     task_base = (
         db.query(Task)
         .join(User, User.user_id == Task.assigned_to)
-        .filter(base_user_filter)
+        .filter(Task.company_id == int(scope["company_id"]), base_user_filter)
     )
 
     active_tasks = task_base.filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])).count() or 0
@@ -733,7 +733,10 @@ def manager_dashboard(
     for lead in team_leads:
         lead_tasks = (
             db.query(Task)
-            .filter(Task.assigned_by == lead.user_id)
+            .filter(
+                Task.assigned_by == lead.user_id,
+                Task.company_id == int(scope["company_id"]),
+            )
             .all()
         )
         total_lead_tasks = len(lead_tasks)

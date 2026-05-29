@@ -1581,11 +1581,15 @@ async def employee_check_out_json(
         from datetime import date
         
         today = date.today()
-        overdue_tasks = db.query(Task).filter(
+        assignee = db.query(User).filter(User.user_id == payload.user_id).first()
+        overdue_q = db.query(Task).filter(
             Task.assigned_to == payload.user_id,
             Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
-            Task.due_date == today
-        ).all()
+            Task.due_date == today,
+        )
+        if assignee and assignee.company_id is not None:
+            overdue_q = overdue_q.filter(Task.company_id == int(assignee.company_id))
+        overdue_tasks = overdue_q.all()
         
         # If there are tasks due today, require a reason
         if overdue_tasks:
