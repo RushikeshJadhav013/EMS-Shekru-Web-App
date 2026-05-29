@@ -1,15 +1,16 @@
-from sqlalchemy import Column, Integer, String, Time, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, Time, DateTime, Boolean, ForeignKey
 from app.utils.timezone import now_ist
 
 from app.db.database import Base
 
 
 class OfficeTiming(Base):
-    """Stores office hour configuration globally or per department."""
+    """Stores office hour configuration per company, optionally per department."""
 
     __tablename__ = "office_timings"
 
     id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     department = Column(String(255), nullable=True, index=True)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
@@ -19,5 +20,5 @@ class OfficeTiming(Base):
     created_at = Column(DateTime, default=now_ist)
     updated_at = Column(DateTime, default=now_ist, onupdate=now_ist)
 
-    def is_global(self) -> bool:
+    def is_company_default(self) -> bool:
         return self.department is None or self.department == ""

@@ -9,7 +9,7 @@ from app.db.models.user import User
 from app.db.models.attendance import Attendance
 from app.db.models.leave import Leave
 from app.db.models.task import Task
-from app.db.models.office_timing import OfficeTiming
+from app.services.office_timing_service import build_office_timings_map
 from app.db.models.department import Department
 from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user, require_roles, get_tenant_scope
@@ -82,12 +82,7 @@ def admin_dashboard(
     on_leave_today = on_leave_query.scalar() or 0
     
     # Calculate late arrivals using office timing configuration
-    # First get office timings for proper late calculation
-    office_timings_query = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
-    office_timings_map = {}
-    for timing in office_timings_query:
-        key = timing.department if timing.department else "__global__"
-        office_timings_map[key] = timing
+    office_timings_map = build_office_timings_map(db, int(scope["company_id"]))
     
     # Get all attendance records for today with user info for late calculation
     attendance_for_late_calc_query = (
@@ -207,11 +202,7 @@ def admin_dashboard(
     # Get office timings for status calculation
     from datetime import time as dt_time, timedelta
     
-    office_timings_map = {}
-    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
-    for timing in office_timings:
-        key = timing.department if timing.department else "__global__"
-        office_timings_map[key] = timing
+    office_timings_map = build_office_timings_map(db, int(scope["company_id"]))
     
     recent_activities = []
     for att, usr in attendance_today:
@@ -429,11 +420,7 @@ def hr_dashboard(
         })
 
     # Get office timings for status calculation
-    office_timings_map = {}
-    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
-    for timing in office_timings:
-        key = timing.department if timing.department else "__global__"
-        office_timings_map[key] = timing
+    office_timings_map = build_office_timings_map(db, int(scope["company_id"]))
     
     for att, usr in attendance_today:
         # Get applicable office timing (department-specific or global)
@@ -637,11 +624,7 @@ def manager_dashboard(
         .all()
     )
     # Get office timings for status calculation
-    office_timings_map = {}
-    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
-    for timing in office_timings:
-        key = timing.department if timing.department else "__global__"
-        office_timings_map[key] = timing
+    office_timings_map = build_office_timings_map(db, int(scope["company_id"]))
     
     activities = []
     for att, usr in attendance_today:
@@ -879,11 +862,7 @@ def team_lead_dashboard(
         .all()
     )
     # Get office timings for status calculation
-    office_timings_map = {}
-    office_timings = db.query(OfficeTiming).filter(OfficeTiming.is_active == True).all()
-    for timing in office_timings:
-        key = timing.department if timing.department else "__global__"
-        office_timings_map[key] = timing
+    office_timings_map = build_office_timings_map(db, int(scope["company_id"]))
     
     recent_activities = []
     for att, usr in attendance_today:

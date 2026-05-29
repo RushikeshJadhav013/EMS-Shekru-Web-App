@@ -25,6 +25,12 @@ from app.schemas.office_timing_schema import OfficeTimingOut, OfficeTimingCreate
 from app.utils.timezone import now_ist, get_today_bounds_ist, get_date_bounds_ist
 from app.crud.attendance_grid_export import export_monthly_grid_pdf, export_monthly_grid_csv
 from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
+from app.services.office_timing_service import (
+    build_office_timing_cache,
+    get_timing_for_user_department,
+    normalize_department,
+    resolve_office_timing,
+)
 
 
 
@@ -428,64 +434,19 @@ def _sanitize_text(value: Optional[str], *, max_length: int = 250) -> Optional[s
 # ---------------------------------
 
 def _normalize_department_value(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
+    return normalize_department(value)
 
 
 def _serialize_office_timing(timing: OfficeTiming) -> OfficeTimingOut:
     return OfficeTimingOut(
         id=timing.id,
+        company_id=int(timing.company_id),
         department=_normalize_department_value(timing.department),
         start_time=timing.start_time.strftime("%H:%M"),
         end_time=timing.end_time.strftime("%H:%M"),
         check_in_grace_minutes=timing.check_in_grace_minutes or 0,
         check_out_grace_minutes=timing.check_out_grace_minutes or 0,
     )
-
-
-def _build_office_timing_cache(db: Session) -> Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]:
-    records = (
-        db.query(OfficeTiming)
-        .filter(OfficeTiming.is_active.is_(True))
-        .order_by(OfficeTiming.updated_at.desc())
-        .all()
-    )
-
-    global_entry: Optional[OfficeTiming] = None
-    department_entries: Dict[str, OfficeTiming] = {}
-
-    for entry in records:
-        dept_key = _normalize_department_value(entry.department)
-        if dept_key is None:
-            if global_entry is None:
-                global_entry = entry
-            else:
-                if entry.updated_at and (global_entry.updated_at is None or entry.updated_at > global_entry.updated_at):
-                    global_entry = entry
-        else:
-            existing = department_entries.get(dept_key)
-            if existing is None or (
-                entry.updated_at and (existing.updated_at is None or entry.updated_at > existing.updated_at)
-            ):
-                department_entries[dept_key] = entry
-
-    return global_entry, department_entries
-
-
-def _resolve_office_timing(
-    db: Session,
-    department: Optional[str],
-    cache: Optional[Tuple[Optional[OfficeTiming], Dict[str, OfficeTiming]]] = None,
-) -> Optional[OfficeTiming]:
-    if cache is None:
-        cache = _build_office_timing_cache(db)
-    global_entry, department_entries = cache
-    dept_key = _normalize_department_value(department)
-    if dept_key and dept_key in department_entries:
-        return department_entries[dept_key]
-    return global_entry
 
 
 def _to_local_timezone(dt: Optional[datetime]) -> Optional[datetime]:
@@ -692,8 +653,7 @@ def get_attendance_summary(db: Session, current_user: User) -> Dict[str, Any]:
             .all()
         )
 
-        global_timing, dept_cache = _build_office_timing_cache(db)
-
+        timing_caches: dict[int, tuple] = {}
         present_user_ids = set()
         late_arrivals = 0
         early_departures = 0
@@ -701,7 +661,12 @@ def get_attendance_summary(db: Session, current_user: User) -> Dict[str, Any]:
 
         for attendance, user in records:
             present_user_ids.add(user.user_id)
-            effective_timing = _resolve_office_timing(db, user.department, (global_timing, dept_cache))
+            effective_timing = get_timing_for_user_department(
+                db,
+                department=user.department,
+                company_id=getattr(user, "company_id", None),
+                caches=timing_caches,
+            )
             evaluation = _evaluate_attendance_status(attendance.check_in, attendance.check_out, effective_timing)
 
             if evaluation["check_in_status"] == "late":
@@ -816,7 +781,7 @@ def get_attendance_summary_scoped(db: Session, current_user: User, scope: dict) 
             .all()
         )
 
-        timing_cache = _build_office_timing_cache(db)
+        timing_cache = build_office_timing_cache(db, int(scope["company_id"]))
         present_user_ids = set()
         late_arrivals = 0
         early_departures = 0
@@ -824,7 +789,12 @@ def get_attendance_summary_scoped(db: Session, current_user: User, scope: dict) 
 
         for attendance, user in records:
             present_user_ids.add(user.user_id)
-            timing = _resolve_office_timing(db, user.department, cache=timing_cache)
+            timing = resolve_office_timing(
+                db,
+                user.department,
+                int(scope["company_id"]),
+                cache=timing_cache,
+            )
             evaluation = _evaluate_attendance_status(attendance.check_in, attendance.check_out, timing)
             if evaluation["check_in_status"] == "late":
                 late_arrivals += 1
@@ -910,6 +880,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
                 User.name,
                 User.email,
                 User.department,
+                User.company_id,
                 Attendance.attendance_id,
                 Attendance.check_in,
                 Attendance.check_out,
@@ -937,6 +908,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
                     User.name,
                     User.email,
                     User.department,
+                    User.company_id,
                     Attendance.attendance_id,
                     Attendance.check_in,
                     Attendance.check_out,
@@ -959,7 +931,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
 
         # Prepare the final result with only users who have checked in today
         results: List[Dict[str, Any]] = []
-        timing_cache = _build_office_timing_cache(db)
+        timing_caches: dict[int, tuple] = {}
 
         for row in raw_records:
             (
@@ -968,6 +940,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
                 name,
                 email,
                 department,
+                company_id,
                 attendance_id,
                 check_in,
                 check_out,
@@ -1006,7 +979,12 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
                 }
             )
 
-            timing = _resolve_office_timing(db, department, timing_cache)
+            timing = get_timing_for_user_department(
+                db,
+                department=department,
+                company_id=int(scope["company_id"]) if scope is not None else company_id,
+                caches=timing_caches,
+            )
             evaluation = _evaluate_attendance_status(check_in, check_out, timing)
             payload.update(
                 {
@@ -1739,20 +1717,29 @@ def get_self_attendance(
 
     # Enrich with basic user details (employee_id, name, department) like /attendance/today
     user_row = (
-        db.query(User.employee_id, User.name, User.department)
+        db.query(User.employee_id, User.name, User.department, User.company_id)
         .filter(User.user_id == user_id, User.is_active.is_(True))
         .first()
     )
 
     response: list[dict] = []
-    timing_cache = _build_office_timing_cache(db)
+    timing_cache = None
+    if user_row and user_row.company_id is not None:
+        timing_cache = build_office_timing_cache(db, int(user_row.company_id))
     for record in records:
         payload = _prepare_attendance_payload(record)
         # Add attendance evaluation fields (consistent with /attendance/today style)
-        dept_for_timing = None
-        if user_row:
-            dept_for_timing = user_row.department
-        timing = _resolve_office_timing(db, dept_for_timing, cache=timing_cache)
+        dept_for_timing = user_row.department if user_row else None
+        timing = (
+            resolve_office_timing(
+                db,
+                dept_for_timing,
+                int(user_row.company_id),
+                cache=timing_cache,
+            )
+            if user_row and user_row.company_id is not None
+            else None
+        )
         evaluation = _evaluate_attendance_status(record.check_in, record.check_out, timing)
         payload.update(
             {
@@ -2189,7 +2176,7 @@ def get_all_attendance_history(
 
     # Format the response - include email and other user details
     result = []
-    timing_cache = _build_office_timing_cache(db)
+    timing_cache = build_office_timing_cache(db, int(scope["company_id"]))
     for att, name, dept, emp_id, email in records:
         payload = _prepare_attendance_payload(att)
         payload.update(
@@ -2209,7 +2196,12 @@ def get_all_attendance_history(
         if isinstance(check_out_value, datetime):
             payload["check_out"] = check_out_value.isoformat()
 
-        timing = _resolve_office_timing(db, dept, timing_cache)
+        timing = resolve_office_timing(
+            db,
+            dept,
+            int(scope["company_id"]),
+            cache=timing_cache,
+        )
         evaluation = _evaluate_attendance_status(att.check_in, att.check_out, timing)
         payload.update(
             {
@@ -2228,6 +2220,7 @@ def get_all_attendance_history(
 def list_office_timings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     # Only Admins can view office hours
     if current_user.role != RoleEnum.ADMIN:
@@ -2238,7 +2231,10 @@ def list_office_timings(
 
     records = (
         db.query(OfficeTiming)
-        .filter(OfficeTiming.is_active.is_(True))
+        .filter(
+            OfficeTiming.is_active.is_(True),
+            OfficeTiming.company_id == int(scope["company_id"]),
+        )
         .order_by(OfficeTiming.department.is_(None).desc(), OfficeTiming.department.asc())
         .all()
     )
@@ -2250,6 +2246,7 @@ def get_effective_office_timing(
     department: Optional[str] = Query(default=None, description="Department to resolve"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     from app.utils.department_utils import department_tokens_lower
 
@@ -2286,7 +2283,7 @@ def get_effective_office_timing(
 
     # For ADMIN and HR, the provided department (or None) is used as-is.
 
-    timing = _resolve_office_timing(db, department)
+    timing = resolve_office_timing(db, department, int(scope["company_id"]))
     if not timing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office timing not configured")
     return _serialize_office_timing(timing)
@@ -2297,6 +2294,7 @@ def upsert_office_timing(
     payload: OfficeTimingCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if current_user.role != RoleEnum.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can modify office timings")
@@ -2312,7 +2310,11 @@ def upsert_office_timing(
     if datetime.combine(now_ist().date(), end_time_obj) <= datetime.combine(now_ist().date(), start_time_obj):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End time must be after start time")
 
-    query = db.query(OfficeTiming).filter(OfficeTiming.is_active.is_(True))
+    company_id = int(scope["company_id"])
+    query = db.query(OfficeTiming).filter(
+        OfficeTiming.is_active.is_(True),
+        OfficeTiming.company_id == company_id,
+    )
     if normalized_department is None:
         existing = query.filter(OfficeTiming.department.is_(None)).first()
     else:
@@ -2328,6 +2330,7 @@ def upsert_office_timing(
         timing = existing
     else:
         timing = OfficeTiming(
+            company_id=company_id,
             department=normalized_department,
             start_time=start_time_obj,
             end_time=end_time_obj,
@@ -2347,11 +2350,19 @@ def deactivate_office_timing(
     timing_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
 ):
     if current_user.role != RoleEnum.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admin can delete office timings")
 
-    timing = db.query(OfficeTiming).filter(OfficeTiming.id == timing_id).first()
+    timing = (
+        db.query(OfficeTiming)
+        .filter(
+            OfficeTiming.id == timing_id,
+            OfficeTiming.company_id == int(scope["company_id"]),
+        )
+        .first()
+    )
     if not timing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office timing not found")
 
