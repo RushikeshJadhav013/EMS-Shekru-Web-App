@@ -67,6 +67,7 @@ class VacancyUpdate(BaseModel):
 
 class VacancyOut(VacancyBase):
     vacancy_id: int = Field(..., gt=0)
+    company_id: int = Field(..., gt=0)
     created_by: Optional[int] = Field(None, gt=0)
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -174,6 +175,7 @@ class CandidateUpdate(BaseModel):
 
 class CandidateOutNoInterview(CandidateBase):
     candidate_id: int = Field(..., gt=0)
+    company_id: int = Field(..., gt=0)
     resume_url: Optional[str] = None
     status: Literal['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn']
     applied_at: datetime

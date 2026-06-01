@@ -33,41 +33,50 @@ router = APIRouter(
 )
 
 
-def _vacancy_scope_query(db: Session, scope: dict):
-    company_id = scope.get("company_id")
+def _vacancy_scope_filters(scope: dict) -> list:
+    clauses = [Vacancy.company_id == int(scope["company_id"])]
     branch_id = scope.get("branch_id")
-    q = db.query(Vacancy).join(User, User.user_id == Vacancy.created_by)
-    q = q.filter(User.company_id == company_id)
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
-    return q
+        clauses.append(User.branch_id == int(branch_id))
+    return clauses
+
+
+def _vacancy_scope_query(db: Session, scope: dict):
+    q = db.query(Vacancy)
+    if scope.get("branch_id") is not None:
+        q = q.join(User, User.user_id == Vacancy.created_by)
+    return q.filter(*_vacancy_scope_filters(scope))
+
+
+def _candidate_scope_filters(scope: dict) -> list:
+    clauses = [Candidate.company_id == int(scope["company_id"])]
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(User.branch_id == int(branch_id))
+    return clauses
 
 
 def _candidate_scope_query(db: Session, scope: dict):
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
-    q = (
-        db.query(Candidate)
-        .join(Vacancy, Vacancy.vacancy_id == Candidate.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
-        .filter(User.company_id == company_id)
-    )
-    if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
-    return q
+    q = db.query(Candidate)
+    if scope.get("branch_id") is not None:
+        q = (
+            q.join(Vacancy, Vacancy.vacancy_id == Candidate.vacancy_id)
+            .join(User, User.user_id == Vacancy.created_by)
+        )
+    return q.filter(*_candidate_scope_filters(scope))
 
 
 def _interview_scope_query(db: Session, scope: dict):
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
     q = (
         db.query(Interview)
         .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
-        .filter(User.company_id == company_id)
+        .filter(Vacancy.company_id == int(scope["company_id"]))
     )
+    branch_id = scope.get("branch_id")
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.join(User, User.user_id == Vacancy.created_by).filter(
+            User.branch_id == int(branch_id)
+        )
     return q
 
 
@@ -100,7 +109,8 @@ def create_vacancy(
     
     db_vacancy = Vacancy(
         **vacancy.model_dump(),
-        created_by=current_user.user_id
+        created_by=current_user.user_id,
+        company_id=int(scope["company_id"]),
     )
     db.add(db_vacancy)
     db.commit()
@@ -318,11 +328,16 @@ def create_candidate(
             detail=f"Invalid candidate data: {str(e)}"
         )
     
-    # Enforce unique phone number (if provided)
+    company_id = int(scope["company_id"])
+
+    # Enforce unique phone number within company (if provided)
     if candidate_obj.phone:
         existing_phone = (
             db.query(Candidate)
-            .filter(Candidate.phone == candidate_obj.phone)
+            .filter(
+                Candidate.phone == candidate_obj.phone,
+                Candidate.company_id == company_id,
+            )
             .first()
         )
         if existing_phone:
@@ -331,10 +346,13 @@ def create_candidate(
                 detail="A candidate with this phone number already exists"
             )
 
-    # Enforce unique email
+    # Enforce unique email within company
     existing_email = (
         db.query(Candidate)
-        .filter(Candidate.email == candidate_obj.email)
+        .filter(
+            Candidate.email == candidate_obj.email,
+            Candidate.company_id == company_id,
+        )
         .first()
     )
     if existing_email:
@@ -363,7 +381,8 @@ def create_candidate(
     db_candidate = Candidate(
         **candidate_obj.model_dump(exclude={"resume_url"}),
         resume_url=final_resume_url,
-        status="applied"
+        status="applied",
+        company_id=company_id,
     )
     db.add(db_candidate)
     db.commit()
@@ -395,7 +414,11 @@ def get_candidates(
     
     result = []
     for candidate in candidates:
-        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+        vacancy = (
+            _vacancy_scope_query(db, scope)
+            .filter(Vacancy.vacancy_id == candidate.vacancy_id)
+            .first()
+        )
         candidate_out = CandidateOutNoInterview.model_validate(candidate)
         
         if vacancy:
@@ -424,15 +447,24 @@ def get_shortlisted_candidates(
     
     result = []
     for candidate in candidates:
-        vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+        vacancy = (
+            _vacancy_scope_query(db, scope)
+            .filter(Vacancy.vacancy_id == candidate.vacancy_id)
+            .first()
+        )
         
         # Get next upcoming interview for this candidate
-        next_interview = db.query(Interview).filter(
-            and_(
-                Interview.candidate_id == candidate.candidate_id,
-                Interview.status.in_(['scheduled', 'rescheduled'])
+        next_interview = (
+            _interview_scope_query(db, scope)
+            .filter(
+                and_(
+                    Interview.candidate_id == candidate.candidate_id,
+                    Interview.status.in_(['scheduled', 'rescheduled']),
+                )
             )
-        ).order_by(Interview.start_time.asc()).first()
+            .order_by(Interview.start_time.asc())
+            .first()
+        )
         
         candidate_out = CandidateOut.model_validate(candidate)
         if vacancy:
@@ -462,7 +494,11 @@ def get_candidate(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     
-    vacancy = db.query(Vacancy).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    vacancy = (
+        _vacancy_scope_query(db, scope)
+        .filter(Vacancy.vacancy_id == candidate.vacancy_id)
+        .first()
+    )
     result = CandidateOutNoInterview.model_validate(candidate)
     
     if vacancy:
@@ -809,10 +845,10 @@ def update_candidate(
         # Business logic validation: when setting status to 'interview', 
         # there should be at least one scheduled interview
         if new_status == 'interview':
-            existing_interview = db.query(Interview).filter(
+            existing_interview = _interview_scope_query(db, scope).filter(
                 and_(
                     Interview.candidate_id == candidate_id,
-                    Interview.status.in_(['scheduled', 'rescheduled'])
+                    Interview.status.in_(['scheduled', 'rescheduled']),
                 )
             ).first()
             
@@ -825,10 +861,10 @@ def update_candidate(
         # Business logic validation: when setting status to 'hired',
         # there should be at least one scheduled, rescheduled, or completed interview
         if new_status == 'hired':
-            existing_interview = db.query(Interview).filter(
+            existing_interview = _interview_scope_query(db, scope).filter(
                 and_(
                     Interview.candidate_id == candidate_id,
-                    Interview.status.in_(['scheduled', 'rescheduled', 'completed'])
+                    Interview.status.in_(['scheduled', 'rescheduled', 'completed']),
                 )
             ).first()
             
@@ -838,7 +874,9 @@ def update_candidate(
                     detail="Cannot hire candidate without scheduling an interview first."
                 )
 
-    # Enforce unique phone number on update (if phone is being changed)
+    company_id = candidate.company_id
+
+    # Enforce unique phone number on update within company (if phone is being changed)
     new_phone = update_data.get("phone")
     if new_phone:
         existing_phone = (
@@ -846,6 +884,7 @@ def update_candidate(
             .filter(
                 Candidate.phone == new_phone,
                 Candidate.candidate_id != candidate_id,
+                Candidate.company_id == company_id,
             )
             .first()
         )
@@ -855,7 +894,7 @@ def update_candidate(
                 detail="A candidate with this phone number already exists"
             )
 
-    # Enforce unique email on update (if email is being changed)
+    # Enforce unique email on update within company (if email is being changed)
     new_email = update_data.get("email")
     if new_email:
         existing_email = (
@@ -863,6 +902,7 @@ def update_candidate(
             .filter(
                 Candidate.email == new_email,
                 Candidate.candidate_id != candidate_id,
+                Candidate.company_id == company_id,
             )
             .first()
         )

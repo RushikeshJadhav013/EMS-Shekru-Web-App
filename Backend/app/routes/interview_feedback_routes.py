@@ -26,35 +26,38 @@ router = APIRouter(
 
 
 def _interview_in_scope(db: Session, scope: dict, interview_id: int) -> Interview | None:
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
     q = (
         db.query(Interview)
         .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
-        .filter(Interview.interview_id == interview_id, User.company_id == company_id)
+        .filter(
+            Interview.interview_id == interview_id,
+            Vacancy.company_id == int(scope["company_id"]),
+        )
     )
+    branch_id = scope.get("branch_id")
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.join(User, User.user_id == Vacancy.created_by).filter(
+            User.branch_id == int(branch_id)
+        )
     return q.first()
 
 
 def _feedback_in_scope(db: Session, scope: dict, interview_id: int, feedback_id: int) -> InterviewFeedback | None:
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
     q = (
         db.query(InterviewFeedback)
         .join(Interview, Interview.interview_id == InterviewFeedback.interview_id)
         .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
         .filter(
             InterviewFeedback.id == feedback_id,
             InterviewFeedback.interview_id == interview_id,
-            User.company_id == company_id,
+            Vacancy.company_id == int(scope["company_id"]),
         )
     )
+    branch_id = scope.get("branch_id")
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.join(User, User.user_id == Vacancy.created_by).filter(
+            User.branch_id == int(branch_id)
+        )
     return q.first()
 
 
@@ -161,15 +164,16 @@ def list_interview_feedback(
         db.query(InterviewFeedback)
         .join(Interview, Interview.interview_id == InterviewFeedback.interview_id)
         .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
         .filter(
             InterviewFeedback.interview_id == interview_id,
-            User.company_id == scope.get("company_id"),
+            Vacancy.company_id == int(scope["company_id"]),
         )
         .order_by(InterviewFeedback.created_at.asc())
     )
     if scope.get("branch_id") is not None:
-        q = q.filter(User.branch_id == scope.get("branch_id"))
+        q = q.join(User, User.user_id == Vacancy.created_by).filter(
+            User.branch_id == int(scope["branch_id"])
+        )
     feedback_list = q.all()
 
     # Preload panel member info to avoid repeated queries

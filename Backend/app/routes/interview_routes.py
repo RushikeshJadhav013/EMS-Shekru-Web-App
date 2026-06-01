@@ -72,43 +72,44 @@ def _validate_interview_status_transition(current_status: str, new_status: str) 
 
 
 def _interview_scope_query(db: Session, scope: dict):
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
     q = (
         db.query(Interview)
         .join(Vacancy, Vacancy.vacancy_id == Interview.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
-        .filter(User.company_id == company_id)
+        .filter(Vacancy.company_id == int(scope["company_id"]))
     )
+    branch_id = scope.get("branch_id")
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.join(User, User.user_id == Vacancy.created_by).filter(
+            User.branch_id == int(branch_id)
+        )
     return q
 
 
 def _candidate_in_scope(db: Session, scope: dict, candidate_id: int) -> Candidate | None:
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
-    q = (
-        db.query(Candidate)
-        .join(Vacancy, Vacancy.vacancy_id == Candidate.vacancy_id)
-        .join(User, User.user_id == Vacancy.created_by)
-        .filter(Candidate.candidate_id == candidate_id, User.company_id == company_id)
+    q = db.query(Candidate).filter(
+        Candidate.candidate_id == candidate_id,
+        Candidate.company_id == int(scope["company_id"]),
     )
+    branch_id = scope.get("branch_id")
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = (
+            q.join(Vacancy, Vacancy.vacancy_id == Candidate.vacancy_id)
+            .join(User, User.user_id == Vacancy.created_by)
+            .filter(User.branch_id == int(branch_id))
+        )
     return q.first()
 
 
 def _vacancy_in_scope(db: Session, scope: dict, vacancy_id: int) -> Vacancy | None:
-    company_id = scope.get("company_id")
-    branch_id = scope.get("branch_id")
-    q = (
-        db.query(Vacancy)
-        .join(User, User.user_id == Vacancy.created_by)
-        .filter(Vacancy.vacancy_id == vacancy_id, User.company_id == company_id)
+    q = db.query(Vacancy).filter(
+        Vacancy.vacancy_id == vacancy_id,
+        Vacancy.company_id == int(scope["company_id"]),
     )
+    branch_id = scope.get("branch_id")
     if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.join(User, User.user_id == Vacancy.created_by).filter(
+            User.branch_id == int(branch_id)
+        )
     return q.first()
 
 
