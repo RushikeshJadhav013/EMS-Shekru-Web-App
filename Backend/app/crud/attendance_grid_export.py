@@ -397,13 +397,18 @@ def export_monthly_detailed_pdf(
                 continue
 
             # attendance records
+            day_filters = [
+                Attendance.user_id == user.user_id,
+                Attendance.check_in >= day_start,
+                Attendance.check_in < day_end,
+            ]
+            if user.company_id is not None:
+                day_filters.append(Attendance.company_id == int(user.company_id))
+            elif company_id is not None:
+                day_filters.append(Attendance.company_id == int(company_id))
             records = (
                 db.query(Attendance)
-                .filter(
-                    Attendance.user_id == user.user_id,
-                    Attendance.check_in >= day_start,
-                    Attendance.check_in < day_end
-                )
+                .filter(*day_filters)
                 .order_by(Attendance.check_in.asc())
                 .all()
             )

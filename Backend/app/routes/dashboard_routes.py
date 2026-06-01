@@ -32,6 +32,10 @@ def _user_scope_filters(scope: dict) -> list:
     return clauses
 
 
+def _attendance_scope_filters(scope: dict) -> list:
+    return [Attendance.company_id == int(scope["company_id"])]
+
+
 def _today_bounds():
     """Get today's bounds in IST for database queries"""
     return get_today_bounds_ist()
@@ -62,6 +66,7 @@ def admin_dashboard(
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             base_user_filter,
@@ -89,6 +94,7 @@ def admin_dashboard(
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             base_user_filter,
@@ -167,6 +173,7 @@ def admin_dashboard(
             db.query(func.count(Attendance.attendance_id))
             .join(User, User.user_id == Attendance.user_id)
             .filter(
+                *_attendance_scope_filters(scope),
                 Attendance.check_in >= today_start,
                 Attendance.check_in < today_end,
                 base_user_filter,
@@ -187,6 +194,7 @@ def admin_dashboard(
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             base_user_filter,
@@ -291,6 +299,7 @@ def hr_dashboard(
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             hr_base_user_filter,
@@ -314,6 +323,7 @@ def hr_dashboard(
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             hr_base_user_filter,
@@ -383,6 +393,7 @@ def hr_dashboard(
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             hr_base_user_filter,
@@ -531,6 +542,7 @@ def manager_dashboard(
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             dept_match,
             role_filter,
             Attendance.check_in >= today_start,
@@ -613,6 +625,7 @@ def manager_dashboard(
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             dept_match,
             role_filter,
             Attendance.check_in >= today_start,
@@ -799,6 +812,7 @@ def team_lead_dashboard(
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             dept_match,
             role_filter,
             Attendance.check_in >= today_start,
@@ -854,6 +868,7 @@ def team_lead_dashboard(
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
         .filter(
+            *_attendance_scope_filters(scope),
             dept_match,
             role_filter,
             Attendance.check_in >= today_start,
@@ -947,14 +962,24 @@ def employee_dashboard(
     month_start = today_start.replace(day=1)
     total_hours = (
         db.query(func.coalesce(func.sum(Attendance.total_hours), 0.0))
-        .filter(Attendance.user_id == user_id, Attendance.check_in >= month_start, Attendance.check_in < today_end)
+        .filter(
+            Attendance.user_id == user_id,
+            Attendance.company_id == int(scope["company_id"]),
+            Attendance.check_in >= month_start,
+            Attendance.check_in < today_end,
+        )
         .scalar()
         or 0.0
     )
     # Attendance percentage not modeled precisely; compute days present / days elapsed
     days_present = (
         db.query(func.count(Attendance.attendance_id))
-        .filter(Attendance.user_id == user_id, Attendance.check_in >= month_start, Attendance.check_in < today_end)
+        .filter(
+            Attendance.user_id == user_id,
+            Attendance.company_id == int(scope["company_id"]),
+            Attendance.check_in >= month_start,
+            Attendance.check_in < today_end,
+        )
         .scalar() or 0
     )
     days_elapsed = (today_end - month_start).days

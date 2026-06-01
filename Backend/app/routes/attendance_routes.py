@@ -38,17 +38,29 @@ from app.services.office_timing_service import (
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 # -------------------------------------------------------------------
-# Tenant scoping helpers (Option A: no DB-level company_id on attendances)
+# Tenant scoping helpers
 # -------------------------------------------------------------------
-def _user_scope_filters(scope: dict) -> list:
+def _user_scope_filters(scope: dict, user_alias=User) -> list:
     """
-    Build SQLAlchemy filter clauses to restrict queries to the resolved tenant scope.
-    Scope comes from `get_tenant_scope()` and always includes company_id; branch_id may be None.
+    Build SQLAlchemy filter clauses to restrict user queries to the resolved tenant scope.
     """
-    clauses = [User.company_id == scope["company_id"]]
+    clauses = [user_alias.company_id == scope["company_id"]]
     branch_id = scope.get("branch_id")
     if branch_id is not None:
-        clauses.append(User.branch_id == branch_id)
+        clauses.append(user_alias.branch_id == branch_id)
+    return clauses
+
+
+def _attendance_scope_filters(scope: dict) -> list:
+    return [Attendance.company_id == int(scope["company_id"])]
+
+
+def _attendance_tenant_filters(scope: dict, user_alias=User) -> list:
+    """Filters for attendance queries joined to users (company on row, branch on user)."""
+    clauses = list(_attendance_scope_filters(scope))
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == int(branch_id))
     return clauses
 
 
@@ -91,12 +103,15 @@ async def logout_with_pause(
         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
         
-        attendance = db.query(Attendance).filter(
+        attendance_q = db.query(Attendance).filter(
             Attendance.user_id == payload.user_id,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             Attendance.check_out.is_(None)  # Only active attendance
-        ).first()
+        )
+        if current_user.company_id is not None:
+            attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
+        attendance = attendance_q.first()
         
         if attendance:
             # Get current online status
@@ -163,12 +178,15 @@ async def login_resume(
         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
         
-        attendance = db.query(Attendance).filter(
+        attendance_q = db.query(Attendance).filter(
             Attendance.user_id == payload.user_id,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             Attendance.check_out.is_(None)  # Only active attendance
-        ).first()
+        )
+        if current_user.company_id is not None:
+            attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
+        attendance = attendance_q.first()
         
         if attendance:
             # Get current online status
@@ -378,7 +396,7 @@ def _cleanup_broken_selfie_urls(db: Session, scope: dict | None = None) -> None:
     try:
         q = db.query(Attendance).filter(Attendance.selfie.isnot(None))
         if scope is not None:
-            q = q.join(User, Attendance.user_id == User.user_id).filter(*_user_scope_filters(scope))
+            q = q.join(User, Attendance.user_id == User.user_id).filter(*_attendance_tenant_filters(scope))
         attendances = q.all()
         cleaned_count = 0
         
@@ -543,6 +561,7 @@ def _prepare_attendance_payload(attendance: Attendance) -> Dict[str, Any]:
 
     return {
         "attendance_id": attendance.attendance_id,
+        "company_id": int(attendance.company_id),
         "user_id": attendance.user_id,
         "employee_id": getattr(attendance, "employee_id", None),
         "name": getattr(attendance, "name", None),
@@ -776,7 +795,7 @@ def get_attendance_summary_scoped(db: Session, current_user: User, scope: dict) 
                 Attendance.check_in <= today_end,
                 User.is_active.is_(True),
                 User.user_id.in_(allowed_user_ids),
-                *_user_scope_filters(scope),
+                *_attendance_tenant_filters(scope),
             )
             .all()
         )
@@ -923,7 +942,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
                     Attendance.check_in >= today_start,
                     Attendance.check_in < today_end,
                     User.is_active == True,  # noqa: E712
-                    *_user_scope_filters(scope),
+                    *_attendance_tenant_filters(scope),
                 )
                 .order_by(Attendance.check_in.desc())
                 .all()
@@ -959,6 +978,7 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
 
             attendance_obj = Attendance(
                 attendance_id=attendance_id,
+                company_id=company_id,
                 user_id=user_id,
                 check_in=check_in,
                 check_out=check_out,
@@ -1286,6 +1306,12 @@ async def employee_check_in_json(
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+        if user.company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User is not assigned to a company",
+            )
+        company_id = int(user.company_id)
 
         selfie_path = None
         if payload.selfie:
@@ -1311,6 +1337,7 @@ async def employee_check_in_json(
             db.query(Attendance)
             .filter(
                 Attendance.user_id == payload.user_id,
+                Attendance.company_id == company_id,
                 Attendance.check_in >= today_start,
                 Attendance.check_out.is_(None)
             )
@@ -1324,6 +1351,7 @@ async def employee_check_in_json(
 
         # Create new check-in with location data
         attendance = Attendance(
+            company_id=company_id,
             user_id=payload.user_id,
             check_in=now_ist(),
             gps_location=_compose_location_entry(None, "Check-in", processed_location),
@@ -1551,6 +1579,12 @@ async def employee_check_out_json(
         user = db.query(User).filter(User.user_id == payload.user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+        if user.company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User is not assigned to a company",
+            )
+        company_id = int(user.company_id)
 
         selfie_path = None
         if payload.selfie:
@@ -1644,6 +1678,7 @@ async def employee_check_out_json(
             db.query(Attendance)
             .filter(
                 Attendance.user_id == payload.user_id,
+                Attendance.company_id == company_id,
                 Attendance.check_in >= today_start,
                 Attendance.check_out.is_(None)
             )
@@ -1712,18 +1747,25 @@ def get_self_attendance(
         )
 
     six_months_ago = now_ist() - timedelta(days=180)
-    records = (
-        db.query(Attendance)
-        .filter(Attendance.user_id == user_id, Attendance.check_in >= six_months_ago)
-        .order_by(Attendance.check_in.desc())
-        .all()
-    )
-
-    # Enrich with basic user details (employee_id, name, department) like /attendance/today
     user_row = (
         db.query(User.employee_id, User.name, User.department, User.company_id)
         .filter(User.user_id == user_id, User.is_active.is_(True))
         .first()
+    )
+    if not user_row or user_row.company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not assigned to a company",
+        )
+    records = (
+        db.query(Attendance)
+        .filter(
+            Attendance.user_id == user_id,
+            Attendance.company_id == int(user_row.company_id),
+            Attendance.check_in >= six_months_ago,
+        )
+        .order_by(Attendance.check_in.desc())
+        .all()
     )
 
     response: list[dict] = []
@@ -2136,7 +2178,7 @@ def get_all_attendance_history(
             User.email,
         )
         .join(User, Attendance.user_id == User.user_id)
-        .filter(*_user_scope_filters(scope))
+        .filter(*_attendance_tenant_filters(scope))
     )
 
     if user_role == RoleEnum.ADMIN:
@@ -2394,10 +2436,13 @@ def update_online_status(
     from app.db.models.online_status import OnlineStatus
     
     # Verify attendance record exists and belongs to user
-    attendance = db.query(Attendance).filter(
+    attendance_q = db.query(Attendance).filter(
         Attendance.attendance_id == payload.attendance_id,
-        Attendance.user_id == current_user.user_id
-    ).first()
+        Attendance.user_id == current_user.user_id,
+    )
+    if current_user.company_id is not None:
+        attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
+    attendance = attendance_q.first()
     
     if not attendance:
         raise HTTPException(
@@ -2457,7 +2502,7 @@ def get_online_status_history(
     attendance = (
         db.query(Attendance)
         .join(User, Attendance.user_id == User.user_id)
-        .filter(Attendance.attendance_id == attendance_id, *_user_scope_filters(scope))
+        .filter(Attendance.attendance_id == attendance_id, *_attendance_tenant_filters(scope))
         .first()
     )
     
@@ -2526,7 +2571,7 @@ def get_all_current_online_status(
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
             Attendance.check_out.is_(None),
-            *_user_scope_filters(scope),
+            *_attendance_tenant_filters(scope),
         )
         .all()
     )
@@ -2587,7 +2632,7 @@ def get_user_current_online_status(
             Attendance.user_id == user_id,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
-            *_user_scope_filters(scope),
+            *_attendance_tenant_filters(scope),
         )
         .first()
     )
@@ -2785,9 +2830,12 @@ def working_hours_summary(
     # attendance records that started before the requested period.
     attendances = (
         db.query(Attendance)
-        .filter(Attendance.user_id == target_user_id)
-        .filter(Attendance.check_in >= start_dt)
-        .filter(Attendance.check_in < end_dt)
+        .filter(
+            Attendance.user_id == target_user_id,
+            Attendance.company_id == int(scope["company_id"]),
+            Attendance.check_in >= start_dt,
+            Attendance.check_in < end_dt,
+        )
         .order_by(Attendance.check_in.asc())
         .all()
     )
@@ -2894,7 +2942,7 @@ def calculate_working_hours(
         attendance = (
             db.query(Attendance)
             .join(User, Attendance.user_id == User.user_id)
-            .filter(Attendance.attendance_id == attendance_id, *_user_scope_filters(scope))
+            .filter(Attendance.attendance_id == attendance_id, *_attendance_tenant_filters(scope))
             .first()
         )
         

@@ -254,6 +254,7 @@ def get_employee_performance(
             # Count actual attendance days
             attendance_records = db.query(Attendance).filter(
                 Attendance.user_id == emp.user_id,
+                Attendance.company_id == int(scope["company_id"]),
                 Attendance.check_in >= start_date,
                 Attendance.check_in < end_date
             ).count()
@@ -417,6 +418,7 @@ def get_department_metrics(
         for emp in dept_employees:
             attendance_count = db.query(Attendance).filter(
                 Attendance.user_id == emp.user_id,
+                Attendance.company_id == int(scope["company_id"]),
                 Attendance.check_in >= start_date,
                 Attendance.check_in < end_date
             ).count()
@@ -543,6 +545,7 @@ def get_executive_summary(
         # Get attendance records for the month
         attendance_records = db.query(Attendance).filter(
             Attendance.user_id == emp.user_id,
+            Attendance.company_id == int(scope["company_id"]),
             Attendance.check_in >= start_date,
             Attendance.check_in < end_date
         ).all()
@@ -828,6 +831,7 @@ async def export_performance_report(
             # Attendance data
             attendance_records = db.query(Attendance).filter(
                 Attendance.user_id == emp.user_id,
+                Attendance.company_id == int(scope["company_id"]),
                 Attendance.check_in >= start,
                 Attendance.check_in <= end
             ).all()
