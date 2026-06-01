@@ -381,16 +381,17 @@ def export_monthly_detailed_pdf(
             day_end = day_start + timedelta(days=1)
 
             # leaves
-            leave = (
-                db.query(Leave)
-                .filter(
-                    Leave.user_id == user.user_id,
-                    Leave.status == "Approved",
-                    Leave.start_date <= day_end,
-                    Leave.end_date >= day_start
-                )
-                .first()
-            )
+            leave_filters = [
+                Leave.user_id == user.user_id,
+                Leave.status == "Approved",
+                Leave.start_date <= day_end,
+                Leave.end_date >= day_start,
+            ]
+            if user.company_id is not None:
+                leave_filters.append(Leave.company_id == int(user.company_id))
+            elif company_id is not None:
+                leave_filters.append(Leave.company_id == int(company_id))
+            leave = db.query(Leave).filter(*leave_filters).first()
             if leave and leave.leave_type in ("casual", "sick"):
                 lt = "CL" if leave.leave_type == "casual" else "SL"
                 attendance_map[str(d)] = Paragraph(f"P<br/><b>{lt}</b>", d_style)

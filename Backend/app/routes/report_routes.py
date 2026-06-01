@@ -583,6 +583,7 @@ def get_executive_summary(
         # 5. Leave Pattern Score (10% weight) - Lower leaves = better score
         leaves = db.query(Leave).filter(
             Leave.user_id == emp.user_id,
+            Leave.company_id == int(scope["company_id"]),
             Leave.start_date >= start_date,
             Leave.end_date < end_date,
             Leave.status == 'approved'
@@ -861,6 +862,7 @@ async def export_performance_report(
             # Leave data
             leaves = db.query(Leave).filter(
                 Leave.user_id == emp.user_id,
+                Leave.company_id == int(scope["company_id"]),
                 Leave.start_date >= start,
                 Leave.end_date <= end
             ).all()

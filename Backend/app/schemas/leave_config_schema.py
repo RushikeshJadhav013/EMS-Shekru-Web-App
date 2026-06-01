@@ -42,6 +42,7 @@ class LeaveAllocationConfigUpdate(BaseModel):
 class LeaveAllocationConfigOut(LeaveAllocationConfigBase):
     """Schema for returning leave allocation configuration"""
     id: int
+    company_id: int = Field(..., gt=0, description="Company this configuration belongs to")
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
