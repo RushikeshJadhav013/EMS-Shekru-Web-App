@@ -59,6 +59,73 @@ def _get_user_in_scope(db: Session, user_id: int, scope: dict) -> User | None:
     )
 
 
+def _get_assignee_in_scope(
+    db: Session,
+    user_id: int,
+    scope: dict,
+    current_user: User | None = None,
+) -> User | None:
+    """
+    Resolve an assignee in tenant scope. Admins may assign to themselves even when
+    users.company_id does not match the selected company (assignment-based access).
+    """
+    assignee = _get_user_in_scope(db, user_id, scope)
+    if assignee is not None:
+        return assignee
+    if (
+        current_user is not None
+        and current_user.role == RoleEnum.ADMIN
+        and int(user_id) == int(current_user.user_id)
+    ):
+        return (
+            db.query(User)
+            .filter(User.user_id == int(user_id), User.is_active.is_(True))
+            .first()
+        )
+    return None
+
+
+def _load_assignees_in_scope(
+    db: Session,
+    assignee_ids: list[int],
+    scope: dict,
+    current_user: User,
+) -> list[User]:
+    """Load assignees for bulk create; includes admin self when selected."""
+    if not assignee_ids:
+        return []
+    assignees = (
+        db.query(User)
+        .filter(User.user_id.in_(assignee_ids), *_user_scope_filters(scope))
+        .all()
+    )
+    found_ids = {u.user_id for u in assignees}
+    if (
+        current_user.role == RoleEnum.ADMIN
+        and int(current_user.user_id) in assignee_ids
+        and int(current_user.user_id) not in found_ids
+    ):
+        admin_row = (
+            db.query(User)
+            .filter(User.user_id == int(current_user.user_id), User.is_active.is_(True))
+            .first()
+        )
+        if admin_row:
+            assignees.append(admin_row)
+    return assignees
+
+
+def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
+    """Admins are scoped via assignments in get_tenant_scope, not users.company_id."""
+    if current_user.role == RoleEnum.ADMIN:
+        return
+    if _get_user_in_scope(db, int(current_user.user_id), scope) is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current user is outside selected tenant scope",
+        )
+
+
 def _task_in_scope_query(db: Session, scope: dict):
     q = db.query(Task).filter(Task.company_id == int(scope["company_id"]))
     branch_id = scope.get("branch_id")
@@ -148,10 +215,9 @@ def assign_task(
     user=Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    if _get_user_in_scope(db, int(user.user_id), scope) is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
+    _assert_current_in_scope(db, user, scope)
     # Fetch assignee user
-    assignee = _get_user_in_scope(db, int(task.assigned_to), scope)
+    assignee = _get_assignee_in_scope(db, int(task.assigned_to), scope, user)
     if not assignee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
 
@@ -177,19 +243,22 @@ def assign_task(
 
     _validate_project_exists(db, task.project_id, scope)
 
-    t = create_task(
-        db,
-        task.title,
-        task.description or "",
-        user.user_id,
-        task.assigned_to,
-        start_date=datetime.combine(task.start_date, datetime.min.time()) if task.start_date else None,
-        due_date=datetime.combine(task.due_date, datetime.min.time()) if task.due_date else None,
-        priority=task.priority or "Medium",
-        project_id=task.project_id,
-        company_id=scope["company_id"],
-        branch_id=scope.get("branch_id"),
-    )
+    try:
+        t = create_task(
+            db,
+            task.title,
+            task.description or "",
+            user.user_id,
+            task.assigned_to,
+            start_date=datetime.combine(task.start_date, datetime.min.time()) if task.start_date else None,
+            due_date=datetime.combine(task.due_date, datetime.min.time()) if task.due_date else None,
+            priority=task.priority or "Medium",
+            project_id=task.project_id,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     # Ensure assignee is added as a project member when task is linked to a project
     _ensure_project_member(db, t.project_id, t.assigned_to, user.user_id)
     return TaskOut(
@@ -234,13 +303,8 @@ def assign_tasks_bulk(
     assignee_ids = list({uid for uid in payload.assigned_to_ids if uid is not None})
 
     # Pre-load all assignees and validate existence
-    if _get_user_in_scope(db, int(user.user_id), scope) is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
-    assignees = (
-        db.query(User)
-        .filter(User.user_id.in_(assignee_ids), *_user_scope_filters(scope))
-        .all()
-    )
+    _assert_current_in_scope(db, user, scope)
+    assignees = _load_assignees_in_scope(db, assignee_ids, scope, user)
     found_ids = {u.user_id for u in assignees}
     missing = [uid for uid in assignee_ids if uid not in found_ids]
     if missing:
@@ -288,19 +352,22 @@ def assign_tasks_bulk(
     # All validations passed; create tasks
     created_tasks: list[Task] = []
     for assignee in validated_assignees:
-        t = create_task(
-            db,
-            payload.title,
-            payload.description or "",
-            user.user_id,
-            assignee.user_id,
-            start_date=datetime.combine(payload.start_date, datetime.min.time()) if payload.start_date else None,
-            due_date=datetime.combine(payload.due_date, datetime.min.time()) if payload.due_date else None,
-            priority=payload.priority or "Medium",
-            project_id=payload.project_id,
-            company_id=scope["company_id"],
-            branch_id=scope.get("branch_id"),
-        )
+        try:
+            t = create_task(
+                db,
+                payload.title,
+                payload.description or "",
+                user.user_id,
+                assignee.user_id,
+                start_date=datetime.combine(payload.start_date, datetime.min.time()) if payload.start_date else None,
+                due_date=datetime.combine(payload.due_date, datetime.min.time()) if payload.due_date else None,
+                priority=payload.priority or "Medium",
+                project_id=payload.project_id,
+                company_id=scope["company_id"],
+                branch_id=scope.get("branch_id"),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         # Ensure each assignee is added as a project member when task is linked to a project
         _ensure_project_member(db, t.project_id, t.assigned_to, user.user_id)
         created_tasks.append(t)
@@ -850,7 +917,7 @@ def edit_task(
     # If the update includes changing the assignee, enforce role hierarchy rules
     if "assigned_to" in updates:
         new_assignee_id = updates["assigned_to"]
-        assignee = _get_user_in_scope(db, int(new_assignee_id), scope)
+        assignee = _get_assignee_in_scope(db, int(new_assignee_id), scope, user)
         if not assignee:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
 
@@ -963,7 +1030,7 @@ def pass_task_route(
     if current_user.role != RoleEnum.ADMIN and task.assigned_to != current_user.user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the current assignee can pass this task")
 
-    new_assignee = _get_user_in_scope(db, int(payload.new_assignee_id), scope)
+    new_assignee = _get_assignee_in_scope(db, int(payload.new_assignee_id), scope, current_user)
     if not new_assignee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="New assignee not found")
 
