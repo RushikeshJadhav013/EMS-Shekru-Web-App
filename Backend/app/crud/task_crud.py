@@ -113,18 +113,23 @@ def _party_in_tenant_scope(
     company_id: int | None,
     branch_id: int | None,
     is_assigner: bool = False,
+    assigned_by_id: int | None = None,
 ) -> bool:
     """
     Validate a task assigner or assignee against tenant scope.
 
-    Admins acting as assigners are allowed when get_tenant_scope already validated
-    their company assignment; they may have NULL or a different users.company_id.
+    Admins acting as assigners, or as assignees on self-assignment, are allowed when
+    get_tenant_scope already validated their company assignment; they may have NULL
+    or a different users.company_id.
     """
     user = db.query(User).filter(User.user_id == user_id, User.is_active.is_(True)).first()
     if not user:
         return False
-    if is_assigner and user.role == RoleEnum.ADMIN:
-        return True
+    if user.role == RoleEnum.ADMIN:
+        if is_assigner:
+            return True
+        if assigned_by_id is not None and int(user_id) == int(assigned_by_id):
+            return True
     return _get_user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id) is not None
 
 
@@ -149,8 +154,11 @@ def _resolve_task_company_id(
         for user, is_assigner in ((assignee, False), (assigner, True)):
             if user is None:
                 continue
-            if is_assigner and user.role == RoleEnum.ADMIN:
-                continue
+            if user.role == RoleEnum.ADMIN:
+                if is_assigner:
+                    continue
+                if assigner is not None and int(user.user_id) == int(assigner.user_id):
+                    continue
             if user.company_id is not None and int(user.company_id) != resolved:
                 raise ValueError("Assigner/assignee not in tenant scope")
     return resolved
@@ -210,6 +218,7 @@ def create_task(
         company_id=company_id,
         branch_id=branch_id,
         is_assigner=False,
+        assigned_by_id=assigned_by,
     ):
         raise ValueError("Assignee not in tenant scope")
 
@@ -411,9 +420,14 @@ def pass_task(
     if not task:
         return None
 
-    if (company_id is not None or branch_id is not None) and _get_user_in_scope(
-        db, user_id=new_assignee_id, company_id=company_id, branch_id=branch_id
-    ) is None:
+    if (company_id is not None or branch_id is not None) and not _party_in_tenant_scope(
+        db,
+        user_id=new_assignee_id,
+        company_id=company_id,
+        branch_id=branch_id,
+        is_assigner=False,
+        assigned_by_id=current_user_id,
+    ):
         return None
 
     previous_assignee = task.assigned_to
