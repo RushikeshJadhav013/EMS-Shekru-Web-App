@@ -297,22 +297,41 @@ def delete_weekoff_rule(db: Session, rule_id: int) -> bool:
     return True
 
 
-def get_leave_allocation(db: Session) -> LeaveAllocationConfig:
-    cfg = db.query(LeaveAllocationConfig).order_by(LeaveAllocationConfig.id.desc()).first()
-    return cfg
+def get_leave_allocation(db: Session, company_id: int) -> Optional[LeaveAllocationConfig]:
+    return (
+        db.query(LeaveAllocationConfig)
+        .filter(
+            LeaveAllocationConfig.company_id == int(company_id),
+            LeaveAllocationConfig.is_active.is_(True),
+        )
+        .order_by(LeaveAllocationConfig.updated_at.desc())
+        .first()
+    )
 
 
-def update_leave_allocation(db: Session, total: int, sick: int, casual: int, other: int, updated_by: Optional[int]) -> LeaveAllocationConfig:
-    cfg = db.query(LeaveAllocationConfig).order_by(LeaveAllocationConfig.id.desc()).first()
-    # Enforce: annual bucket = sick + casual (ignore provided total)
+def update_leave_allocation(
+    db: Session,
+    company_id: int,
+    total: int,
+    sick: int,
+    casual: int,
+    other: int,
+    updated_by: Optional[int],
+) -> LeaveAllocationConfig:
     derived_total = (sick or 0) + (casual or 0)
+    cfg = get_leave_allocation(db, company_id)
     if not cfg:
+        db.query(LeaveAllocationConfig).filter(
+            LeaveAllocationConfig.company_id == int(company_id),
+        ).update({"is_active": False})
         cfg = LeaveAllocationConfig(
+            company_id=int(company_id),
             total_annual_leave=derived_total,
             sick_leave_allocation=sick,
             casual_leave_allocation=casual,
             other_leave_allocation=other,
-            updated_by=updated_by
+            is_active=True,
+            updated_by=updated_by,
         )
         db.add(cfg)
     else:
@@ -365,7 +384,7 @@ def get_calendar_events(
     # Include leaves that overlap the requested range (start <= end AND end >= start)
     ql = db.query(Leave, User.department, User.name).join(User, Leave.user_id == User.user_id)
     if company_id is not None:
-        ql = ql.filter(User.company_id == company_id)
+        ql = ql.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         ql = ql.filter(User.branch_id == branch_id)
     if department:

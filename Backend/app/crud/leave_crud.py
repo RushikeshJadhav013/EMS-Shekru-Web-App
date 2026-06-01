@@ -19,6 +19,13 @@ from app.config.company_config import (
 )
 
 
+def get_user_company_id(db: Session, user_id: int) -> int:
+    row = db.query(User.company_id).filter(User.user_id == user_id).first()
+    if row is None or row[0] is None:
+        raise ValueError("User is not assigned to a company")
+    return int(row[0])
+
+
 def export_leave_csv(
     db: Session,
     start_date: datetime = None,
@@ -46,7 +53,7 @@ def export_leave_csv(
         .filter(User.is_active.is_(True))
     )
     if company_id is not None:
-        query = query.filter(User.company_id == company_id)
+        query = query.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         query = query.filter(User.branch_id == branch_id)
     if department:
@@ -167,7 +174,7 @@ def export_leave_pdf(
         .filter(User.is_active.is_(True))
     )
     if company_id is not None:
-        query = query.filter(User.company_id == company_id)
+        query = query.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         query = query.filter(User.branch_id == branch_id)
     if department:
@@ -436,8 +443,12 @@ def apply_leave(
     end_date: datetime,
     reason: str,
     leave_type: str = "annual",
+    company_id: int | None = None,
 ):
+    if company_id is None:
+        company_id = get_user_company_id(db, user_id)
     leave = Leave(
+        company_id=int(company_id),
         user_id=user_id,
         start_date=start_date,
         end_date=end_date,
@@ -449,16 +460,22 @@ def apply_leave(
     db.refresh(leave)
     return leave
 
-def approve_leave(db: Session, leave_id: int):
-    leave = db.query(Leave).filter(Leave.leave_id == leave_id).first()
+def approve_leave(db: Session, leave_id: int, company_id: int | None = None):
+    q = db.query(Leave).filter(Leave.leave_id == leave_id)
+    if company_id is not None:
+        q = q.filter(Leave.company_id == int(company_id))
+    leave = q.first()
     if leave:
         leave.status = "Approved"
         db.commit()
         db.refresh(leave)
     return leave
 
-def list_leave(db: Session, user_id: int):
-    return db.query(Leave).filter(Leave.user_id == user_id).all()
+def list_leave(db: Session, user_id: int, company_id: int | None = None):
+    q = db.query(Leave).filter(Leave.user_id == user_id)
+    if company_id is not None:
+        q = q.filter(Leave.company_id == int(company_id))
+    return q.all()
 
 
 def update_leave(
@@ -469,12 +486,12 @@ def update_leave(
     end_date: Optional[datetime] = None,
     reason: Optional[str] = None,
     leave_type: Optional[str] = None,
+    company_id: int | None = None,
 ):
-    leave = (
-        db.query(Leave)
-        .filter(Leave.leave_id == leave_id, Leave.user_id == user_id)
-        .first()
-    )
+    q = db.query(Leave).filter(Leave.leave_id == leave_id, Leave.user_id == user_id)
+    if company_id is not None:
+        q = q.filter(Leave.company_id == int(company_id))
+    leave = q.first()
     if not leave:
         return None
 
@@ -495,12 +512,11 @@ def update_leave(
     return leave
 
 
-def delete_leave(db: Session, leave_id: int, user_id: int):
-    leave = (
-        db.query(Leave)
-        .filter(Leave.leave_id == leave_id, Leave.user_id == user_id)
-        .first()
-    )
+def delete_leave(db: Session, leave_id: int, user_id: int, company_id: int | None = None):
+    q = db.query(Leave).filter(Leave.leave_id == leave_id, Leave.user_id == user_id)
+    if company_id is not None:
+        q = q.filter(Leave.company_id == int(company_id))
+    leave = q.first()
     if not leave:
         return None
 
@@ -519,9 +535,14 @@ def delete_leave(db: Session, leave_id: int, user_id: int):
     return True
 
 
-def get_leave_balance(db: Session, user_id: int):
+def get_leave_balance(db: Session, user_id: int, company_id: int | None = None):
+    if company_id is None:
+        try:
+            company_id = get_user_company_id(db, user_id)
+        except ValueError:
+            company_id = None
     # Get leave configuration from database or use defaults
-    leave_config = get_leave_config_or_default(db)
+    leave_config = get_leave_config_or_default(db, company_id=company_id)
     
     # Initialize balances with configured values
     balances = {
@@ -554,11 +575,18 @@ def get_leave_balance(db: Session, user_id: int):
             "remaining": leave_config["other"],
         }
 
-    approved_leaves = (
-        db.query(Leave)
-        .filter(Leave.user_id == user_id, func.lower(Leave.status) == "approved")
-        .all()
+    if company_id is None:
+        try:
+            company_id = get_user_company_id(db, user_id)
+        except ValueError:
+            company_id = None
+    approved_q = db.query(Leave).filter(
+        Leave.user_id == user_id,
+        func.lower(Leave.status) == "approved",
     )
+    if company_id is not None:
+        approved_q = approved_q.filter(Leave.company_id == int(company_id))
+    approved_leaves = approved_q.all()
 
     for leave in approved_leaves:
         raw_type = (leave.leave_type or "annual").lower()
@@ -618,7 +646,10 @@ def list_leave_by_period(
             return []
     
     if period == "all":
-        return db.query(Leave).filter(Leave.user_id == user_id).order_by(Leave.start_date.desc()).all()
+        q = db.query(Leave).filter(Leave.user_id == user_id)
+        if company_id is not None:
+            q = q.filter(Leave.company_id == int(company_id))
+        return q.order_by(Leave.start_date.desc()).all()
 
     if period == "custom":
         start_date = custom_start_date if custom_start_date else datetime(now.year, now.month, 1) # Default to start of current month
@@ -659,28 +690,25 @@ def list_leave_by_period(
         start_date = now - timedelta(days=365)
     
     else:
-        # Default (all) when period omitted, blank, or invalid
-        return db.query(Leave).filter(Leave.user_id == user_id).order_by(Leave.start_date.desc()).all()
+        q = db.query(Leave).filter(Leave.user_id == user_id)
+        if company_id is not None:
+            q = q.filter(Leave.company_id == int(company_id))
+        return q.order_by(Leave.start_date.desc()).all()
 
     # Get ALL leaves for the user where start_date or end_date falls within the period
     # This includes leaves that overlap with the period (pending, approved, rejected)
     # We check both start_date and end_date to catch all relevant leaves
-    return (
-        db.query(Leave)
-        .filter(
-            Leave.user_id == user_id,
-            # Leave overlaps with the period if:
-            # - start_date is within period, OR
-            # - end_date is within period, OR
-            # - leave spans the entire period
-            or_(
-                and_(Leave.start_date >= start_date, Leave.start_date < end_date),
-                and_(Leave.end_date >= start_date, Leave.end_date < end_date),
-                and_(Leave.start_date <= start_date, Leave.end_date >= end_date)
-            )
-        )
-        .all()
-    )
+    period_filters = [
+        Leave.user_id == user_id,
+        or_(
+            and_(Leave.start_date >= start_date, Leave.start_date < end_date),
+            and_(Leave.end_date >= start_date, Leave.end_date < end_date),
+            and_(Leave.start_date <= start_date, Leave.end_date >= end_date),
+        ),
+    ]
+    if company_id is not None:
+        period_filters.append(Leave.company_id == int(company_id))
+    return db.query(Leave).filter(*period_filters).all()
 
 
 def list_pending_all(db: Session, company_id: int | None = None, branch_id: int | None = None):
@@ -690,7 +718,7 @@ def list_pending_all(db: Session, company_id: int | None = None, branch_id: int 
         .filter(Leave.status == "Pending", User.is_active.is_(True))
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
+        q = q.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         q = q.filter(User.branch_id == branch_id)
     return q.all()
@@ -703,7 +731,7 @@ def list_pending_by_department(db: Session, department: str, company_id: int | N
         .filter(Leave.status == "Pending", User.is_active.is_(True), User.department == department)
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
+        q = q.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         q = q.filter(User.branch_id == branch_id)
     return q.all()
@@ -723,7 +751,7 @@ def list_pending_by_requester_roles(
         .filter(Leave.status == "Pending", User.is_active.is_(True), User.role.in_(roles))
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
+        q = q.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         q = q.filter(User.branch_id == branch_id)
     return q.all()
@@ -749,7 +777,7 @@ def list_pending_by_department_and_roles(
         )
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
+        q = q.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         q = q.filter(User.branch_id == branch_id)
     return q.all()
@@ -772,7 +800,7 @@ def list_decided_by_approver(
         .order_by(Leave.end_date.desc())
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
+        q = q.filter(Leave.company_id == int(company_id))
     if branch_id is not None:
         q = q.filter(User.branch_id == branch_id)
     return q.all()

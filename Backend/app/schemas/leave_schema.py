@@ -58,6 +58,7 @@ class LeaveCreate(LeaveBase):
 
 class LeaveOut(LeaveBase):
     leave_id: int = Field(..., gt=0, description="Unique leave ID")
+    company_id: int = Field(..., gt=0, description="Company this leave belongs to")
     user_id: int = Field(..., gt=0, description="User ID")
 
     model_config = {"from_attributes": True}
@@ -73,6 +74,7 @@ class LeaveWithUserOut(LeaveOut):
 class LeaveHistoryOut(BaseModel):
     """Schema for displaying historical leave data without strict validation"""
     leave_id: int = Field(..., gt=0, description="Unique leave ID")
+    company_id: int = Field(..., gt=0, description="Company this leave belongs to")
     user_id: int = Field(..., gt=0, description="User ID")
     start_date: date = Field(..., description="Leave start date")
     end_date: date = Field(..., description="Leave end date")
@@ -90,6 +92,7 @@ class LeaveHistoryOut(BaseModel):
 class LeaveDisplayOut(BaseModel):
     """Schema for displaying user's own leave data without strict validation"""
     leave_id: int = Field(..., gt=0, description="Unique leave ID")
+    company_id: int = Field(..., gt=0, description="Company this leave belongs to")
     user_id: int = Field(..., gt=0, description="User ID")
     start_date: date = Field(..., description="Leave start date")
     end_date: date = Field(..., description="Leave end date")

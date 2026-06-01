@@ -36,6 +36,10 @@ def _attendance_scope_filters(scope: dict) -> list:
     return [Attendance.company_id == int(scope["company_id"])]
 
 
+def _leave_scope_filters(scope: dict) -> list:
+    return [Leave.company_id == int(scope["company_id"])]
+
+
 def _today_bounds():
     """Get today's bounds in IST for database queries"""
     return get_today_bounds_ist()
@@ -78,6 +82,7 @@ def admin_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             Leave.status == "Approved",
             Leave.start_date <= today_end,
             Leave.end_date >= today_start,
@@ -128,6 +133,7 @@ def admin_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             Leave.status == "Pending",
             User.role.in_([RoleEnum.HR.value, RoleEnum.MANAGER.value]),
             base_user_filter,
@@ -311,6 +317,7 @@ def hr_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             Leave.status == "Approved",
             Leave.start_date <= today_end,
             Leave.end_date >= today_start,
@@ -340,6 +347,7 @@ def hr_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             Leave.status == "Pending",
             User.role.in_([RoleEnum.EMPLOYEE.value, RoleEnum.TEAM_LEAD.value])
             ,
@@ -383,7 +391,7 @@ def hr_dashboard(
     recent_leave_requests = (
         db.query(Leave, User)
         .join(User, User.user_id == Leave.user_id)
-        .filter(hr_base_user_filter)
+        .filter(*_leave_scope_filters(scope), hr_base_user_filter)
         .order_by(Leave.start_date.desc())
         .limit(12)
         .all()
@@ -556,6 +564,7 @@ def manager_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             dept_match,
             role_filter,
             Leave.status == "Approved",
@@ -593,6 +602,7 @@ def manager_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             dept_match,
             Leave.status == "Pending",
             User.role.in_([RoleEnum.EMPLOYEE, RoleEnum.TEAM_LEAD]),
@@ -690,6 +700,7 @@ def manager_dashboard(
         db.query(Leave, User)
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             dept_match,
             role_filter,
             Leave.status == "Pending",
@@ -826,6 +837,7 @@ def team_lead_dashboard(
         db.query(func.count(Leave.leave_id))
         .join(User, User.user_id == Leave.user_id)
         .filter(
+            *_leave_scope_filters(scope),
             dept_match,
             role_filter,
             Leave.status == "Approved",
@@ -956,7 +968,16 @@ def employee_dashboard(
     tasks_pending = db.query(func.count(Task.task_id)).filter(Task.assigned_to == user_id, Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value])).scalar() or 0
 
     # Leaves available not modeled; return 0 and expose leavesTaken from approved leaves this year
-    leaves_taken = db.query(func.count(Leave.leave_id)).filter(Leave.user_id == user_id, Leave.status == "Approved").scalar() or 0
+    leaves_taken = (
+        db.query(func.count(Leave.leave_id))
+        .filter(
+            Leave.user_id == user_id,
+            Leave.company_id == int(scope["company_id"]),
+            Leave.status == "Approved",
+        )
+        .scalar()
+        or 0
+    )
 
     # Current month hours
     month_start = today_start.replace(day=1)

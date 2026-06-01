@@ -5,6 +5,7 @@ from app.db.database import Base
 class Leave(Base):
     __tablename__ = "leaves"
     leave_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)

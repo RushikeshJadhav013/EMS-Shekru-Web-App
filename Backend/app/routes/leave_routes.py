@@ -60,7 +60,7 @@ from app.utils.department_utils import department_tokens_lower
 router = APIRouter(prefix="/leave", tags=["Leave"])
 
 # -------------------------------------------------------------------
-# Tenant scoping helpers (Option A: no DB-level company_id on leaves)
+# Tenant scoping helpers
 # -------------------------------------------------------------------
 def _user_scope_filters(scope: dict) -> list:
     """
@@ -74,11 +74,24 @@ def _user_scope_filters(scope: dict) -> list:
     return clauses
 
 
+def _leave_scope_filters(scope: dict) -> list:
+    return [Leave.company_id == int(scope["company_id"])]
+
+
+def _leave_tenant_filters(scope: dict, user_alias=User) -> list:
+    """Filters for leave queries joined to users (company on row, branch on user)."""
+    clauses = list(_leave_scope_filters(scope))
+    branch_id = scope.get("branch_id")
+    if branch_id is not None:
+        clauses.append(user_alias.branch_id == int(branch_id))
+    return clauses
+
+
 def _ensure_leave_in_scope(db: Session, leave_id: int, scope: dict) -> Leave:
     leave = (
         db.query(Leave)
         .join(User, Leave.user_id == User.user_id)
-        .filter(Leave.leave_id == leave_id, *_user_scope_filters(scope))
+        .filter(Leave.leave_id == leave_id, *_leave_tenant_filters(scope))
         .first()
     )
     if not leave:
@@ -144,6 +157,13 @@ def request_leave(
     # Validation 0: Admins cannot apply for leave
     if getattr(user, "role", None) == RoleEnum.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin users cannot apply for leave")
+
+    if user.company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not assigned to a company",
+        )
+    company_id = int(user.company_id)
     
     # Validation 1: Sick leave minimum duration (1 day)
     if leave.leave_type.lower() == 'sick' and leave_days < 1:
@@ -194,6 +214,7 @@ def request_leave(
     # Validation 3: Prevent overlapping leave requests (pending or approved)
     overlapping_leaves = db.query(Leave).filter(
         Leave.user_id == user.user_id,
+        Leave.company_id == company_id,
         Leave.status.in_(["Pending", "Approved"]),
         # (new_start <= old_end) and (new_end >= old_start)
         Leave.start_date <= end_dt,
@@ -207,7 +228,7 @@ def request_leave(
 
     # Validation 4: Check remaining leave balance for this leave type
     # Only applies if this leave type is in balance policy
-    balances = get_leave_balance(db, user.user_id)
+    balances = get_leave_balance(db, user.user_id, company_id=company_id)
     leave_type = leave.leave_type.lower()
     eligible_types = {b['leave_type'] for b in balances}
     if leave_type in eligible_types:
@@ -228,6 +249,7 @@ def request_leave(
         end_dt,
         leave.reason,
         leave.leave_type.lower(),
+        company_id=company_id,
     )
     # Create notifications for appropriate recipients based on department and role
     create_leave_request_notifications(db, new_leave, user)
@@ -307,7 +329,7 @@ def approve_leave_request(
 
     # Apply decision
     if approved:
-        updated = approve_leave_db(db, leave_id)
+        updated = approve_leave_db(db, leave_id, company_id=int(scope["company_id"]))
         if not updated:
             raise HTTPException(status_code=404, detail="Leave not found")
         leave = updated
@@ -387,7 +409,7 @@ def leave_balance(
     user=Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    balances = get_leave_balance(db, user.user_id)
+    balances = get_leave_balance(db, user.user_id, company_id=int(scope["company_id"]))
     return {"balances": balances}
 
 
@@ -400,7 +422,15 @@ def update_leave_request(
     scope: dict = Depends(get_tenant_scope),
 ):
     # Get the existing leave to check its type
-    existing_leave = db.query(Leave).filter(Leave.leave_id == leave_id, Leave.user_id == user.user_id).first()
+    existing_leave = (
+        db.query(Leave)
+        .filter(
+            Leave.leave_id == leave_id,
+            Leave.user_id == user.user_id,
+            Leave.company_id == int(scope["company_id"]),
+        )
+        .first()
+    )
     if not existing_leave:
         raise HTTPException(status_code=404, detail="Leave not found")
     if existing_leave.status != "Pending":
@@ -473,6 +503,7 @@ def update_leave_request(
     # Validation 3: Prevent overlapping leave requests (pending or approved, excluding the current leave)
     overlapping_leaves = db.query(Leave).filter(
         Leave.user_id == user.user_id,
+        Leave.company_id == int(scope["company_id"]),
         Leave.status.in_(["Pending", "Approved"]),
         Leave.leave_id != leave_id,  # Exclude the current leave
         Leave.start_date <= final_end_date,
@@ -486,7 +517,7 @@ def update_leave_request(
 
     # Validation 4: Check remaining leave balance for this leave type
     # Only applies if this leave type is in balance policy
-    balances = get_leave_balance(db, user.user_id)
+    balances = get_leave_balance(db, user.user_id, company_id=int(scope["company_id"]))
     eligible_types = {b['leave_type'] for b in balances}
     if final_leave_type in eligible_types:
         # Find matching balance entry
@@ -507,6 +538,7 @@ def update_leave_request(
         end_date=end_date,
         reason=leave_update.reason,
         leave_type=leave_type,
+        company_id=int(scope["company_id"]),
     )
 
     if updated_leave is None:
@@ -526,7 +558,7 @@ def delete_leave_request(
     user=Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    result = delete_leave_db(db, leave_id, user.user_id)
+    result = delete_leave_db(db, leave_id, user.user_id, company_id=int(scope["company_id"]))
     if result is None:
         raise HTTPException(status_code=404, detail="Leave not found")
     if result == "not_pending":
@@ -621,7 +653,11 @@ def approvals_inbox(
         self_pending = (
             db.query(Leave)
             .options(joinedload(Leave.user))
-            .filter(Leave.status == "Pending", Leave.user_id == user.user_id)
+            .filter(
+                Leave.status == "Pending",
+                Leave.user_id == user.user_id,
+                Leave.company_id == int(scope["company_id"]),
+            )
             .all()
         )
         pending.extend(self_pending)
@@ -634,6 +670,7 @@ def approvals_inbox(
         u: User = leave.user
         results.append({
             "leave_id": leave.leave_id,
+            "company_id": int(leave.company_id),
             "user_id": leave.user_id,
             "start_date": leave.start_date.date(),
             "end_date": leave.end_date.date(),
@@ -681,7 +718,7 @@ def approvals_history(
         db.query(Leave)
         .options(joinedload(Leave.user))
         .join(User, Leave.user_id == User.user_id)
-        .filter(Leave.status != "Pending", *_user_scope_filters(scope))
+        .filter(Leave.status != "Pending", *_leave_tenant_filters(scope))
     )
 
     if role_value == RoleEnum.ADMIN.value:
@@ -764,6 +801,7 @@ def approvals_history(
         u: User = leave.user
         results.append({
             "leave_id": leave.leave_id,
+            "company_id": int(leave.company_id),
             "user_id": leave.user_id,
             "start_date": leave.start_date.date(),
             "end_date": leave.end_date.date(),
@@ -886,13 +924,14 @@ def mark_notification_as_read(
 @router.get("/config/allocation", response_model=LeaveAllocationConfigOut)
 def get_leave_allocation_config(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
-    Get the active leave allocation configuration.
+    Get the active leave allocation configuration for the current tenant company.
     Only accessible by admins.
     """
-    config = get_active_leave_config(db)
+    config = get_active_leave_config(db, int(scope["company_id"]))
     
     if not config:
         # Return default configuration if none exists
@@ -908,11 +947,12 @@ def get_leave_allocation_config(
 def create_leave_allocation_config_route(
     config_data: LeaveAllocationConfigCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
-    Create a new leave allocation configuration.
-    This will deactivate all previous configurations and apply the new one globally.
+    Create a new leave allocation configuration for the current tenant company.
+    Deactivates previous configurations for that company only.
     Only accessible by admins.
     """
     sick = config_data.sick_leave_allocation
@@ -930,11 +970,12 @@ def create_leave_allocation_config_route(
     # Create the configuration
     config = create_leave_config(
         db=db,
+        company_id=int(scope["company_id"]),
         total_annual_leave=total,
         sick_leave_allocation=sick,
         casual_leave_allocation=casual,
         other_leave_allocation=other,
-        updated_by=current_user.user_id
+        updated_by=current_user.user_id,
     )
     
     return config
@@ -945,19 +986,21 @@ def update_leave_allocation_config_route(
     config_id: int,
     config_data: LeaveAllocationConfigUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN))
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
-    Update an existing leave allocation configuration.
+    Update an existing leave allocation configuration for the current tenant company.
     Only accessible by admins.
     """
     config = update_leave_config(
         db=db,
         config_id=config_id,
+        company_id=int(scope["company_id"]),
         sick_leave_allocation=config_data.sick_leave_allocation,
         casual_leave_allocation=config_data.casual_leave_allocation,
         other_leave_allocation=config_data.other_leave_allocation,
-        updated_by=current_user.user_id
+        updated_by=current_user.user_id,
     )
     
     if not config:
@@ -972,14 +1015,15 @@ def update_leave_allocation_config_route(
 @router.get("/config/allocation/current")
 def get_current_leave_allocation(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
     """
-    Get the current leave allocation values (for all users).
+    Get the current leave allocation values for the tenant company.
     Returns default values if no configuration exists.
     Note: annual_leave = sick_leave_allocation + casual_leave_allocation
     """
-    config = get_active_leave_config(db)
+    config = get_active_leave_config(db, int(scope["company_id"]))
     
     if config:
         # Calculate annual as sick + casual
