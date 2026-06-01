@@ -55,6 +55,10 @@ def _user_scope_filters(scope: dict):
     return filters
 
 
+def _scoped_company_id(scope: dict) -> int:
+    return int(scope["company_id"])
+
+
 def _tenant_departments(db: Session, scope: dict) -> list[str]:
     rows = (
         db.query(User.department)
@@ -185,6 +189,7 @@ def create_new_shift(
             name=shift.name,
             start_time=shift.start_time,
             end_time=shift.end_time,
+            company_id=_scoped_company_id(scope),
             department=department,
             description=shift.description,
             is_active=shift.is_active,
@@ -216,11 +221,14 @@ def list_shifts(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Get shifts for a department or all shifts (Admin)"""
+    company_id = _scoped_company_id(scope)
     if current_user.role == RoleEnum.ADMIN:
         tenant_tokens = _tenant_department_tokens(db, scope)
         if department and department.strip().lower() not in tenant_tokens:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in tenant scope")
-        shifts = get_shifts_by_department(db, department, allowed_departments=_tenant_departments(db, scope))
+        shifts = get_shifts_by_department(
+            db, department, company_id=company_id, allowed_departments=_tenant_departments(db, scope)
+        )
     elif current_user.role == RoleEnum.MANAGER:
         if not current_user.department:
             raise HTTPException(
@@ -231,9 +239,9 @@ def list_shifts(
         if department:
             if department.strip().lower() not in manager_tokens:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in your assigned departments")
-            shifts = get_shifts_by_department(db, department.strip())
+            shifts = get_shifts_by_department(db, department.strip(), company_id=company_id)
         else:
-            shifts = get_shifts_for_department_tokens(db, manager_tokens)
+            shifts = get_shifts_for_department_tokens(db, manager_tokens, company_id=company_id)
     else:
         if not current_user.department:
             return []
@@ -241,11 +249,13 @@ def list_shifts(
         if department:
             if department.strip().lower() not in user_tokens:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department not in your assigned departments")
-            shifts = get_shifts_by_department(db, department.strip())
+            shifts = get_shifts_by_department(db, department.strip(), company_id=company_id)
         elif len(user_tokens) == 1:
-            shifts = get_shifts_by_department(db, _first_department_label(current_user.department))
+            shifts = get_shifts_by_department(
+                db, _first_department_label(current_user.department), company_id=company_id
+            )
         else:
-            shifts = get_shifts_for_department_tokens(db, user_tokens)
+            shifts = get_shifts_for_department_tokens(db, user_tokens, company_id=company_id)
     
     return shifts
 
@@ -313,12 +323,10 @@ def get_shift_by_id(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Get a specific shift by ID"""
-    shift = get_shift(db, shift_id)
+    shift = get_shift(db, shift_id, company_id=_scoped_company_id(scope))
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
-    # Option A tenant check: shifts are department templates; only allow if shift.department is global
-    # or belongs to a department that exists within this tenant.
     tenant_tokens = _tenant_department_tokens(db, scope)
     if shift.department and not _shift_in_tenant(shift.department, tenant_tokens):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -339,7 +347,7 @@ def update_shift_by_id(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Update a shift (Manager/Admin only)"""
-    shift = get_shift(db, shift_id)
+    shift = get_shift(db, shift_id, company_id=_scoped_company_id(scope))
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
@@ -375,7 +383,7 @@ def delete_shift_by_id(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Delete a shift (soft delete) (Manager/Admin only)"""
-    shift = get_shift(db, shift_id)
+    shift = get_shift(db, shift_id, company_id=_scoped_company_id(scope))
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
@@ -403,8 +411,8 @@ def assign_user_to_shift(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Assign a user to a shift (Manager/Admin only)"""
-    # Verify shift exists
-    shift = get_shift(db, assignment.shift_id)
+    # Verify shift exists in tenant
+    shift = get_shift(db, assignment.shift_id, company_id=_scoped_company_id(scope))
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
@@ -481,8 +489,8 @@ def bulk_assign_users_to_shift(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Bulk assign multiple users to a shift (Manager/Admin only)"""
-    # Verify shift exists
-    shift = get_shift(db, assignment.shift_id)
+    # Verify shift exists in tenant
+    shift = get_shift(db, assignment.shift_id, company_id=_scoped_company_id(scope))
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found")
     
@@ -715,7 +723,9 @@ def update_shift_assignment_by_id(
         if not user or not _manager_can_access_department(current_user, user.department):
             raise HTTPException(status_code=403, detail="Access denied")
         if assignment_update.shift_id:
-            new_shift = get_shift(db, assignment_update.shift_id)
+            new_shift = get_shift(
+                db, assignment_update.shift_id, company_id=_scoped_company_id(scope)
+            )
             if new_shift and new_shift.department and not _manager_can_access_department(current_user, new_shift.department):
                 raise HTTPException(status_code=403, detail="Access denied")
     else:
@@ -740,7 +750,7 @@ def update_shift_assignment_by_id(
     
     # Create notification if shift changed
     if assignment_update.shift_id and assignment_update.shift_id != assignment.shift_id:
-        shift = get_shift(db, assignment_update.shift_id)
+        shift = get_shift(db, assignment_update.shift_id, company_id=_scoped_company_id(scope))
         if shift:
             date_str = (assignment_update.assignment_date or assignment.assignment_date).strftime("%d %b %Y")
             title = "Shift Updated"

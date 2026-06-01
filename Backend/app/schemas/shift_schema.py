@@ -60,6 +60,7 @@ class ShiftUpdate(BaseModel):
 
 class ShiftOut(ShiftBase):
     shift_id: int
+    company_id: int = Field(..., gt=0)
     created_at: datetime
     updated_at: Optional[datetime]
 

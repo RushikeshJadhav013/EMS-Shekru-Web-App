@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, func, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, func, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -6,10 +6,19 @@ from app.db.database import Base
 
 class Department(Base):
     __tablename__ = "departments"
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_departments_company_code"),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String(255), nullable=False)
-    code = Column(String(50), nullable=False, unique=True, index=True)
+    code = Column(String(50), nullable=False, index=True)
 
     manager_id = Column(Integer, ForeignKey("users.user_id"), nullable=True)
     description = Column(Text, nullable=True)

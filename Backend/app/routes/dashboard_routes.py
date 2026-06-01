@@ -157,7 +157,10 @@ def admin_dashboard(
         name
         for (name,) in (
             db.query(Department.name)
-            .filter(Department.status == "active")
+            .filter(
+                Department.status == "active",
+                Department.company_id == int(scope["company_id"]),
+            )
             .order_by(Department.name.asc())
             .all()
         )

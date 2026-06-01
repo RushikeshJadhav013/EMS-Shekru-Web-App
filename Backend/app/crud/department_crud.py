@@ -41,25 +41,31 @@ def _department_ids_by_manager_in_scope(db: Session, *, company_id: int, branch_
     rows = (
         db.query(Department.id)
         .join(User, Department.manager_id == User.user_id)
-        .filter(User.is_active.is_(True), *_user_scope_filters(company_id=company_id, branch_id=branch_id))
+        .filter(
+            Department.company_id == int(company_id),
+            User.is_active.is_(True),
+            *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+        )
         .all()
     )
     return {int(dept_id) for (dept_id,) in rows if dept_id is not None}
 
 
 def _scoped_department_ids(db: Session, *, company_id: int, branch_id: int | None) -> set[int]:
+    """Branch-level visibility within a company (manager or user department tokens)."""
     users = _users_in_scope(db, company_id=company_id, branch_id=branch_id)
     name_tokens = _department_names_from_users(users)
     ids: set[int] = set()
 
-    # Departments whose manager is in tenant scope
     ids.update(_department_ids_by_manager_in_scope(db, company_id=company_id, branch_id=branch_id))
 
-    # Departments referenced by any in-scope user.department token
     if name_tokens:
         rows = (
             db.query(Department.id)
-            .filter(func.lower(Department.name).in_(name_tokens))
+            .filter(
+                Department.company_id == int(company_id),
+                func.lower(Department.name).in_(name_tokens),
+            )
             .all()
         )
         ids.update({int(dept_id) for (dept_id,) in rows if dept_id is not None})
@@ -68,22 +74,28 @@ def _scoped_department_ids(db: Session, *, company_id: int, branch_id: int | Non
 
 
 def list_departments(db: Session, *, company_id: int, branch_id: int | None) -> List[Department]:
-    scoped_ids = _scoped_department_ids(db, company_id=company_id, branch_id=branch_id)
-    if not scoped_ids:
-        return []
-    return (
-        db.query(Department)
-        .filter(Department.id.in_(scoped_ids))
-        .order_by(Department.name.asc())
-        .all()
-    )
+    q = db.query(Department).filter(Department.company_id == int(company_id))
+    if branch_id is not None:
+        scoped_ids = _scoped_department_ids(db, company_id=company_id, branch_id=branch_id)
+        if not scoped_ids:
+            return []
+        q = q.filter(Department.id.in_(scoped_ids))
+    return q.order_by(Department.name.asc()).all()
 
 
 def get_department(db: Session, dept_id: int, *, company_id: int, branch_id: int | None) -> Optional[Department]:
-    scoped_ids = _scoped_department_ids(db, company_id=company_id, branch_id=branch_id)
-    if dept_id not in scoped_ids:
+    dept = (
+        db.query(Department)
+        .filter(Department.id == dept_id, Department.company_id == int(company_id))
+        .first()
+    )
+    if not dept:
         return None
-    return db.query(Department).filter(Department.id == dept_id).first()
+    if branch_id is not None:
+        scoped_ids = _scoped_department_ids(db, company_id=company_id, branch_id=branch_id)
+        if dept_id not in scoped_ids:
+            return None
+    return dept
 
 
 def _get_user_in_scope(db: Session, user_id: int, *, company_id: int, branch_id: int | None) -> Optional[User]:
@@ -110,22 +122,30 @@ def _count_employees_in_department(users: Iterable[User], *, department_name: st
 
 
 def create_department(db: Session, dept_in: DepartmentCreate, *, company_id: int, branch_id: int | None) -> Department:
-    # Enforce manager (if provided) belongs to current tenant scope
+    cid = int(company_id)
     if dept_in.manager_id is not None and _get_user_in_scope(
-        db, int(dept_in.manager_id), company_id=company_id, branch_id=branch_id
+        db, int(dept_in.manager_id), company_id=cid, branch_id=branch_id
     ) is None:
         raise ValueError("Manager not in tenant scope")
 
-    users = _users_in_scope(db, company_id=company_id, branch_id=branch_id)
+    code = (dept_in.code or "").strip()
+    if (
+        db.query(Department)
+        .filter(Department.company_id == cid, func.lower(Department.code) == code.lower())
+        .first()
+    ):
+        raise ValueError("Department code already exists for this company")
 
-    # If employee_count is not provided, derive it from in-scope users tokens
+    users = _users_in_scope(db, company_id=cid, branch_id=branch_id)
+
     employee_count = dept_in.employee_count
     if employee_count is None:
         employee_count = _count_employees_in_department(users, department_name=dept_in.name)
 
     db_dept = Department(
+        company_id=cid,
         name=dept_in.name,
-        code=dept_in.code,
+        code=code,
         manager_id=dept_in.manager_id,
         description=dept_in.description,
         status=dept_in.status or "active",
@@ -146,19 +166,34 @@ def update_department(
     company_id: int,
     branch_id: int | None,
 ) -> Department:
+    cid = int(company_id)
     data = dept_in.model_dump(exclude_unset=True)
 
-    # If changing manager, enforce new manager is in tenant scope
     if "manager_id" in data and data["manager_id"] is not None:
-        if _get_user_in_scope(db, int(data["manager_id"]), company_id=company_id, branch_id=branch_id) is None:
+        if _get_user_in_scope(db, int(data["manager_id"]), company_id=cid, branch_id=branch_id) is None:
             raise ValueError("Manager not in tenant scope")
+
+    new_code = data.get("code")
+    if new_code is not None:
+        code = str(new_code).strip()
+        existing = (
+            db.query(Department)
+            .filter(
+                Department.company_id == cid,
+                func.lower(Department.code) == code.lower(),
+                Department.id != dept.id,
+            )
+            .first()
+        )
+        if existing:
+            raise ValueError("Department code already exists for this company")
+        data["code"] = code
 
     for field, value in data.items():
         setattr(dept, field, value)
 
-    # Optionally re-sync employee_count if not explicitly set but name changed
     if "name" in data and "employee_count" not in data:
-        users = _users_in_scope(db, company_id=company_id, branch_id=branch_id)
+        users = _users_in_scope(db, company_id=cid, branch_id=branch_id)
         dept.employee_count = _count_employees_in_department(users, department_name=dept.name)
 
     db.commit()
@@ -169,5 +204,3 @@ def update_department(
 def delete_department(db: Session, dept: Department) -> None:
     db.delete(dept)
     db.commit()
-
-

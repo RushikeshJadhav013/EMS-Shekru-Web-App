@@ -615,6 +615,7 @@ def list_salaries(
             db.query(Department.name)
             .filter(func.lower(Department.name).in_(tokens_lower))
             .filter(Department.status == "active")
+            .filter(Department.company_id == int(scope["company_id"]))
             .all()
         )
         found_lower = {name.lower() for (name,) in rows if name}
