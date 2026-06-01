@@ -14,6 +14,7 @@ def create_shift(
     name: str,
     start_time: str,
     end_time: str,
+    company_id: int,
     department: Optional[str] = None,
     description: Optional[str] = None,
     is_active: bool = True,
@@ -27,6 +28,7 @@ def create_shift(
             name=name,
             start_time=start,
             end_time=end,
+            company_id=company_id,
             department=department,
             description=description,
             is_active=is_active,
@@ -40,23 +42,31 @@ def create_shift(
         raise ValueError(f"Failed to create shift: {str(e)}")
 
 
-def get_shift(db: Session, shift_id: int) -> Optional[Shift]:
-    """Get a shift by ID"""
-    return db.query(Shift).filter(Shift.shift_id == shift_id).first()
+def get_shift(
+    db: Session,
+    shift_id: int,
+    *,
+    company_id: int | None = None,
+) -> Optional[Shift]:
+    """Get a shift by ID, optionally restricted to a company."""
+    q = db.query(Shift).filter(Shift.shift_id == shift_id)
+    if company_id is not None:
+        q = q.filter(Shift.company_id == company_id)
+    return q.first()
 
 
 def get_shifts_by_department(
     db: Session,
     department: Optional[str] = None,
     *,
+    company_id: int,
     allowed_departments: Optional[list[str]] = None,
 ) -> List[Shift]:
-    """Get shifts for a department (or global shifts if department is None).
-
-    Option A tenant scoping: because shifts are department-based templates with no company_id,
-    callers can pass allowed_departments to restrict visibility to only departments within a tenant.
-    """
-    query = db.query(Shift).filter(Shift.is_active == True)
+    """Get active shifts for a company and department (or company-global shifts if department is None)."""
+    query = db.query(Shift).filter(
+        Shift.is_active == True,
+        Shift.company_id == company_id,
+    )
     
     if department:
         # Get department-specific shifts and global shifts (where department is NULL)
@@ -84,13 +94,21 @@ def get_shifts_by_department(
     return query.order_by(Shift.start_time).all()
 
 
-def get_shifts_for_department_tokens(db: Session, department_tokens: List[str]) -> List[Shift]:
-    """Return active shifts for any of the given department tokens (plus global shifts)."""
+def get_shifts_for_department_tokens(
+    db: Session,
+    department_tokens: List[str],
+    *,
+    company_id: int,
+) -> List[Shift]:
+    """Return active shifts for any of the given department tokens (plus company-global shifts)."""
     tokens = [t.strip().lower() for t in department_tokens if t and t.strip()]
     if not tokens:
-        return get_shifts_by_department(db, None)
+        return get_shifts_by_department(db, None, company_id=company_id)
 
-    query = db.query(Shift).filter(Shift.is_active == True)
+    query = db.query(Shift).filter(
+        Shift.is_active == True,
+        Shift.company_id == company_id,
+    )
     query = query.filter(
         or_(
             Shift.department.is_(None),
@@ -248,8 +266,10 @@ def get_department_shift_schedule(
     branch_id: int | None = None,
 ) -> dict:
     """Get shift schedule for a department on a specific date"""
-    # Get all shifts for the department
-    shifts = get_shifts_by_department(db, department)
+    if company_id is None:
+        raise ValueError("company_id is required for department shift schedule")
+    # Get all shifts for the department within the company
+    shifts = get_shifts_by_department(db, department, company_id=company_id)
     
     # Get all assignments for this date
     assignments_q = (

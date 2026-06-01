@@ -108,6 +108,7 @@ def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optio
             ShiftAssignment.user_id == user.user_id,
             ShiftAssignment.assignment_date == leave_date,
             Shift.is_active.is_(True),
+            Shift.company_id == user.company_id,
         )
         .order_by(ShiftAssignment.updated_at.desc(), ShiftAssignment.created_at.desc())
         .first()
@@ -123,6 +124,7 @@ def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optio
             db.query(Shift)
             .filter(
                 Shift.is_active.is_(True),
+                Shift.company_id == int(company_id),
                 (
                     normalized_name == user_shift_type
                 )

@@ -33,6 +33,7 @@ class DepartmentStatusUpdate(BaseModel):
 
 class DepartmentOut(DepartmentBase):
     id: int
+    company_id: int
     created_at: datetime
     updated_at: datetime
 

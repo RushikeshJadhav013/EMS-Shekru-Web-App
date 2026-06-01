@@ -8,6 +8,12 @@ class Shift(Base):
     __tablename__ = "shifts"
 
     shift_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String(255), nullable=False)  # e.g., "Morning Shift", "Evening Shift", "Night Shift"
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)

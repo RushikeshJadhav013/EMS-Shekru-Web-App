@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models.user import User
+from app.db.models.department import Department
 from app.schemas.department_schema import DepartmentOut, DepartmentCreate, DepartmentUpdate, DepartmentStatusUpdate
 from app.crud.department_crud import (
     list_departments,
@@ -78,7 +79,8 @@ def update_department_endpoint(
         if old_manager_id:
             other_depts_with_old_manager = db.query(Department).filter(
                 Department.manager_id == old_manager_id,
-                Department.id != dept_id
+                Department.id != dept_id,
+                Department.company_id == int(scope["company_id"]),
             ).count()
             
             if other_depts_with_old_manager == 0:
@@ -195,9 +197,8 @@ def sync_departments_from_users(
     Auto-detect departments from existing users and create department entries.
     Scans all users, finds unique department names, and creates missing departments.
     """
-    from app.db.models.department import Department
-    from sqlalchemy import func
-    
+    company_id = int(scope["company_id"])
+
     # Get all user department strings and split into tokens, normalizing each token.
     q = (
         db.query(User.department)
@@ -251,19 +252,23 @@ def sync_departments_from_users(
             # Ensure code is unique
             base_code = code
             counter = 1
-            while db.query(Department).filter(Department.code == code).first():
+            while (
+                db.query(Department)
+                .filter(Department.code == code, Department.company_id == company_id)
+                .first()
+            ):
                 code = f"{base_code}{counter}"
                 counter += 1
             
             new_dept = Department(
+                company_id=company_id,
                 name=dept_name_clean,
                 code=code,
-                description=f"Auto-created from user departments",
+                description="Auto-created from user departments",
                 status="active",
                 employee_count=user_count,
                 manager_id=None,
-                # budget=None,
-                location=None
+                location=None,
             )
             db.add(new_dept)
             departments_created.append(dept_name_clean)
