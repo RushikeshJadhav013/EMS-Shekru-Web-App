@@ -55,6 +55,7 @@ class AttendanceBase(BaseModel):
 
 class AttendanceOut(AttendanceBase):
     attendance_id: int = Field(..., gt=0, description="Unique attendance ID")
+    company_id: int = Field(..., gt=0, description="Company this attendance belongs to")
     user_id: int = Field(..., gt=0, description="User ID")
     check_in: datetime = Field(..., description="Check-in timestamp")
     check_out: Optional[datetime] = Field(None, description="Check-out timestamp")

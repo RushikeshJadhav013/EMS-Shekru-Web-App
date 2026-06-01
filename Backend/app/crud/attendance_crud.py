@@ -30,15 +30,24 @@ from app.config.company_config import (
     COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
 )
 
+def get_user_company_id(db: Session, user_id: int) -> int:
+    row = db.query(User.company_id).filter(User.user_id == user_id).first()
+    if row is None or row[0] is None:
+        raise ValueError("User is not assigned to a company")
+    return int(row[0])
+
+
 def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
     try:
+        company_id = get_user_company_id(db, user_id)
         today_start, today_end = get_today_bounds_ist()
         
         # Check for existing attendance record today
         attendance = (
             db.query(Attendance)
             .filter(
-                Attendance.user_id == user_id, 
+                Attendance.user_id == user_id,
+                Attendance.company_id == company_id,
                 Attendance.check_in >= today_start,
                 Attendance.check_out.is_(None)  # Only consider open check-ins
             )
@@ -52,6 +61,7 @@ def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = 
             attendance.selfie = selfie or attendance.selfie
         else:
             attendance = Attendance(
+                company_id=company_id,
                 user_id=user_id,
                 check_in=now_ist(),
                 gps_location=gps_location,
@@ -69,10 +79,15 @@ def check_in(db: Session, user_id: int, gps_location: str = None, selfie: str = 
         raise e
 
 def check_out(db: Session, user_id: int, gps_location: str = None, selfie: str = None):
+    company_id = get_user_company_id(db, user_id)
     today_start, today_end = get_today_bounds_ist()
     attendance = (
         db.query(Attendance)
-        .filter(Attendance.user_id == user_id, Attendance.check_in >= today_start)
+        .filter(
+            Attendance.user_id == user_id,
+            Attendance.company_id == company_id,
+            Attendance.check_in >= today_start,
+        )
         .first()
     )
     if not attendance:
@@ -102,7 +117,7 @@ def auto_checkout_overdue_attendances(db: Session, scope: dict | None = None) ->
         .filter(User.is_active.is_(True))
     )
     if scope is not None:
-        q = q.filter(User.company_id == scope["company_id"])
+        q = q.filter(Attendance.company_id == int(scope["company_id"]))
         branch_id = scope.get("branch_id")
         if branch_id is not None:
             q = q.filter(User.branch_id == branch_id)
@@ -256,12 +271,16 @@ def _draw_shekru_footer(canvas_obj, width):
 
 def list_attendance(db: Session, user_id: int):
     six_months_ago = now_ist() - timedelta(days=180)
-    return (
-        db.query(Attendance)
-        .filter(Attendance.user_id == user_id, Attendance.check_in >= six_months_ago)
-        .order_by(Attendance.check_in.desc())
-        .all()
+    q = db.query(Attendance).filter(
+        Attendance.user_id == user_id,
+        Attendance.check_in >= six_months_ago,
     )
+    try:
+        company_id = get_user_company_id(db, user_id)
+        q = q.filter(Attendance.company_id == company_id)
+    except ValueError:
+        pass
+    return q.order_by(Attendance.check_in.desc()).all()
 
 def total_present_today(db: Session):
     today_start, today_end = get_today_bounds_ist()
@@ -1000,17 +1019,18 @@ def build_monthly_attendance_grid(
     for user in users:
         attendance_map = {}
 
-        records = (
-            db.query(Attendance)
-            .filter(
-                Attendance.user_id == user.user_id,
-                Attendance.check_in.between(
-                    date(year, month, 1),
-                    date(year, month, total_days)
-                )
-            )
-            .all()
-        )
+        month_filters = [
+            Attendance.user_id == user.user_id,
+            Attendance.check_in.between(
+                date(year, month, 1),
+                date(year, month, total_days),
+            ),
+        ]
+        if user.company_id is not None:
+            month_filters.append(Attendance.company_id == int(user.company_id))
+        elif company_id is not None:
+            month_filters.append(Attendance.company_id == int(company_id))
+        records = db.query(Attendance).filter(*month_filters).all()
 
         record_by_day = {
             r.check_in.day: r for r in records if r.check_in

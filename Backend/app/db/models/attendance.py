@@ -1,12 +1,13 @@
-from sqlalchemy import Column, Integer, DateTime, ForeignKey, String, Float, func, Text
+from sqlalchemy import Column, Integer, DateTime, ForeignKey, String, Float, Text
 from sqlalchemy.orm import relationship
 from app.db.database import Base
-from datetime import datetime
+
 
 class Attendance(Base):
     __tablename__ = "attendances"
 
     attendance_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"))
     check_in = Column(DateTime, nullable=False)
     check_out = Column(DateTime, nullable=True)
