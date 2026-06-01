@@ -1,11 +1,18 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, func
 from sqlalchemy.orm import relationship
 from app.db.database import Base
+
 
 class Vacancy(Base):
     __tablename__ = "vacancies"
 
     vacancy_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     title = Column(String(255), nullable=False)
     department = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
@@ -21,14 +28,14 @@ class Vacancy(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     closing_date = Column(DateTime(timezone=True), nullable=True)
-    
+
     # Social media posting
     posted_on_linkedin = Column(Boolean, default=False)
     posted_on_naukri = Column(Boolean, default=False)
     posted_on_indeed = Column(Boolean, default=False)
     posted_on_other = Column(Boolean, default=False)
     social_media_links = Column(Text, nullable=True)  # JSON string of links
-    
+
     # Relationships
     created_by_user = relationship("User", foreign_keys=[created_by])
     candidates = relationship("Candidate", back_populates="vacancy", cascade="all, delete-orphan")
@@ -39,14 +46,20 @@ class Candidate(Base):
     __tablename__ = "candidates"
 
     candidate_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(
+        Integer,
+        ForeignKey("companies.company_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     vacancy_id = Column(Integer, ForeignKey("vacancies.vacancy_id", ondelete="CASCADE"), nullable=False)
-    
+
     # Personal Info
     name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False)
     phone = Column(String(20), nullable=True)
     resume_url = Column(String(1024), nullable=True)
-    
+
     # Application Details
     cover_letter = Column(Text, nullable=True)
     experience_years = Column(Integer, nullable=True)
@@ -54,22 +67,20 @@ class Candidate(Base):
     current_position = Column(String(255), nullable=True)
     expected_salary = Column(String(100), nullable=True)
     notice_period = Column(String(50), nullable=True)
-    
+
     # Status
     status = Column(String(50), default="applied")  # applied, screening, interview, offered, rejected, hired, withdrawn
     # Note: interview_date and interview_notes are deprecated. Use interviews table instead.
-    # Keeping columns for backward compatibility during migration period.
     interview_date = Column(DateTime(timezone=True), nullable=True)  # DEPRECATED: Use interviews table
     interview_notes = Column(Text, nullable=True)  # DEPRECATED: Use interviews table
-    
+
     # Source
     source = Column(String(100), nullable=True)  # linkedin, naukri, indeed, referral, other
-    
+
     # Timestamps
     applied_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     # Relationships
     vacancy = relationship("Vacancy", back_populates="candidates")
     interviews = relationship("Interview", back_populates="candidate", cascade="all, delete-orphan")
-
