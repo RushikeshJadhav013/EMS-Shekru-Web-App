@@ -12,6 +12,7 @@ class CompanyHolidayCreate(BaseModel):
 
 class CompanyHolidayOut(BaseModel):
     id: int
+    company_id: int = Field(..., gt=0, description="Company this holiday belongs to")
     date: date
     name: str
     description: Optional[str]
@@ -29,6 +30,7 @@ class DeptWeekOffRuleCreate(BaseModel):
 
 class DeptWeekOffRuleOut(BaseModel):
     id: int
+    company_id: int = Field(..., gt=0, description="Company this week-off rule belongs to")
     department: str
     days: List[str]
     is_active: bool

@@ -34,7 +34,15 @@ def add_holiday(
     scope: dict = Depends(get_tenant_scope),
 ):
     try:
-        h = create_holiday(db, holiday_date=payload.date, name=payload.name, description=payload.description, created_by=current_user.user_id, is_recurring=payload.is_recurring)
+        h = create_holiday(
+            db,
+            company_id=int(scope["company_id"]),
+            holiday_date=payload.date,
+            name=payload.name,
+            description=payload.description,
+            created_by=current_user.user_id,
+            is_recurring=payload.is_recurring,
+        )
         create_holiday_notifications(
             db,
             holiday=h,
@@ -67,9 +75,9 @@ def get_holidays(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     return list_holidays(
         db,
+        company_id=int(scope["company_id"]),
         start=start,
         end=end,
-        company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )
 
@@ -81,15 +89,21 @@ def remove_holiday(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     scope: dict = Depends(get_tenant_scope),
 ):
-    holiday = db.query(CompanyHoliday).filter(CompanyHoliday.id == holiday_id).first()
+    holiday = (
+        db.query(CompanyHoliday)
+        .filter(
+            CompanyHoliday.id == holiday_id,
+            CompanyHoliday.company_id == int(scope["company_id"]),
+        )
+        .first()
+    )
     if not holiday:
         raise HTTPException(status_code=404, detail="Holiday not found")
 
     ok = delete_holiday(
         db,
         holiday_id,
-        company_id=scope["company_id"],
-        branch_id=scope.get("branch_id"),
+        company_id=int(scope["company_id"]),
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Holiday not found")
@@ -111,10 +125,17 @@ def set_weekoff_rule(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     scope: dict = Depends(get_tenant_scope),
 ):
-    rule = upsert_weekoff_rule(db, department=payload.department, days=payload.days, created_by=current_user.user_id)
+    rule = upsert_weekoff_rule(
+        db,
+        company_id=int(scope["company_id"]),
+        department=payload.department,
+        days=payload.days,
+        created_by=current_user.user_id,
+    )
     # Convert days string to list for response model
     rule_out = DeptWeekOffRuleOut(
         id=rule.id,
+        company_id=int(rule.company_id),
         department=rule.department,
         days=[d.strip() for d in rule.days.split(",") if d.strip()],
         is_active=rule.is_active,
@@ -132,20 +153,33 @@ def get_weekoff_rules(
 ):
     rules = list_weekoff_rules(
         db,
+        company_id=int(scope["company_id"]),
         department=department,
-        company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )
     out = []
     for r in rules:
-        out.append(DeptWeekOffRuleOut(id=r.id, department=r.department, days=[d.strip() for d in r.days.split(",") if d.strip()], is_active=r.is_active, created_at=r.created_at))
+        out.append(
+            DeptWeekOffRuleOut(
+                id=r.id,
+                company_id=int(r.company_id),
+                department=r.department,
+                days=[d.strip() for d in r.days.split(",") if d.strip()],
+                is_active=r.is_active,
+                created_at=r.created_at,
+            )
+        )
     return out
 
 
 @router.delete("/weekoffs/{rule_id}")
-def delete_weekoff(rule_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR))):
-    from app.crud.leave_calendar_crud import delete_weekoff_rule
-    ok = delete_weekoff_rule(db, rule_id)
+def delete_weekoff(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    scope: dict = Depends(get_tenant_scope),
+):
+    ok = delete_weekoff_rule(db, rule_id, company_id=int(scope["company_id"]))
     if not ok:
         raise HTTPException(status_code=404, detail="Week-off rule not found")
     return {"message": "Week-off rule deleted"}
