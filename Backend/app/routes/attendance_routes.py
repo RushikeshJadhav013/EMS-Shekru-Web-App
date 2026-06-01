@@ -79,74 +79,74 @@ class LogoutPayload(BaseModel):
     user_id: int
     logout_timestamp: str
 
-@router.post("/logout")
-async def logout_with_pause(
-    payload: LogoutPayload,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user)
-):
-    """
-    Logout endpoint that treats logout as a pause in online status.
-    Records logout timestamp to pause Online time and start Offline time tracking.
-    """
-    try:
-        from app.db.models.online_status import OnlineStatus
+# @router.post("/logout")
+# async def logout_with_pause(
+#     payload: LogoutPayload,
+#     db: Session = Depends(get_db),
+#     current_user=Depends(get_current_user)
+# ):
+#     """
+#     Logout endpoint that treats logout as a pause in online status.
+#     Records logout timestamp to pause Online time and start Offline time tracking.
+#     """
+#     try:
+#         from app.db.models.online_status import OnlineStatus
         
-        # Verify user matches current user
-        if current_user.user_id != payload.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot logout for another user"
-            )
+#         # Verify user matches current user
+#         if current_user.user_id != payload.user_id:
+#             raise HTTPException(
+#                 status_code=status.HTTP_403_FORBIDDEN,
+#                 detail="Cannot logout for another user"
+#             )
         
-        # Find today's active attendance record
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
+#         # Find today's active attendance record
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         today_end = today_start + timedelta(days=1)
         
-        attendance_q = db.query(Attendance).filter(
-            Attendance.user_id == payload.user_id,
-            Attendance.check_in >= today_start,
-            Attendance.check_in < today_end,
-            Attendance.check_out.is_(None)  # Only active attendance
-        )
-        if current_user.company_id is not None:
-            attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
-        attendance = attendance_q.first()
+#         attendance_q = db.query(Attendance).filter(
+#             Attendance.user_id == payload.user_id,
+#             Attendance.check_in >= today_start,
+#             Attendance.check_in < today_end,
+#             Attendance.check_out.is_(None)  # Only active attendance
+#         )
+#         if current_user.company_id is not None:
+#             attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
+#         attendance = attendance_q.first()
         
-        if attendance:
-            # Get current online status
-            latest_status = db.query(OnlineStatus).filter(
-                OnlineStatus.user_id == payload.user_id,
-                OnlineStatus.timestamp >= today_start,
-                OnlineStatus.timestamp < today_end
-            ).order_by(OnlineStatus.timestamp.desc()).first()
+#         if attendance:
+#             # Get current online status
+#             latest_status = db.query(OnlineStatus).filter(
+#                 OnlineStatus.user_id == payload.user_id,
+#                 OnlineStatus.timestamp >= today_start,
+#                 OnlineStatus.timestamp < today_end
+#             ).order_by(OnlineStatus.timestamp.desc()).first()
             
-            # If user is currently online, record logout as going offline
-            current_online_status = True if not latest_status else latest_status.is_online
+#             # If user is currently online, record logout as going offline
+#             current_online_status = True if not latest_status else latest_status.is_online
             
-            if current_online_status:
-                # Use server-side IST timestamp to avoid timezone and client clock issues
-                logout_timestamp = now_ist()
+#             if current_online_status:
+#                 # Use server-side IST timestamp to avoid timezone and client clock issues
+#                 logout_timestamp = now_ist()
                 
-                # Create offline status entry for logout
-                offline_status = OnlineStatus(
-                    attendance_id=attendance.attendance_id,
-                    user_id=payload.user_id,
-                    is_online=False,
-                    reason="Logout - session paused",
-                    timestamp=logout_timestamp
-                )
-                db.add(offline_status)
-                db.commit()
+#                 # Create offline status entry for logout
+#                 offline_status = OnlineStatus(
+#                     attendance_id=attendance.attendance_id,
+#                     user_id=payload.user_id,
+#                     is_online=False,
+#                     reason="Logout - session paused",
+#                     timestamp=logout_timestamp
+#                 )
+#                 db.add(offline_status)
+#                 db.commit()
                 
-                logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
+#                 logger.info(f"User {payload.user_id} logged out - status set to offline for pause/resume")
             
-        return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
+#         return {"message": "Logout successful - session paused", "user_id": current_user.user_id}
         
-    except Exception as e:
-        logger.error(f"Logout error for user {current_user.user_id}: {e}")
-        # Always allow logout even if pause recording fails
-        return {"message": "Logout successful", "user_id": current_user.user_id}
+#     except Exception as e:
+#         logger.error(f"Logout error for user {current_user.user_id}: {e}")
+#         # Always allow logout even if pause recording fails
+#         return {"message": "Logout successful", "user_id": current_user.user_id}
 
 
 # Login resume endpoint to handle resume functionality
@@ -154,83 +154,83 @@ class LoginResumePayload(BaseModel):
     user_id: int
     login_timestamp: str
 
-@router.post("/login-resume")
-async def login_resume(
-    payload: LoginResumePayload,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user)
-):
-    """
-    Login resume endpoint that treats login as resuming from a pause.
-    Records login timestamp to resume Online time and add offline duration to Offline time.
-    """
-    try:
-        from app.db.models.online_status import OnlineStatus
+# @router.post("/login-resume")
+# async def login_resume(
+#     payload: LoginResumePayload,
+#     db: Session = Depends(get_db),
+#     current_user=Depends(get_current_user)
+# ):
+#     """
+#     Login resume endpoint that treats login as resuming from a pause.
+#     Records login timestamp to resume Online time and add offline duration to Offline time.
+#     """
+#     try:
+#         from app.db.models.online_status import OnlineStatus
         
-        # Verify user matches current user
-        if current_user.user_id != payload.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot resume for another user"
-            )
+#         # Verify user matches current user
+#         if current_user.user_id != payload.user_id:
+#             raise HTTPException(
+#                 status_code=status.HTTP_403_FORBIDDEN,
+#                 detail="Cannot resume for another user"
+#             )
         
-        # Find today's active attendance record
-        today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
+#         # Find today's active attendance record
+#         today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
+#         today_end = today_start + timedelta(days=1)
         
-        attendance_q = db.query(Attendance).filter(
-            Attendance.user_id == payload.user_id,
-            Attendance.check_in >= today_start,
-            Attendance.check_in < today_end,
-            Attendance.check_out.is_(None)  # Only active attendance
-        )
-        if current_user.company_id is not None:
-            attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
-        attendance = attendance_q.first()
+#         attendance_q = db.query(Attendance).filter(
+#             Attendance.user_id == payload.user_id,
+#             Attendance.check_in >= today_start,
+#             Attendance.check_in < today_end,
+#             Attendance.check_out.is_(None)  # Only active attendance
+#         )
+#         if current_user.company_id is not None:
+#             attendance_q = attendance_q.filter(Attendance.company_id == int(current_user.company_id))
+#         attendance = attendance_q.first()
         
-        if attendance:
-            # Get current online status
-            latest_status = db.query(OnlineStatus).filter(
-                OnlineStatus.user_id == payload.user_id,
-                OnlineStatus.timestamp >= today_start,
-                OnlineStatus.timestamp < today_end
-            ).order_by(OnlineStatus.timestamp.desc()).first()
+#         if attendance:
+#             # Get current online status
+#             latest_status = db.query(OnlineStatus).filter(
+#                 OnlineStatus.user_id == payload.user_id,
+#                 OnlineStatus.timestamp >= today_start,
+#                 OnlineStatus.timestamp < today_end
+#             ).order_by(OnlineStatus.timestamp.desc()).first()
             
-            # If user is currently offline (from logout), record login as going online
-            current_online_status = True if not latest_status else latest_status.is_online
+#             # If user is currently offline (from logout), record login as going online
+#             current_online_status = True if not latest_status else latest_status.is_online
             
-            if not current_online_status and latest_status:
-                # Use server-side IST timestamp to avoid timezone and client clock issues
-                login_timestamp = now_ist()
+#             if not current_online_status and latest_status:
+#                 # Use server-side IST timestamp to avoid timezone and client clock issues
+#                 login_timestamp = now_ist()
                 
-                # Calculate offline duration between last offline log and this login
-                offline_duration = login_timestamp - latest_status.timestamp
-                offline_seconds = offline_duration.total_seconds()
+#                 # Calculate offline duration between last offline log and this login
+#                 offline_duration = login_timestamp - latest_status.timestamp
+#                 offline_seconds = offline_duration.total_seconds()
                 
-                # Create online status entry for login resume
-                online_status = OnlineStatus(
-                    attendance_id=attendance.attendance_id,
-                    user_id=payload.user_id,
-                    is_online=True,
-                    reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
-                    timestamp=login_timestamp
-                )
-                db.add(online_status)
-                db.commit()
+#                 # Create online status entry for login resume
+#                 online_status = OnlineStatus(
+#                     attendance_id=attendance.attendance_id,
+#                     user_id=payload.user_id,
+#                     is_online=True,
+#                     reason=f"Login - session resumed (was offline for {int(offline_seconds)}s)",
+#                     timestamp=login_timestamp
+#                 )
+#                 db.add(online_status)
+#                 db.commit()
                 
-                logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
+#                 logger.info(f"User {payload.user_id} logged in - status resumed to online after {int(offline_seconds)}s offline")
                 
-                return {
-                    "message": "Login successful - session resumed", 
-                    "user_id": current_user.user_id,
-                    "offline_duration_seconds": int(offline_seconds)
-                }
+#                 return {
+#                     "message": "Login successful - session resumed", 
+#                     "user_id": current_user.user_id,
+#                     "offline_duration_seconds": int(offline_seconds)
+#                 }
             
-        return {"message": "Login successful", "user_id": current_user.user_id}
+#         return {"message": "Login successful", "user_id": current_user.user_id}
         
-    except Exception as e:
-        logger.error(f"Login resume error for user {current_user.user_id}: {e}")
-        return {"message": "Login successful", "user_id": current_user.user_id}
+#     except Exception as e:
+#         logger.error(f"Login resume error for user {current_user.user_id}: {e}")
+#         return {"message": "Login successful", "user_id": current_user.user_id}
 
 
 class AttendanceJSONPayload(BaseModel):
