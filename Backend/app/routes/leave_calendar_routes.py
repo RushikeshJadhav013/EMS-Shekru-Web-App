@@ -16,7 +16,7 @@ from app.schemas.leave_calendar_schema import (
 )
 from app.crud.leave_calendar_crud import (
     create_holiday, list_holidays, delete_holiday,
-    upsert_weekoff_rule, list_weekoff_rules,
+    upsert_weekoff_rule, list_weekoff_rules, delete_weekoff_rule,
     get_leave_allocation, update_leave_allocation,
     get_calendar_events, create_holiday_notifications,
     list_holiday_notifications, mark_holiday_notification_as_read
