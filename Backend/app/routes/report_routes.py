@@ -60,6 +60,31 @@ def _scoped_user_lookup(db: Session, scope: dict, user_id: int) -> User | None:
     )
 
 
+def _assert_current_user_in_scope(db: Session, current_user: User, scope: dict) -> None:
+    """Admins are scoped via assignments in get_tenant_scope, not users.company_id."""
+    if current_user.role == RoleEnum.ADMIN:
+        return
+    if _scoped_user_lookup(db, scope, int(current_user.user_id)) is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Current user is outside selected tenant scope",
+        )
+
+
+def _user_for_task_report(db: Session, scope: dict, user_id: int | None) -> User | None:
+    """Resolve user names for task PDF rows (includes admins on company-scoped tasks)."""
+    if user_id is None:
+        return None
+    user = _scoped_user_lookup(db, scope, int(user_id))
+    if user is not None:
+        return user
+    return (
+        db.query(User)
+        .filter(User.user_id == int(user_id), User.is_active.is_(True))
+        .first()
+    )
+
+
 @router.get("/leave")
 def export_leave_report(
     format: str = Query(..., description="Export format: csv or pdf"),
@@ -1411,12 +1436,7 @@ async def export_task_management_report(
         # -----------------------------
         # Scope to tasks directly related to current user only
         # -----------------------------
-        # Ensure current user is in the selected tenant scope
-        if _scoped_user_lookup(db, scope, int(current_user.user_id)) is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail="Current user is outside selected tenant scope",
-            )
+        _assert_current_user_in_scope(db, current_user, scope)
 
         query = (
             db.query(Task)
@@ -1472,6 +1492,8 @@ async def export_task_management_report(
             scope=scope,
         )
     
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
@@ -1556,9 +1578,9 @@ def generate_task_management_pdf(tasks, department, generated_by, period_label, 
     ]
     all_rows = []
     for task in tasks:
-        assigned_by_user = _scoped_user_lookup(db, scope, int(task.assigned_by)) if task.assigned_by else None
-        assigned_to_user = _scoped_user_lookup(db, scope, int(task.assigned_to)) if task.assigned_to else None
-        last_passed_to_user = _scoped_user_lookup(db, scope, int(task.last_passed_to)) if task.last_passed_to else None
+        assigned_by_user = _user_for_task_report(db, scope, task.assigned_by)
+        assigned_to_user = _user_for_task_report(db, scope, task.assigned_to)
+        last_passed_to_user = _user_for_task_report(db, scope, task.last_passed_to)
         assigned_by = assigned_by_user.name if assigned_by_user else "N/A"
         assigned_to = assigned_to_user.name if assigned_to_user else "N/A"
         last_passed_to = last_passed_to_user.name if last_passed_to_user else "N/A"
