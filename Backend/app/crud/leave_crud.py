@@ -14,6 +14,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 from app.db.models.leave import Leave
 from app.db.models.user import User
+from app.utils.leave_validation import compute_chargeable_days, _duration_days_value
 from app.config.company_config import (
     COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
 )
@@ -444,6 +445,8 @@ def apply_leave(
     reason: str,
     leave_type: str = "annual",
     company_id: int | None = None,
+    duration_days: float = 1.0,
+    leave_session: str | None = None,
 ):
     if company_id is None:
         company_id = get_user_company_id(db, user_id)
@@ -454,6 +457,8 @@ def apply_leave(
         end_date=end_date,
         reason=reason,
         leave_type=leave_type,
+        duration_days=duration_days,
+        leave_session=leave_session,
     )
     db.add(leave)
     db.commit()
@@ -487,6 +492,9 @@ def update_leave(
     reason: Optional[str] = None,
     leave_type: Optional[str] = None,
     company_id: int | None = None,
+    duration_days: float | None = None,
+    leave_session: str | None = None,
+    clear_leave_session: bool = False,
 ):
     q = db.query(Leave).filter(Leave.leave_id == leave_id, Leave.user_id == user_id)
     if company_id is not None:
@@ -506,6 +514,12 @@ def update_leave(
         leave.reason = reason
     if leave_type:
         leave.leave_type = leave_type
+    if duration_days is not None:
+        leave.duration_days = duration_days
+    if clear_leave_session:
+        leave.leave_session = None
+    elif leave_session is not None:
+        leave.leave_session = leave_session
 
     db.commit()
     db.refresh(leave)
@@ -590,14 +604,22 @@ def get_leave_balance(db: Session, user_id: int, company_id: int | None = None):
 
     for leave in approved_leaves:
         raw_type = (leave.leave_type or "annual").lower()
-        # Map maternity, paternity, unpaid and explicit "other" into the 'other' bucket
-        if raw_type in ("maternity", "paternity", "unpaid", "other"):
+        # Unpaid (LOP) does not consume paid allocation buckets.
+        if raw_type == "unpaid":
+            continue
+        if raw_type in ("maternity", "paternity", "other"):
             leave_type = "other"
         else:
             leave_type = raw_type
         start_date = leave.start_date.date() if isinstance(leave.start_date, datetime) else leave.start_date
         end_date = leave.end_date.date() if isinstance(leave.end_date, datetime) else leave.end_date
-        days = (end_date - start_date).days + 1
+        days = int(
+            compute_chargeable_days(
+                start_date,
+                end_date,
+                duration_days=_duration_days_value(leave),
+            )
+        )
         if days < 0:
             days = 0
 

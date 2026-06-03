@@ -56,8 +56,100 @@ from app.services.office_timing_service import resolve_office_start_time
 from fastapi import Body
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
+from app.utils.leave_validation import (
+    compute_chargeable_days,
+    find_conflicting_leave,
+    is_unpaid_leave,
+    validate_advance_notice,
+    validate_leave_shape,
+)
 
 router = APIRouter(prefix="/leave", tags=["Leave"])
+
+
+def _enforce_leave_business_rules(
+    db: Session,
+    user: User,
+    company_id: int,
+    *,
+    leave_type: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    duration_days: float,
+    leave_session: Optional[str],
+    exclude_leave_id: Optional[int] = None,
+) -> float:
+    """Shared validation for create/update leave. Returns chargeable days."""
+    try:
+        duration_days, leave_session = validate_leave_shape(
+            leave_type=leave_type,
+            start_date=start_dt.date(),
+            end_date=end_dt.date(),
+            duration_days=duration_days,
+            leave_session=leave_session,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    chargeable_days = compute_chargeable_days(
+        start_dt, end_dt, duration_days=duration_days
+    )
+
+    if leave_type == "sick" and chargeable_days < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Sick leave must be for at least 1 day.",
+        )
+
+    try:
+        validate_advance_notice(
+            leave_type=leave_type,
+            start_dt=start_dt,
+            shift_start_time_resolver=lambda d: _resolve_user_shift_start_time(db, user, d),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    conflict = find_conflicting_leave(
+        db,
+        user_id=user.user_id,
+        company_id=company_id,
+        start_date=start_dt,
+        end_date=end_dt,
+        leave_type=leave_type,
+        duration_days=duration_days,
+        leave_session=leave_session,
+        exclude_leave_id=exclude_leave_id,
+    )
+    if conflict:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "You have already applied for leave that conflicts on the same date/session "
+                "(overlapping leave request detected)."
+            ),
+        )
+
+    if not is_unpaid_leave(leave_type):
+        balances = get_leave_balance(db, user.user_id, company_id=company_id)
+        eligible_types = {b["leave_type"] for b in balances}
+        if leave_type in eligible_types:
+            balance_entry = next(
+                (b for b in balances if b["leave_type"] == leave_type),
+                None,
+            )
+            if balance_entry:
+                remaining = balance_entry.get("remaining", 0)
+                if chargeable_days > remaining:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Not enough remaining {leave_type} leave. "
+                            f"Remaining: {remaining}. Requested: {chargeable_days}."
+                        ),
+                    )
+
+    return chargeable_days
 
 # -------------------------------------------------------------------
 # Tenant scoping helpers
@@ -100,6 +192,10 @@ def _ensure_leave_in_scope(db: Session, leave_id: int, scope: dict) -> Leave:
 
 
 def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optional[time]:
+    company_id = getattr(user, "company_id", None)
+    if company_id is None:
+        return None
+
     # 1) Date-specific shift assignment has highest precedence.
     assignment = (
         db.query(ShiftAssignment)
@@ -137,9 +233,6 @@ def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optio
             return shift_by_type.start_time
 
     # 3) Final fallback to office timing (department-specific, then company default).
-    company_id = getattr(user, "company_id", None)
-    if company_id is None:
-        return None
     return resolve_office_start_time(db, getattr(user, "department", None), int(company_id))
 
 # Employee applies for leave
@@ -152,11 +245,8 @@ def request_leave(
 ):
     start_dt = datetime.combine(leave.start_date, datetime.min.time())
     end_dt = datetime.combine(leave.end_date, datetime.min.time())
-    
-    # Calculate leave duration
-    leave_days = (end_dt - start_dt).days + 1
-    
-    # Validation 0: Admins cannot apply for leave
+    leave_type = leave.leave_type.lower()
+
     if getattr(user, "role", None) == RoleEnum.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin users cannot apply for leave")
 
@@ -166,83 +256,24 @@ def request_leave(
             detail="User is not assigned to a company",
         )
     company_id = int(user.company_id)
-    
-    # Validation 1: Sick leave minimum duration (1 day)
-    if leave.leave_type.lower() == 'sick' and leave_days < 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Sick leave must be for at least 1 day."
-        )
-    
-    # Validation 2: Advance notice requirements
-    now = now_ist()
-    time_difference = start_dt - now
-    hours_difference = time_difference.total_seconds() / 3600
-    
-    if leave.leave_type.lower() == 'sick':
-        # Sick leave validation is anchored to user shift/office start time, not midnight.
-        shift_start_time = _resolve_user_shift_start_time(db, user, leave.start_date)
-        if shift_start_time is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be validated because office/shift start time is not configured."
-            )
-        shift_start_dt = datetime.combine(leave.start_date, shift_start_time)
-        shift_hours_difference = (shift_start_dt - now).total_seconds() / 3600
 
-        if shift_hours_difference < 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be applied for past dates."
-            )
-        if shift_hours_difference > 24:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be applied for future dates. It must be applied only within 24 hours of the start date."
-            )
-        if shift_hours_difference < 2:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be applied within 2 hours of the start date."
-            )
-    else:
-        # Other leaves require 24 hours advance notice
-        if hours_difference < 24:
-            raise HTTPException(
-                status_code=400,
-                detail="Leave requests (except sick leave) must be submitted at least 24 hours in advance."
-            )
-
-    # Validation 3: Prevent overlapping leave requests (pending or approved)
-    overlapping_leaves = db.query(Leave).filter(
-        Leave.user_id == user.user_id,
-        Leave.company_id == company_id,
-        Leave.status.in_(["Pending", "Approved"]),
-        # (new_start <= old_end) and (new_end >= old_start)
-        Leave.start_date <= end_dt,
-        Leave.end_date >= start_dt
-    ).first()
-    if overlapping_leaves:
-        raise HTTPException(
-            status_code=400,
-            detail="You have already applied for leave for some/all of these dates (overlapping leave request detected)."
-        )
-
-    # Validation 4: Check remaining leave balance for this leave type
-    # Only applies if this leave type is in balance policy
-    balances = get_leave_balance(db, user.user_id, company_id=company_id)
-    leave_type = leave.leave_type.lower()
-    eligible_types = {b['leave_type'] for b in balances}
-    if leave_type in eligible_types:
-        # Find matching balance entry
-        balance_entry = next((b for b in balances if b['leave_type'] == leave_type), None)
-        if balance_entry:
-            remaining = balance_entry.get('remaining', 0)
-            if leave_days > remaining:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Not enough remaining {leave_type} leave. Remaining: {remaining}. Requested: {leave_days}."
-                )
+    duration_days, leave_session = validate_leave_shape(
+        leave_type=leave_type,
+        start_date=leave.start_date,
+        end_date=leave.end_date,
+        duration_days=float(leave.duration_days),
+        leave_session=leave.leave_session,
+    )
+    _enforce_leave_business_rules(
+        db,
+        user,
+        company_id,
+        leave_type=leave_type,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        duration_days=duration_days,
+        leave_session=leave_session,
+    )
 
     new_leave = apply_leave(
         db,
@@ -250,8 +281,10 @@ def request_leave(
         start_dt,
         end_dt,
         leave.reason,
-        leave.leave_type.lower(),
+        leave_type,
         company_id=company_id,
+        duration_days=duration_days,
+        leave_session=leave_session,
     )
     # Create notifications for appropriate recipients based on department and role
     create_leave_request_notifications(db, new_leave, user)
@@ -447,90 +480,42 @@ def update_leave_request(
         end_date = datetime.combine(leave_update.end_date, datetime.min.time())
     if leave_update.leave_type:
         leave_type = leave_update.leave_type.lower()
-    
-    # Use existing values if not provided in update
+
     final_start_date = start_date or existing_leave.start_date
     final_end_date = end_date or existing_leave.end_date
-    final_leave_type = leave_type or existing_leave.leave_type.lower()
-    
-    # Calculate leave duration for validation
-    leave_days = (final_end_date - final_start_date).days + 1
+    final_leave_type = leave_type or (existing_leave.leave_type or "annual").lower()
 
-    # Validation 1: Sick leave minimum duration (1 day)
-    if final_leave_type == 'sick' and leave_days < 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Sick leave must be for at least 1 day."
-        )
-
-    # Validation 2: Advance notice requirements
-    now = now_ist()
-    time_difference = final_start_date - now
-    hours_difference = time_difference.total_seconds() / 3600
-
-    if final_leave_type == 'sick':
-        # Sick leave validation is anchored to user shift/office start time, not midnight.
-        shift_start_time = _resolve_user_shift_start_time(db, user, final_start_date.date())
-        if shift_start_time is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be validated because office/shift start time is not configured."
-            )
-        shift_start_dt = datetime.combine(final_start_date.date(), shift_start_time)
-        shift_hours_difference = (shift_start_dt - now).total_seconds() / 3600
-
-        if shift_hours_difference < 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be applied for past dates."
-            )
-        if shift_hours_difference > 24:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be applied for future dates. It must be applied only within 24 hours of the start date."
-            )
-        if shift_hours_difference < 2:
-            raise HTTPException(
-                status_code=400,
-                detail="Sick leave cannot be applied within 2 hours of the start date."
-            )
+    existing_duration = float(existing_leave.duration_days or 1.0)
+    final_duration = (
+        float(leave_update.duration_days)
+        if leave_update.duration_days is not None
+        else existing_duration
+    )
+    if leave_update.leave_session is not None:
+        final_session = leave_update.leave_session
+    elif leave_update.duration_days is not None and float(leave_update.duration_days) == 1.0:
+        final_session = None
     else:
-        # Other leaves require 24 hours advance notice
-        if hours_difference < 24:
-            raise HTTPException(
-                status_code=400,
-                detail="Leave requests (except sick leave) must be submitted at least 24 hours in advance."
-            )
+        final_session = existing_leave.leave_session
 
-    # Validation 3: Prevent overlapping leave requests (pending or approved, excluding the current leave)
-    overlapping_leaves = db.query(Leave).filter(
-        Leave.user_id == user.user_id,
-        Leave.company_id == int(scope["company_id"]),
-        Leave.status.in_(["Pending", "Approved"]),
-        Leave.leave_id != leave_id,  # Exclude the current leave
-        Leave.start_date <= final_end_date,
-        Leave.end_date >= final_start_date
-    ).first()
-    if overlapping_leaves:
-        raise HTTPException(
-            status_code=400,
-            detail="You have already applied for leave for some/all of these dates (overlapping leave request detected)."
-        )
-
-    # Validation 4: Check remaining leave balance for this leave type
-    # Only applies if this leave type is in balance policy
-    balances = get_leave_balance(db, user.user_id, company_id=int(scope["company_id"]))
-    eligible_types = {b['leave_type'] for b in balances}
-    if final_leave_type in eligible_types:
-        # Find matching balance entry
-        balance_entry = next((b for b in balances if b['leave_type'] == final_leave_type), None)
-        if balance_entry:
-            remaining = balance_entry.get('remaining', 0)
-            if leave_days > remaining:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Not enough remaining {final_leave_type} leave. Remaining: {remaining}. Requested: {leave_days}."
-                )
+    duration_days, leave_session = validate_leave_shape(
+        leave_type=final_leave_type,
+        start_date=final_start_date.date(),
+        end_date=final_end_date.date(),
+        duration_days=final_duration,
+        leave_session=final_session,
+    )
+    _enforce_leave_business_rules(
+        db,
+        user,
+        int(scope["company_id"]),
+        leave_type=final_leave_type,
+        start_dt=final_start_date,
+        end_dt=final_end_date,
+        duration_days=duration_days,
+        leave_session=leave_session,
+        exclude_leave_id=leave_id,
+    )
 
     updated_leave = update_leave_db(
         db,
@@ -541,6 +526,9 @@ def update_leave_request(
         reason=leave_update.reason,
         leave_type=leave_type,
         company_id=int(scope["company_id"]),
+        duration_days=duration_days,
+        leave_session=leave_session,
+        clear_leave_session=leave_session is None,
     )
 
     if updated_leave is None:

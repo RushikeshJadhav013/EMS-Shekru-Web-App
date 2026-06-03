@@ -404,10 +404,18 @@ def get_calendar_events(
     if department:
         ql = ql.filter(User.department == department)
     ql = ql.filter(and_(Leave.start_date <= end, Leave.end_date >= start))
+    from app.utils.leave_validation import unpaid_leave_display_suffix, _duration_days_value
+
     for leave, dept, name in ql.all():
+        type_label = (leave.leave_type or "leave").replace("_", " ").title()
+        suffix = unpaid_leave_display_suffix(
+            leave.leave_type or "",
+            _duration_days_value(leave),
+            leave.leave_session,
+        )
         events.append({
             "id": f"leave-{leave.leave_id}",
-            "title": f"{name} - {leave.leave_type}",
+            "title": f"{name} - {type_label}{suffix}",
             "start": leave.start_date.strftime("%Y-%m-%d"),
             "end": leave.end_date.strftime("%Y-%m-%d") if leave.end_date else leave.start_date.strftime("%Y-%m-%d"),
             "type": "leave",

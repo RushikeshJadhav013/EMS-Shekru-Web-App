@@ -185,51 +185,51 @@ def delete_weekoff(
     return {"message": "Week-off rule deleted"}
 
 
-@router.get("/allocation")
-def get_allocation(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    scope: dict = Depends(get_tenant_scope),
-):
-    cfg = get_leave_allocation(db, int(scope["company_id"]))
-    if not cfg:
-        return {}
-    # Calculate annual as sick + casual
-    annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
-    return {
-        "total_annual_leave": annual_calculated,  # Calculated as sick + casual
-        "sick_leave_allocation": cfg.sick_leave_allocation,
-        "casual_leave_allocation": cfg.casual_leave_allocation,
-        "other_leave_allocation": cfg.other_leave_allocation,
-        "updated_at": cfg.updated_at
-    }
+# @router.get("/allocation")
+# def get_allocation(
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_user),
+#     scope: dict = Depends(get_tenant_scope),
+# ):
+#     cfg = get_leave_allocation(db, int(scope["company_id"]))
+#     if not cfg:
+#         return {}
+#     # Calculate annual as sick + casual
+#     annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
+#     return {
+#         "total_annual_leave": annual_calculated,  # Calculated as sick + casual
+#         "sick_leave_allocation": cfg.sick_leave_allocation,
+#         "casual_leave_allocation": cfg.casual_leave_allocation,
+#         "other_leave_allocation": cfg.other_leave_allocation,
+#         "updated_at": cfg.updated_at
+#     }
 
 
-@router.put("/allocation")
-def update_allocation(
-    payload: LeaveAllocationUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
-    scope: dict = Depends(get_tenant_scope),
-):
-    cfg = update_leave_allocation(
-        db,
-        int(scope["company_id"]),
-        total=payload.total_annual_leave,
-        sick=payload.sick_leave_allocation,
-        casual=payload.casual_leave_allocation,
-        other=payload.other_leave_allocation,
-        updated_by=current_user.user_id,
-    )
-    # Calculate annual as sick + casual
-    annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
-    return {
-        "total_annual_leave": annual_calculated,  # Calculated as sick + casual
-        "sick_leave_allocation": cfg.sick_leave_allocation,
-        "casual_leave_allocation": cfg.casual_leave_allocation,
-        "other_leave_allocation": cfg.other_leave_allocation,
-        "updated_at": cfg.updated_at
-    }
+# @router.put("/allocation")
+# def update_allocation(
+#     payload: LeaveAllocationUpdate,
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+#     scope: dict = Depends(get_tenant_scope),
+# ):
+#     cfg = update_leave_allocation(
+#         db,
+#         int(scope["company_id"]),
+#         total=payload.total_annual_leave,
+#         sick=payload.sick_leave_allocation,
+#         casual=payload.casual_leave_allocation,
+#         other=payload.other_leave_allocation,
+#         updated_by=current_user.user_id,
+#     )
+#     # Calculate annual as sick + casual
+#     annual_calculated = cfg.sick_leave_allocation + cfg.casual_leave_allocation
+#     return {
+#         "total_annual_leave": annual_calculated,  # Calculated as sick + casual
+#         "sick_leave_allocation": cfg.sick_leave_allocation,
+#         "casual_leave_allocation": cfg.casual_leave_allocation,
+#         "other_leave_allocation": cfg.other_leave_allocation,
+#         "updated_at": cfg.updated_at
+#     }
 
 
 @router.get("/calendar", response_model=list[CalendarEvent])
