@@ -1,9 +1,50 @@
-from pydantic import BaseModel, EmailStr, constr, validator, field_validator, Field
+from pydantic import BaseModel, EmailStr, constr, validator, field_validator, model_validator, Field
 from typing import Optional, Literal, List
 from datetime import datetime
 import re
 from app.enums import RoleEnum, GenderEnum
 import re
+
+
+EMPLOYMENT_DATE_ORDER_MESSAGE = "Resignation date cannot be before joining date"
+
+
+def validate_employment_dates(
+    joining_date: Optional[datetime],
+    resignation_date: Optional[datetime],
+) -> None:
+    """Resignation must be on or after joining when both dates are set."""
+    if joining_date is None or resignation_date is None:
+        return
+    join_day = joining_date.date() if isinstance(joining_date, datetime) else joining_date
+    resign_day = (
+        resignation_date.date()
+        if isinstance(resignation_date, datetime)
+        else resignation_date
+    )
+    if resign_day < join_day:
+        raise ValueError(EMPLOYMENT_DATE_ORDER_MESSAGE)
+
+
+def user_validation_error_message(errors: list[dict]) -> str:
+    """One-line HTTP 422 detail for create/update validation."""
+    messages: list[str] = []
+    for err in errors:
+        msg = str(err.get("msg", ""))
+        if msg.startswith("Value error, "):
+            msg = msg[len("Value error, ") :]
+        if EMPLOYMENT_DATE_ORDER_MESSAGE.lower() in msg.lower():
+            messages.append(EMPLOYMENT_DATE_ORDER_MESSAGE)
+            continue
+        messages.append(msg)
+    # De-duplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for msg in messages:
+        if msg not in seen:
+            seen.add(msg)
+            unique.append(msg)
+    return "; ".join(unique)
 
 class UserBase(BaseModel):
     name: constr(min_length=2, max_length=255, strip_whitespace=True) = Field(..., description="Full name (2-255 characters)")
@@ -172,6 +213,11 @@ class UserBase(BaseModel):
         if v < datetime(1900, 1, 1):
             raise ValueError('Resignation date cannot be before 1900')
         return v
+
+    @model_validator(mode='after')
+    def validate_joining_resignation_order(self) -> 'UserBase':
+        validate_employment_dates(self.joining_date, self.resignation_date)
+        return self
     
     @field_validator('shift_type', mode='before')
     @classmethod

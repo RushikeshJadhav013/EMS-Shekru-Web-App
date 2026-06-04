@@ -343,7 +343,7 @@ app.include_router(tenant_router)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     response = JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail}
+        content=jsonable_encoder({"detail": exc.detail}),
     )
     # Add CORS headers to error responses
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -390,7 +390,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     response = JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail}
+        content=jsonable_encoder({"detail": exc.detail}),
     )
     # Add CORS headers to error responses
     response.headers["Access-Control-Allow-Origin"] = "*"

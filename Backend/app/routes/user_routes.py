@@ -4,7 +4,16 @@ from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Literal
 from pathlib import Path
 from app.utils.timezone import now_ist
-from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema, BulkUpdateStatusSchema
+from app.schemas.user_schema import (
+    UserCreate,
+    UserOut,
+    UpdateRoleSchema,
+    UpdateStatusSchema,
+    BulkUpdateStatusSchema,
+    validate_employment_dates,
+    EMPLOYMENT_DATE_ORDER_MESSAGE,
+    user_validation_error_message,
+)
 from app.crud.user_crud import (
     create_user,
     list_users,
@@ -32,7 +41,7 @@ import os
 import shutil
 from datetime import datetime
 import re
-from pydantic import EmailStr
+from pydantic import EmailStr, ValidationError
 from sqlalchemy import func
 from starlette.responses import Response
 from starlette.background import BackgroundTask
@@ -73,6 +82,17 @@ def _parse_optional_form_datetime(value: Optional[str]) -> Optional[datetime]:
     )
 
 
+def _build_user_create(**data) -> UserCreate:
+    """Build UserCreate from form fields; map Pydantic errors to HTTP 422."""
+    try:
+        return UserCreate(**data)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=user_validation_error_message(exc.errors()),
+        ) from None
+
+
 def _sanitize_user_record(user: User) -> dict:
     data = UserOut.model_validate(user).model_dump()
     if data.get("profile_photo") and not _profile_photo_exists(data["profile_photo"]):
@@ -83,7 +103,6 @@ def _sanitize_user_record(user: User) -> dict:
 def _sanitize_users_response(payload: Union[User, List[User]]) -> Union[dict, List[dict]]:
     if isinstance(payload, list):
         return [_sanitize_user_record(item) for item in payload]
-    return _sanitize_user_record(payload)
     return _sanitize_user_record(payload)
 
 
@@ -256,7 +275,7 @@ def register_employee(
     # Normalize department to consistent format (First letter uppercase, rest lowercase)
     department_normalized = normalize_department_string(department)
 
-    user_in = UserCreate(
+    user_in = _build_user_create(
         name=name,
         email=email,
         employee_id=employee_id,
@@ -272,7 +291,7 @@ def register_employee(
         aadhar_card=aadhar_card,
         shift_type=shift_type,
         employee_type=employee_type,
-        manager_id=manager_id,  # ✅ Added
+        manager_id=manager_id,
         profile_photo=profile_photo_path,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
@@ -700,6 +719,13 @@ def update_employee(
     employee.resignation_date = _parse_optional_form_datetime(resignation_date)
     if joining_date is not None:
         employee.joining_date = _parse_optional_form_datetime(joining_date)
+    try:
+        validate_employment_dates(employee.joining_date, employee.resignation_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card
     employee.shift_type = shift_type
