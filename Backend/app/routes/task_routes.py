@@ -2,6 +2,7 @@ import json
 from datetime import datetime, date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, aliased
 
 from app.db.database import get_db
@@ -37,6 +38,13 @@ from app.db.models.user import User
 from app.db.models.project import Project
 from app.db.models.project_member import ProjectMember
 from app.utils.department_utils import department_tokens_lower
+from app.utils.team_lead_scope import (
+    get_project_employee_member_ids,
+    get_team_lead_project_peer_employee_ids,
+    is_active_project_member,
+    team_lead_can_assign_task_to,
+    team_lead_can_view_task,
+)
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
@@ -171,6 +179,149 @@ def _ensure_project_member(db: Session, project_id: int | None, user_id: int | N
     db.commit()
 
 
+def _team_lead_participated_in_task(db: Session, task_id: int, user_id: int) -> bool:
+    return (
+        db.query(TaskHistory)
+        .filter(TaskHistory.task_id == task_id, TaskHistory.user_id == user_id)
+        .first()
+        is not None
+    )
+
+
+def _team_lead_can_access_task(
+    db: Session,
+    team_lead: User,
+    task: Task,
+    scope: dict,
+) -> bool:
+    if team_lead_can_view_task(
+        db,
+        team_lead,
+        task,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    ):
+        return True
+    return _team_lead_participated_in_task(db, task.task_id, team_lead.user_id)
+
+
+def _assert_team_lead_can_access_task(
+    db: Session,
+    team_lead: User,
+    task: Task,
+    scope: dict,
+) -> None:
+    if not _team_lead_can_access_task(db, team_lead, task, scope):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only access tasks for employees in your project team",
+        )
+
+
+def _assert_team_lead_assignee_allowed(
+    db: Session,
+    team_lead: User,
+    assignee: User,
+    scope: dict,
+    *,
+    project_id: int | None = None,
+) -> None:
+    if not team_lead_can_assign_task_to(
+        db,
+        team_lead,
+        assignee,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+        project_id=project_id,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="TeamLeads can assign tasks only to employees in their project team",
+        )
+
+
+def _standalone_tasks_for_team_lead(
+    db: Session,
+    team_lead: User,
+    scope: dict,
+) -> list[Task]:
+    own_tasks = list_tasks(
+        db,
+        team_lead.user_id,
+        project_only=False,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
+    peer_ids = get_team_lead_project_peer_employee_ids(
+        db,
+        team_lead,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
+    if not peer_ids:
+        return own_tasks
+
+    peer_tasks = (
+        db.query(Task)
+        .filter(
+            Task.project_id.is_(None),
+            Task.company_id == int(scope["company_id"]),
+            or_(
+                Task.assigned_to.in_(peer_ids),
+                Task.assigned_by.in_(peer_ids),
+            ),
+        )
+        .all()
+    )
+
+    by_id = {t.task_id: t for t in own_tasks}
+    for task in peer_tasks:
+        by_id.setdefault(task.task_id, task)
+    return list(by_id.values())
+
+
+def _project_tasks_for_team_lead(
+    db: Session,
+    team_lead: User,
+    project_id: int,
+    scope: dict,
+) -> list[Task]:
+    own_tasks = list_tasks(
+        db,
+        team_lead.user_id,
+        project_only=True,
+        project_id=project_id,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    )
+    member_ids = get_project_employee_member_ids(
+        db,
+        project_id,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
+    if not member_ids:
+        return own_tasks
+
+    peer_tasks = (
+        db.query(Task)
+        .filter(
+            Task.project_id == project_id,
+            Task.company_id == int(scope["company_id"]),
+            or_(
+                Task.assigned_to.in_(member_ids),
+                Task.assigned_by.in_(member_ids),
+            ),
+        )
+        .all()
+    )
+
+    by_id = {t.task_id: t for t in own_tasks}
+    for task in peer_tasks:
+        by_id.setdefault(task.task_id, task)
+    return list(by_id.values())
+
+
 def _validate_project_exists(db: Session, project_id: int | None, scope: dict | None = None) -> None:
     if not project_id:
         return
@@ -240,6 +391,18 @@ def assign_task(
             assignee_tokens = set(department_tokens_lower(assignee.department))
             if not manager_tokens.intersection(assignee_tokens):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
+
+        if user.role == RoleEnum.TEAM_LEAD:
+            if task.project_id and not is_active_project_member(
+                db, int(task.project_id), user.user_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You must be a member of the project to create project tasks",
+                )
+            _assert_team_lead_assignee_allowed(
+                db, user, assignee, scope, project_id=task.project_id
+            )
 
     _validate_project_exists(db, task.project_id, scope)
 
@@ -345,6 +508,18 @@ def assign_tasks_bulk(
                     detail=f"Managers can assign tasks only to users in their departments (assignee_id={assignee.user_id})",
                 )
 
+        if user.role == RoleEnum.TEAM_LEAD:
+            if payload.project_id and not is_active_project_member(
+                db, int(payload.project_id), user.user_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You must be a member of the project to create project tasks",
+                )
+            _assert_team_lead_assignee_allowed(
+                db, user, assignee, scope, project_id=payload.project_id
+            )
+
         validated_assignees.append(assignee)
 
     _validate_project_exists(db, payload.project_id, scope)
@@ -415,7 +590,9 @@ def my_tasks(
     - ADMIN: all non-project tasks except tasks involving other Admins only.
     - HR: all non-project tasks except tasks created by Admins and assigned to other HRs.
     - MANAGER: all non-project tasks related to their department(s).
-    - TEAM_LEAD / EMPLOYEE: only tasks where they are creator/assignee/participant (existing behavior).
+    - TEAM_LEAD: standalone tasks they participate in, plus tasks for employees who share
+      any active project with the TeamLead.
+    - EMPLOYEE: only tasks where they are creator/assignee/participant.
     """
     # Non-project tasks only
     TaskCreator = aliased(User)
@@ -492,8 +669,10 @@ def my_tasks(
                 if in_manager_dept(t.assigned_by_user) or in_manager_dept(t.assigned_to_user)
             ]
 
+    elif user.role == RoleEnum.TEAM_LEAD:
+        tasks = _standalone_tasks_for_team_lead(db, user, scope)
+
     else:
-        # Team Leads / Employees: keep existing per-user visibility via list_tasks
         tasks = list_tasks(
             db,
             user.user_id,
@@ -546,7 +725,8 @@ def project_tasks(
     - ADMIN: all tasks in the project except tasks involving only other Admins.
     - HR: all tasks in the project except tasks created by Admins and assigned to other HRs.
     - MANAGER: all tasks in the project related to their department(s).
-    - TEAM_LEAD / EMPLOYEE: only tasks where they are creator/assignee/participant.
+    - TEAM_LEAD: tasks they participate in, plus tasks for employees in the same project.
+    - EMPLOYEE: only tasks where they are creator/assignee/participant.
     """
     # Ensure project exists in tenant scope
     project = (
@@ -652,8 +832,10 @@ def project_tasks(
                 if in_manager_dept(t.assigned_by_user) or in_manager_dept(t.assigned_to_user)
             ]
 
+    elif user.role == RoleEnum.TEAM_LEAD:
+        tasks = _project_tasks_for_team_lead(db, user, project_id, scope)
+
     else:
-        # Team Leads / Employees: per-user, per-project visibility via list_tasks
         tasks = list_tasks(
             db,
             user.user_id,
@@ -729,6 +911,9 @@ def update_status(
     existing_task = _task_in_scope_query(db, scope).filter(Task.task_id == task_id).first()
     if not existing_task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    if user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_can_access_task(db, user, existing_task, scope)
 
     # Permission checks: Admin, assignee, creator, or higher role than assignee
     if user.role != RoleEnum.ADMIN and user.user_id not in (existing_task.assigned_to, existing_task.assigned_by):
@@ -825,6 +1010,9 @@ def update_tasks_bulk(
         if not existing:
             raise HTTPException(status_code=404, detail=f"Task not found (task_id={task_id})")
 
+        if user.role == RoleEnum.TEAM_LEAD:
+            _assert_team_lead_can_access_task(db, user, existing, scope)
+
         # Reuse permission logic from `edit_task`
         if user.role != RoleEnum.ADMIN and existing.assigned_by != user.user_id:
             creator = db.query(User).filter(User.user_id == existing.assigned_by).first()
@@ -898,6 +1086,9 @@ def edit_task(
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    if user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_can_access_task(db, user, existing, scope)
+
     # Allow edit if Admin, creator, or user with higher role than creator
     if user.role != RoleEnum.ADMIN and existing.assigned_by != user.user_id:
         creator = db.query(User).filter(User.user_id == existing.assigned_by).first()
@@ -939,6 +1130,15 @@ def edit_task(
                 assignee_tokens = set(department_tokens_lower(assignee.department))
                 if not manager_tokens.intersection(assignee_tokens):
                     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
+
+            if user.role == RoleEnum.TEAM_LEAD:
+                _assert_team_lead_assignee_allowed(
+                    db,
+                    user,
+                    assignee,
+                    scope,
+                    project_id=existing.project_id,
+                )
 
     updated = update_task(
         db,
@@ -984,6 +1184,9 @@ def delete_my_task(
     if not existing:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    if user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_can_access_task(db, user, existing, scope)
+
     # Allow delete if Admin, creator, or user with higher role than creator
     if user.role != RoleEnum.ADMIN and existing.assigned_by != user.user_id:
         creator = db.query(User).filter(User.user_id == existing.assigned_by).first()
@@ -1020,6 +1223,9 @@ def pass_task_route(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
+    if current_user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_can_access_task(db, current_user, task, scope)
+
     # Prevent passing completed or cancelled tasks
     if task.status in [TaskStatus.COMPLETED, TaskStatus.CANCELLED]:
         raise HTTPException(
@@ -1035,6 +1241,15 @@ def pass_task_route(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="New assignee not found")
 
     _ensure_can_pass(current_user, new_assignee)
+
+    if current_user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_assignee_allowed(
+            db,
+            current_user,
+            new_assignee,
+            scope,
+            project_id=task.project_id,
+        )
 
     previous_assignee = task.assigned_to
 
@@ -1110,7 +1325,9 @@ def task_history(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
-    if (
+    if current_user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_can_access_task(db, current_user, task, scope)
+    elif (
         current_user.role != RoleEnum.ADMIN
         and task.assigned_to != current_user.user_id
         and task.assigned_by != current_user.user_id
@@ -1162,6 +1379,7 @@ def task_notifications(
     notifications = list_task_notifications(
         db,
         current_user.user_id,
+        viewer=current_user,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )
@@ -1179,6 +1397,7 @@ def mark_task_notification(
         db,
         notification_id=notification_id,
         user_id=current_user.user_id,
+        viewer=current_user,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )

@@ -104,3 +104,131 @@ def team_lead_can_manage_employee(
         company_id=company_id,
         branch_id=branch_id,
     )
+
+
+def get_team_lead_project_peer_employee_ids(
+    db: Session,
+    team_lead: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> Set[int]:
+    """Employees who share at least one active project with the TeamLead."""
+    lead_project_ids = _team_lead_active_project_ids(
+        db, team_lead.user_id, company_id=company_id
+    )
+    if not lead_project_ids:
+        return set()
+
+    query = (
+        db.query(User.user_id)
+        .join(ProjectMember, ProjectMember.user_id == User.user_id)
+        .filter(
+            ProjectMember.project_id.in_(lead_project_ids),
+            ProjectMember.is_active.is_(True),
+            User.role == RoleEnum.EMPLOYEE,
+            User.is_active.is_(True),
+            User.company_id == int(company_id),
+            User.user_id != team_lead.user_id,
+        )
+    )
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
+
+    return {int(row[0]) for row in query.distinct().all()}
+
+
+def get_project_employee_member_ids(
+    db: Session,
+    project_id: int,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> Set[int]:
+    """Active Employee members of a specific project."""
+    query = (
+        db.query(User.user_id)
+        .join(ProjectMember, ProjectMember.user_id == User.user_id)
+        .join(Project, Project.project_id == ProjectMember.project_id)
+        .filter(
+            ProjectMember.project_id == int(project_id),
+            ProjectMember.is_active.is_(True),
+            Project.company_id == int(company_id),
+            User.role == RoleEnum.EMPLOYEE,
+            User.is_active.is_(True),
+        )
+    )
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
+
+    return {int(row[0]) for row in query.distinct().all()}
+
+
+def is_active_project_member(db: Session, project_id: int, user_id: int) -> bool:
+    return (
+        db.query(ProjectMember)
+        .filter(
+            ProjectMember.project_id == int(project_id),
+            ProjectMember.user_id == int(user_id),
+            ProjectMember.is_active.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+
+def team_lead_can_assign_task_to(
+    db: Session,
+    team_lead: User,
+    assignee: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+) -> bool:
+    if assignee.user_id == team_lead.user_id:
+        return True
+
+    assignee_role = getattr(assignee.role, "value", str(assignee.role))
+    if assignee_role != RoleEnum.EMPLOYEE.value:
+        return False
+
+    if project_id is not None:
+        return is_active_project_member(db, int(project_id), assignee.user_id)
+
+    return assignee.user_id in get_team_lead_project_peer_employee_ids(
+        db,
+        team_lead,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
+
+
+def team_lead_can_view_task(
+    db: Session,
+    team_lead: User,
+    task,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    if team_lead.user_id in (task.assigned_to, task.assigned_by):
+        return True
+
+    if task.project_id is not None:
+        peer_ids = get_project_employee_member_ids(
+            db,
+            int(task.project_id),
+            company_id=company_id,
+            branch_id=branch_id,
+        )
+    else:
+        peer_ids = get_team_lead_project_peer_employee_ids(
+            db,
+            team_lead,
+            company_id=company_id,
+            branch_id=branch_id,
+        )
+
+    involved = {task.assigned_to, task.assigned_by}
+    return bool(peer_ids and involved.intersection(peer_ids))
