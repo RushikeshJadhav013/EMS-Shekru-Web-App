@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 import io
 import csv
+import re
 
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
@@ -831,10 +832,11 @@ def list_decided_by_approver(
 def _get_leave_notification_recipients(db: Session, requester: User) -> List[User]:
     """
     Get notification recipients based on requester's role and department:
-    - Employee → notify Manager, HR, and TeamLead from same department(s) ONLY
+    - Employee → notify Manager, HR, and TeamLead (same department + shared active project)
     - TeamLead → notify Manager & HR from same department(s) ONLY
     - Manager/HR → notify Admin only
     """
+    from app.utils.team_lead_scope import team_lead_can_manage_employee
     role_value = getattr(requester.role, "value", str(requester.role))
     requester_role = role_value
     requester_tokens = department_tokens_lower(requester.department)
@@ -856,6 +858,8 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
         )
 
         recipients: List[User] = []
+        company_id = getattr(requester, "company_id", None)
+        branch_id = getattr(requester, "branch_id", None)
         for user in candidates:
             if not user.department:
                 continue
@@ -863,8 +867,20 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
                 continue
 
             user_tokens = department_tokens_lower(user.department)
-            if user_tokens and set(user_tokens).intersection(requester_tokens):
-                recipients.append(user)
+            if not (user_tokens and set(user_tokens).intersection(requester_tokens)):
+                continue
+
+            if user.role == RoleEnum.TEAM_LEAD:
+                if company_id is None or not team_lead_can_manage_employee(
+                    db,
+                    user,
+                    requester,
+                    company_id=int(company_id),
+                    branch_id=branch_id,
+                ):
+                    continue
+
+            recipients.append(user)
         return recipients
 
     # TeamLead request: keep existing behavior (notify Manager + HR only)
@@ -1081,17 +1097,114 @@ def create_leave_deletion_notification(db: Session, leave: Leave, requester: Use
     return notifications
 
 
-def list_leave_notifications(db: Session, user_id: int) -> List[LeaveNotification]:
-    """Get all leave notifications for a user, ordered by most recent first."""
-    return (
+_APPROVER_LEAVE_NOTIFICATION_TYPES = frozenset({
+    "Leave Request",
+    "Leave Request Updated",
+    "Leave Withdrawal",
+})
+
+
+def _resolve_leave_notification_requester(
+    db: Session,
+    notification: LeaveNotification,
+) -> Optional[User]:
+    """Resolve the employee/requester referenced by an approver-facing leave notification."""
+    if notification.leave_id is not None:
+        return (
+            db.query(User)
+            .join(Leave, Leave.user_id == User.user_id)
+            .filter(Leave.leave_id == notification.leave_id)
+            .first()
+        )
+
+    if notification.notification_type not in _APPROVER_LEAVE_NOTIFICATION_TYPES:
+        return None
+
+    match = re.match(r"^(.+?) \(([^)]+)\) from ", notification.message or "")
+    if not match:
+        return None
+
+    employee_id = match.group(2).strip()
+    if not employee_id or employee_id.upper() == "N/A":
+        return None
+
+    return db.query(User).filter(User.employee_id == employee_id).first()
+
+
+def _leave_notification_visible_to_user(
+    db: Session,
+    viewer: User,
+    notification: LeaveNotification,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    viewer_role = getattr(viewer.role, "value", str(viewer.role))
+    if viewer_role != RoleEnum.TEAM_LEAD.value:
+        return True
+
+    message = notification.message or ""
+    if message.startswith("Your leave request"):
+        return True
+
+    if notification.notification_type not in _APPROVER_LEAVE_NOTIFICATION_TYPES:
+        return True
+
+    requester = _resolve_leave_notification_requester(db, notification)
+    if requester is None:
+        return False
+
+    from app.utils.team_lead_scope import team_lead_can_manage_employee
+
+    return team_lead_can_manage_employee(
+        db,
+        viewer,
+        requester,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
+
+
+def list_leave_notifications(
+    db: Session,
+    user_id: int,
+    *,
+    viewer: Optional[User] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
+) -> List[LeaveNotification]:
+    """Get leave notifications for a user, ordered by most recent first."""
+    notifications = (
         db.query(LeaveNotification)
         .filter(LeaveNotification.user_id == user_id)
         .order_by(LeaveNotification.created_at.desc())
         .all()
     )
+    if viewer is None or company_id is None:
+        return notifications
+
+    return [
+        notification
+        for notification in notifications
+        if _leave_notification_visible_to_user(
+            db,
+            viewer,
+            notification,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        )
+    ]
 
 
-def mark_leave_notification_as_read(db: Session, notification_id: int, user_id: int) -> Optional[LeaveNotification]:
+def mark_leave_notification_as_read(
+    db: Session,
+    notification_id: int,
+    user_id: int,
+    *,
+    viewer: Optional[User] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
+) -> Optional[LeaveNotification]:
     """Mark a leave notification as read for a specific user."""
     notification = (
         db.query(LeaveNotification)
@@ -1104,6 +1217,16 @@ def mark_leave_notification_as_read(db: Session, notification_id: int, user_id: 
 
     if not notification:
         return None
+
+    if viewer is not None and company_id is not None:
+        if not _leave_notification_visible_to_user(
+            db,
+            viewer,
+            notification,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        ):
+            return None
 
     if not notification.is_read:
         notification.is_read = True

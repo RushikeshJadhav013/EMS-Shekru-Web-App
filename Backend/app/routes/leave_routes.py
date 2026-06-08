@@ -56,6 +56,10 @@ from app.services.office_timing_service import resolve_office_start_time
 from fastapi import Body
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
+from app.utils.team_lead_scope import (
+    get_team_lead_managed_employee_ids,
+    team_lead_can_manage_employee,
+)
 from app.utils.leave_validation import (
     compute_chargeable_days,
     find_conflicting_leave,
@@ -321,7 +325,7 @@ def approve_leave_request(
     requester_role = getattr(requester.role, "value", str(requester.role))
 
     # Role-based approval rules:
-    # - Employee -> TeamLead, Manager, or HR (must be same department)
+    # - Employee -> TeamLead (same dept + shared project), Manager, or HR (same department)
     # - TeamLead -> Manager or HR (must be same department)
     # - Manager -> Admin or HR
     # - HR -> Admin only
@@ -331,14 +335,27 @@ def approve_leave_request(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only TeamLead, Manager or HR can approve/reject this request",
             )
-        # Approver may only act on requests from their department(s)
-        requester_tokens = set(department_tokens_lower(getattr(requester, "department", None)))
-        approver_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
-        if not requester_tokens or not approver_tokens or not (requester_tokens & approver_tokens):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only approve/reject requests from your department",
-            )
+        if current_user.role == RoleEnum.TEAM_LEAD:
+            if not team_lead_can_manage_employee(
+                db,
+                current_user,
+                requester,
+                company_id=int(scope["company_id"]),
+                branch_id=scope.get("branch_id"),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only approve/reject leave requests from your project team members in your department",
+                )
+        else:
+            # Manager/HR: same department(s) only
+            requester_tokens = set(department_tokens_lower(getattr(requester, "department", None)))
+            approver_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
+            if not requester_tokens or not approver_tokens or not (requester_tokens & approver_tokens):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only approve/reject requests from your department",
+                )
     elif requester_role == RoleEnum.TEAM_LEAD.value:
         if current_user.role not in (RoleEnum.MANAGER, RoleEnum.HR):
             raise HTTPException(
@@ -569,8 +586,8 @@ def approvals_inbox(
     - HR (with or without department): pending requests from Managers, Team Leads, and Employees (all departments).
     - MANAGER (with one or many departments): pending requests from Team Leads and Employees
       whose department list intersects with the manager's department(s).
-    - TEAM_LEAD (with one or many departments): pending requests from self and Employees
-      whose department list intersects with the team lead's department(s).
+    - TEAM_LEAD: pending requests from self and Employees who share the same
+      department(s) AND an active project where the TeamLead is also an active member.
     - Other roles: no approvals inbox (empty list).
     """
     role_value = getattr(user.role, "value", str(user.role))
@@ -612,13 +629,12 @@ def approvals_inbox(
             if manager_tokens.intersection(requester_tokens):
                 pending.append(leave)
     elif role_value == RoleEnum.TEAM_LEAD.value:
-        # Team Leads see:
-        # - their own pending leave(s)
-        # - Employee pending leave(s) from their own department(s)
-        lead_tokens = set(department_tokens_lower(user.department))
-        if not lead_tokens:
-            # Still allow self visibility even if department is missing
-            lead_tokens = set()
+        managed_employee_ids = get_team_lead_managed_employee_ids(
+            db,
+            user,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
 
         all_pending_employees = list_pending_by_requester_roles(
             db,
@@ -626,18 +642,11 @@ def approvals_inbox(
             company_id=scope["company_id"],
             branch_id=scope.get("branch_id"),
         )
-        pending = []
-
-        # Include employee requests in intersecting departments
-        for leave in all_pending_employees:
-            u: User = leave.user
-            if not u:
-                continue
-            if not u.department:
-                continue
-            requester_tokens = set(department_tokens_lower(u.department))
-            if lead_tokens and lead_tokens.intersection(requester_tokens):
-                pending.append(leave)
+        pending = [
+            leave
+            for leave in all_pending_employees
+            if leave.user_id in managed_employee_ids
+        ]
 
         # Include self pending requests (any department value)
         self_pending = (
@@ -691,7 +700,9 @@ def approvals_history(
     - ADMIN: all users except Admins and self.
     - HR: all users except Admins, HRs, and self.
     - MANAGER: users in their department(s), excluding Admins, HRs, other Managers, and self.
-    - EMPLOYEE/TEAM_LEAD: their own decided leaves.
+    - TEAM_LEAD: own decided leaves plus Employees in same department(s) who share
+      an active project with the TeamLead.
+    - EMPLOYEE: their own decided leaves.
     
     Supports filtering by date range:
     - current_month: First day of current month to end of current month
@@ -753,10 +764,13 @@ def approvals_history(
             if requester_tokens and manager_tokens.intersection(requester_tokens):
                 decided.append(leave)
     elif role_value == RoleEnum.TEAM_LEAD.value:
-        # TeamLead: self + employees in own department(s); no other roles
-        lead_tokens = set(department_tokens_lower(user.department))
+        managed_employee_ids = get_team_lead_managed_employee_ids(
+            db,
+            user,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
 
-        # Always include self decided leaves
         self_decided = (
             base_query.filter(Leave.user_id == user.user_id)
             .order_by(Leave.end_date.desc())
@@ -765,20 +779,15 @@ def approvals_history(
 
         decided = list(self_decided)
 
-        # Include Employee decided leaves from intersecting departments (if TeamLead has departments)
-        if lead_tokens:
+        if managed_employee_ids:
             employee_decided = (
                 base_query
                 .filter(User.role == RoleEnum.EMPLOYEE)
-                .filter(User.user_id != user.user_id)
+                .filter(User.user_id.in_(managed_employee_ids))
                 .order_by(Leave.end_date.desc())
                 .all()
             )
-            for leave in employee_decided:
-                u: User = leave.user
-                requester_tokens = set(department_tokens_lower(getattr(u, "department", None)))
-                if requester_tokens and lead_tokens.intersection(requester_tokens):
-                    decided.append(leave)
+            decided.extend(employee_decided)
     elif role_value == RoleEnum.EMPLOYEE.value:
         # Employees see only their own decided leaves
         decided = base_query.filter(Leave.user_id == user.user_id).order_by(Leave.end_date.desc()).all()
@@ -888,8 +897,14 @@ def get_leave_notifications(
     user=Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    """Get all leave notifications for the current user."""
-    notifications = list_leave_notifications(db, user.user_id)
+    """Get leave notifications for the current user (scoped for TeamLeads)."""
+    notifications = list_leave_notifications(
+        db,
+        user.user_id,
+        viewer=user,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
     return notifications
 
 
@@ -901,7 +916,14 @@ def mark_notification_as_read(
     scope: dict = Depends(get_tenant_scope),
 ):
     """Mark a leave notification as read."""
-    notification = mark_leave_notification_as_read(db, notification_id, user.user_id)
+    notification = mark_leave_notification_as_read(
+        db,
+        notification_id,
+        user.user_id,
+        viewer=user,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
     return notification

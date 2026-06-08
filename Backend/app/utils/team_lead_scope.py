@@ -1,0 +1,106 @@
+from typing import Optional, Set
+
+from sqlalchemy.orm import Session
+
+from app.db.models.user import User
+from app.db.models.project import Project
+from app.db.models.project_member import ProjectMember
+from app.enums import RoleEnum
+from app.utils.department_utils import department_tokens_lower
+
+
+def _departments_overlap(user_a: User, user_b: User) -> bool:
+    tokens_a = set(department_tokens_lower(getattr(user_a, "department", None)))
+    tokens_b = set(department_tokens_lower(getattr(user_b, "department", None)))
+    return bool(tokens_a and tokens_b and tokens_a.intersection(tokens_b))
+
+
+def _team_lead_active_project_ids(
+    db: Session,
+    team_lead_id: int,
+    *,
+    company_id: int,
+) -> list[int]:
+    return [
+        row[0]
+        for row in (
+            db.query(ProjectMember.project_id)
+            .join(Project, Project.project_id == ProjectMember.project_id)
+            .filter(
+                ProjectMember.user_id == team_lead_id,
+                ProjectMember.is_active.is_(True),
+                Project.company_id == int(company_id),
+            )
+            .all()
+        )
+    ]
+
+
+def get_team_lead_managed_employee_ids(
+    db: Session,
+    team_lead: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> Set[int]:
+    """
+    Employees a TeamLead may manage for leave purposes:
+    same department AND active member of at least one shared project
+    where the TeamLead is also an active member.
+    """
+    lead_tokens = set(department_tokens_lower(getattr(team_lead, "department", None)))
+    if not lead_tokens:
+        return set()
+
+    lead_project_ids = _team_lead_active_project_ids(
+        db, team_lead.user_id, company_id=company_id
+    )
+    if not lead_project_ids:
+        return set()
+
+    query = (
+        db.query(User)
+        .join(ProjectMember, ProjectMember.user_id == User.user_id)
+        .filter(
+            ProjectMember.project_id.in_(lead_project_ids),
+            ProjectMember.is_active.is_(True),
+            User.role == RoleEnum.EMPLOYEE,
+            User.is_active.is_(True),
+            User.company_id == int(company_id),
+            User.user_id != team_lead.user_id,
+            User.department.isnot(None),
+        )
+    )
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
+
+    managed: Set[int] = set()
+    seen: Set[int] = set()
+    for employee in query.all():
+        if employee.user_id in seen:
+            continue
+        seen.add(employee.user_id)
+        if _departments_overlap(team_lead, employee):
+            managed.add(employee.user_id)
+    return managed
+
+
+def team_lead_can_manage_employee(
+    db: Session,
+    team_lead: User,
+    employee: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    employee_role = getattr(employee.role, "value", str(employee.role))
+    if employee_role != RoleEnum.EMPLOYEE.value:
+        return False
+    if employee.user_id == team_lead.user_id:
+        return False
+    return employee.user_id in get_team_lead_managed_employee_ids(
+        db,
+        team_lead,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
