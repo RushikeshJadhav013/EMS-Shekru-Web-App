@@ -14,6 +14,7 @@ from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.utils.timezone import now_ist
 from app.utils.department_utils import department_tokens_lower
+from app.utils.team_lead_scope import team_lead_can_manage_employee
 
 from app.schemas.wfh_schema import (
     WFHRequestCreate,
@@ -69,13 +70,21 @@ def _assert_current_in_scope(db: Session, *, current_user: User, scope: dict) ->
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current user is outside selected tenant scope")
 
 
-def _can_approver_handle_target(approver: User, target: User) -> bool:
+def _can_approver_handle_target(
+    approver: User,
+    target: User,
+    *,
+    db: Optional[Session] = None,
+    company_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
+) -> bool:
     """
     Determine whether `approver` is allowed to approve/reject `target`'s WFH request
     according to the role-based hierarchy rules:
       - Admins can approve HRs and Managers
       - HRs can approve Managers, TeamLead, and Employees
-      - Managers can approve TeamLead and Employees, but only for departments they manage (supports multiple departments)
+      - Managers can approve TeamLead and Employees, but only for departments they manage
+      - TeamLeads can approve Employees in same department(s) who share an active project
     """
     # Admin: can approve HRs and Managers
     if approver.role == RoleEnum.ADMIN:
@@ -93,13 +102,17 @@ def _can_approver_handle_target(approver: User, target: User) -> bool:
         target_tokens = set(department_tokens_lower(target.department))
         return bool(approver_tokens.intersection(target_tokens))
 
-    # TeamLead: can approve Employee within overlapping departments
+    # TeamLead: same department + shared active project membership
     if approver.role == RoleEnum.TEAM_LEAD:
-        if target.role != RoleEnum.EMPLOYEE:
+        if target.role != RoleEnum.EMPLOYEE or db is None or company_id is None:
             return False
-        approver_tokens = set(department_tokens_lower(approver.department))
-        target_tokens = set(department_tokens_lower(target.department))
-        return bool(approver_tokens.intersection(target_tokens))
+        return team_lead_can_manage_employee(
+            db,
+            approver,
+            target,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        )
 
     # Default: no permission
     return False
@@ -542,7 +555,8 @@ def get_all_requests(
     - Admin: Can see all requests except Admins and self
     - HR: Can see all requests except Admins, HRs, and self
     - Manager: Can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
-    - TeamLead: Can see requests from their department(s) only, excluding Admins, HRs, Managers, TeamLeads, and self
+    - TeamLead: Can see Employee requests from same department(s) who share an active
+      project with the TeamLead, excluding self
     
     Supports filtering by status, department, date range, and role.
     """
@@ -743,23 +757,35 @@ def get_request_detail(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Managers cannot view Admin/HR/Manager WFH requests via this endpoint",
             )
-        if not _can_approver_handle_target(current_user, user):
+        if not _can_approver_handle_target(
+            current_user,
+            user,
+            db=db,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only view requests from your department(s)"
             )
 
-    # TeamLead can only see Employee requests from their department(s)
+    # TeamLead can only see managed project team Employee requests
     if current_user.role == RoleEnum.TEAM_LEAD:
         if user.role != RoleEnum.EMPLOYEE:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="TeamLeads can only view Employee WFH requests via this endpoint",
             )
-        if not _can_approver_handle_target(current_user, user):
+        if not _can_approver_handle_target(
+            current_user,
+            user,
+            db=db,
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only view requests from your department(s)"
+                detail="You can only view WFH requests from your project team members in your department",
             )
     
     # Get approver name if exists
@@ -801,7 +827,7 @@ def approve_or_reject_request(
     Approve or reject a WFH request (for TeamLead/Manager/HR/Admin).
     
     - Manager: Can approve/reject requests from their department only
-    - TeamLead: Can approve/reject Employee requests from their department only
+    - TeamLead: Can approve/reject Employee requests from shared project + department
     - HR/Admin: Can approve/reject all requests
     """
     wfh_request = get_wfh_request_by_id(
@@ -832,11 +858,17 @@ def approve_or_reject_request(
             detail="Request user not found"
         )
     
-    # Enforce role-hierarchy approval rules for all approvers (Admin/HR/Manager)
-    if not _can_approver_handle_target(current_user, user):
+    # Enforce role-hierarchy approval rules for all approvers
+    if not _can_approver_handle_target(
+        current_user,
+        user,
+        db=db,
+        company_id=scope["company_id"],
+        branch_id=scope.get("branch_id"),
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not permitted to approve/reject this user's WFH request according to role hierarchy"
+            detail="You are not permitted to approve/reject this user's WFH request according to role hierarchy",
         )
     
     # Prevent self-approval
@@ -922,11 +954,12 @@ def get_wfh_notifications(
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    """Get all WFH notifications for the current user."""
+    """Get WFH notifications for the current user (scoped for TeamLeads)."""
     _assert_current_in_scope(db, current_user=current_user, scope=scope)
     return list_wfh_notifications(
         db,
         current_user.user_id,
+        viewer=current_user,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )
@@ -945,6 +978,7 @@ def read_wfh_notification(
         db,
         notification_id,
         current_user.user_id,
+        viewer=current_user,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )

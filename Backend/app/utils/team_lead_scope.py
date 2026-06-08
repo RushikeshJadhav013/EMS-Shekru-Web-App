@@ -44,7 +44,7 @@ def get_team_lead_managed_employee_ids(
     branch_id: Optional[int] = None,
 ) -> Set[int]:
     """
-    Employees a TeamLead may manage for leave purposes:
+    Employees a TeamLead may manage for leave/WFH purposes:
     same department AND active member of at least one shared project
     where the TeamLead is also an active member.
     """

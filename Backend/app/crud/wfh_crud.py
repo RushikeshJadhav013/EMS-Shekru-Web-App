@@ -2,10 +2,12 @@
 Work From Home (WFH) Request CRUD Operations
 Database operations for WFH request management.
 """
+import re
+
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from datetime import datetime, date
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Set
 
 from app.db.models.wfh_request import WFHRequest, WFHStatus
 from app.db.models.user import User
@@ -13,6 +15,35 @@ from app.db.models.notification import WFHNotification
 from app.utils.timezone import now_ist
 from app.enums import RoleEnum
 from app.utils.department_utils import department_tokens_lower
+from app.utils.team_lead_scope import (
+    get_team_lead_managed_employee_ids,
+    team_lead_can_manage_employee,
+)
+
+
+def _resolved_company_id(company_id: int | None, user: User) -> int | None:
+    if company_id is not None:
+        return int(company_id)
+    raw = getattr(user, "company_id", None)
+    return int(raw) if raw is not None else None
+
+
+def _team_lead_managed_employee_ids(
+    db: Session,
+    team_lead: User,
+    *,
+    company_id: int | None,
+    branch_id: int | None,
+) -> Set[int]:
+    resolved = _resolved_company_id(company_id, team_lead)
+    if resolved is None:
+        return set()
+    return get_team_lead_managed_employee_ids(
+        db,
+        team_lead,
+        company_id=resolved,
+        branch_id=branch_id,
+    )
 
 
 def _user_scope_filters(*, company_id: int | None, branch_id: int | None, user_alias=User) -> list:
@@ -120,7 +151,8 @@ def get_all_wfh_requests(
     - Admin: Can see all requests except Admins and self
     - HR: Can see all requests except Admins, HRs, and self
     - Manager: Can see requests from their department(s) only, excluding Admins, HRs, Managers, and self
-    - TeamLead: Can see requests from their department(s) only, excluding Admins, HRs, Managers, TeamLeads, and self
+    - TeamLead: Can see Employee requests from same department(s) who share an active
+      project with the TeamLead, excluding self
     
     Returns: (list of requests with user details, pending count)
     """
@@ -211,15 +243,15 @@ def get_all_wfh_requests(
                 User.user_id != requester_user.user_id
             )
         elif requester_user.role == RoleEnum.TEAM_LEAD:
-            # TeamLead can see Employee requests from their department(s) only, excluding self
-            if requester_user.department:
-                lead_tokens = department_tokens_lower(requester_user.department)
-                if lead_tokens:
-                    token_filters = [func.lower(User.department).like(f'%{t}%') for t in lead_tokens]
-                    query = query.filter(or_(*token_filters))
+            managed_ids = _team_lead_managed_employee_ids(
+                db,
+                requester_user,
+                company_id=company_id,
+                branch_id=branch_id,
+            )
             query = query.filter(
                 User.role == RoleEnum.EMPLOYEE,
-                User.user_id != requester_user.user_id
+                User.user_id.in_(managed_ids) if managed_ids else User.user_id == -1,
             )
     
     # Status filter (for non-Admin callers, or when Admin fallback above used status_filter directly)
@@ -280,15 +312,15 @@ def get_all_wfh_requests(
                 User.user_id != requester_user.user_id
             )
         elif requester_user.role == RoleEnum.TEAM_LEAD:
-            # TeamLead can see pending Employee requests from their department(s) only, excluding self
-            if requester_user.department:
-                lead_tokens = department_tokens_lower(requester_user.department)
-                if lead_tokens:
-                    token_filters = [func.lower(User.department).like(f'%{t}%') for t in lead_tokens]
-                    pending_query = pending_query.filter(or_(*token_filters))
+            managed_ids = _team_lead_managed_employee_ids(
+                db,
+                requester_user,
+                company_id=company_id,
+                branch_id=branch_id,
+            )
             pending_query = pending_query.filter(
                 User.role == RoleEnum.EMPLOYEE,
-                User.user_id != requester_user.user_id
+                User.user_id.in_(managed_ids) if managed_ids else User.user_id == -1,
             )
 
     pending_count = pending_query.scalar() or 0
@@ -472,7 +504,13 @@ def check_overlapping_wfh(
     return query.first() is not None
 
 
-def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
+def get_pending_wfh_count_for_user(
+    db: Session,
+    requester_user: User,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> int:
     """
     Get count of pending WFH requests visible to a user based on their role.
     """
@@ -491,17 +529,16 @@ def get_pending_wfh_count_for_user(db: Session, requester_user: User) -> int:
                     or_(*token_filters)
                 )
     elif requester_user.role == RoleEnum.TEAM_LEAD:
-        if requester_user.department:
-            lead_tokens = department_tokens_lower(requester_user.department)
-            if lead_tokens:
-                token_filters = [func.lower(User.department).like(f'%{t}%') for t in lead_tokens]
-                query = query.join(
-                    User, WFHRequest.user_id == User.user_id
-                ).filter(
-                    or_(*token_filters),
-                    User.role == RoleEnum.EMPLOYEE,
-                    User.user_id != requester_user.user_id,
-                )
+        managed_ids = _team_lead_managed_employee_ids(
+            db,
+            requester_user,
+            company_id=company_id,
+            branch_id=branch_id,
+        )
+        query = query.join(User, WFHRequest.user_id == User.user_id).filter(
+            User.role == RoleEnum.EMPLOYEE,
+            User.user_id.in_(managed_ids) if managed_ids else User.user_id == -1,
+        )
     
     return query.scalar() or 0
 
@@ -517,7 +554,7 @@ def _get_wfh_notification_recipients(
     Resolve approver-side recipients for WFH request notifications.
 
     Rules mirror the WFH approval hierarchy:
-    - Employee -> TeamLead/Manager/HR (same department)
+    - Employee -> TeamLead (same department + shared active project), Manager/HR (same department)
     - TeamLead -> Manager/HR (same department)
     - Manager -> HR + Admin
     - HR -> Admin
@@ -541,11 +578,21 @@ def _get_wfh_notification_recipients(
             )
             .all()
         )
-        return [
-            user
-            for user in candidates
-            if set(department_tokens_lower(user.department)).intersection(requester_tokens)
-        ]
+        recipients: List[User] = []
+        for user in candidates:
+            if not set(department_tokens_lower(user.department)).intersection(requester_tokens):
+                continue
+            if user.role == RoleEnum.TEAM_LEAD:
+                if company_id is None or not team_lead_can_manage_employee(
+                    db,
+                    user,
+                    requester,
+                    company_id=int(company_id),
+                    branch_id=branch_id,
+                ):
+                    continue
+            recipients.append(user)
+        return recipients
 
     if role_value == RoleEnum.TEAM_LEAD.value:
         if not requester_tokens:
@@ -761,22 +808,104 @@ def create_wfh_deletion_notification(
     return notifications
 
 
+_APPROVER_WFH_NOTIFICATION_TYPES = frozenset({
+    "WFH Request",
+    "WFH Request Updated",
+    "WFH Withdrawal",
+})
+
+
+def _resolve_wfh_notification_requester(
+    db: Session,
+    notification: WFHNotification,
+) -> Optional[User]:
+    """Resolve the employee/requester referenced by an approver-facing WFH notification."""
+    if notification.wfh_id is not None:
+        return (
+            db.query(User)
+            .join(WFHRequest, WFHRequest.user_id == User.user_id)
+            .filter(WFHRequest.wfh_id == notification.wfh_id)
+            .first()
+        )
+
+    if notification.notification_type not in _APPROVER_WFH_NOTIFICATION_TYPES:
+        return None
+
+    match = re.match(r"^(.+?) \(([^)]+)\) from ", notification.message or "")
+    if not match:
+        return None
+
+    employee_id = match.group(2).strip()
+    if not employee_id or employee_id.upper() == "N/A":
+        return None
+
+    return db.query(User).filter(User.employee_id == employee_id).first()
+
+
+def _wfh_notification_visible_to_user(
+    db: Session,
+    viewer: User,
+    notification: WFHNotification,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    viewer_role = getattr(viewer.role, "value", str(viewer.role))
+    if viewer_role != RoleEnum.TEAM_LEAD.value:
+        return True
+
+    message = notification.message or ""
+    if message.startswith("Your WFH request"):
+        return True
+
+    if notification.notification_type not in _APPROVER_WFH_NOTIFICATION_TYPES:
+        return True
+
+    requester = _resolve_wfh_notification_requester(db, notification)
+    if requester is None:
+        return False
+
+    return team_lead_can_manage_employee(
+        db,
+        viewer,
+        requester,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
+
+
 def list_wfh_notifications(
     db: Session,
     user_id: int,
     *,
+    viewer: Optional[User] = None,
     company_id: int | None = None,
     branch_id: int | None = None,
 ) -> List[WFHNotification]:
-    """Get all WFH notifications for a user, most recent first."""
+    """Get WFH notifications for a user, most recent first."""
     if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
         return []
-    return (
+
+    notifications = (
         db.query(WFHNotification)
         .filter(WFHNotification.user_id == user_id)
         .order_by(WFHNotification.created_at.desc())
         .all()
     )
+    if viewer is None or company_id is None:
+        return notifications
+
+    return [
+        notification
+        for notification in notifications
+        if _wfh_notification_visible_to_user(
+            db,
+            viewer,
+            notification,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        )
+    ]
 
 
 def mark_wfh_notification_as_read(
@@ -784,6 +913,7 @@ def mark_wfh_notification_as_read(
     notification_id: int,
     user_id: int,
     *,
+    viewer: Optional[User] = None,
     company_id: int | None = None,
     branch_id: int | None = None,
 ) -> Optional[WFHNotification]:
@@ -800,6 +930,16 @@ def mark_wfh_notification_as_read(
     )
     if not notification:
         return None
+
+    if viewer is not None and company_id is not None:
+        if not _wfh_notification_visible_to_user(
+            db,
+            viewer,
+            notification,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        ):
+            return None
 
     if not notification.is_read:
         notification.is_read = True
