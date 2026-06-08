@@ -106,6 +106,7 @@ def _sanitize_users_response(payload: Union[User, List[User]]) -> Union[dict, Li
     return _sanitize_user_record(payload)
 
 
+
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
 # ✅ Public: Register a new employee
@@ -155,11 +156,11 @@ def register_employee(
             detail="Only Admin or HR users can create new employees"
         )
 
-    # HRs are not permitted to create Admin users
-    if current_user.role == RoleEnum.HR and role == RoleEnum.ADMIN:
+    # HRs are not permitted to create Admin or HR users
+    if current_user.role == RoleEnum.HR and role in (RoleEnum.ADMIN, RoleEnum.HR):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="HR users are not permitted to create Admin users"
+            detail="HR users are not permitted to create Admin or HR users. Only Admins may do so."
         )
 
     # Check for duplicate email in users table
@@ -699,6 +700,11 @@ def update_employee(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="HR is not permitted to assign the Admin role. Only Admins may do so."
+            )
+        if role == RoleEnum.HR and getattr(employee, "role", None) != RoleEnum.HR:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="HR is not permitted to assign the HR role. Only Admins may do so."
             )
         employee.role = role
     
