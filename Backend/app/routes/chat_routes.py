@@ -9,11 +9,13 @@ import uuid
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_
+from sqlalchemy import and_, or_, exists, select
 
 from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.db.database import get_db, SessionLocal
 from app.db.models.user import User
+from app.db.models.company_admin_assignment import CompanyAdminAssignment
+from app.db.models.branch_admin_assignment import BranchAdminAssignment
 from app.db.models.chat import ChatSession, ChatMember, ChatMessage
 from app.db.models.notification import ChatNotification
 from app.schemas.chat_schema import (
@@ -84,11 +86,38 @@ def save_chat_document(user_id: int, chat_id: str, document: UploadFile):
 
 
 def _user_scope_filters(scope: dict, user_alias=User) -> list:
-    clauses = [user_alias.company_id == scope["company_id"]]
+    """
+    Tenant scope for chat: users on company/branch rows, plus admins linked via
+    company_admin_assignments / branch_admin_assignments (often company_id NULL).
+    """
+    company_id = int(scope["company_id"])
     branch_id = scope.get("branch_id")
+
+    direct_parts = [user_alias.company_id == company_id]
     if branch_id is not None:
-        clauses.append(user_alias.branch_id == branch_id)
-    return clauses
+        direct_parts.append(user_alias.branch_id == int(branch_id))
+    direct_clause = and_(*direct_parts)
+
+    company_admin_clause = exists(
+        select(CompanyAdminAssignment.assignment_id).where(
+            CompanyAdminAssignment.admin_user_id == user_alias.user_id,
+            CompanyAdminAssignment.company_id == company_id,
+            CompanyAdminAssignment.is_active.is_(True),
+        )
+    )
+
+    scope_clauses = [direct_clause, company_admin_clause]
+    if branch_id is not None:
+        branch_admin_clause = exists(
+            select(BranchAdminAssignment.assignment_id).where(
+                BranchAdminAssignment.admin_user_id == user_alias.user_id,
+                BranchAdminAssignment.branch_id == int(branch_id),
+                BranchAdminAssignment.is_active.is_(True),
+            )
+        )
+        scope_clauses.append(branch_admin_clause)
+
+    return [or_(*scope_clauses)]
 
 
 def _get_user_in_scope(db: Session, *, user_id: int, scope: dict) -> User | None:
