@@ -179,6 +179,29 @@ try:
             conn.execute(
                 text("ALTER TABLE companies ADD COLUMN company_slug VARCHAR(128) NULL")
             )
+
+        for col_name, col_ddl in (
+            ("pin_hash", "ALTER TABLE users ADD COLUMN pin_hash VARCHAR(255) NULL"),
+            ("is_pin_set", "ALTER TABLE users ADD COLUMN is_pin_set TINYINT(1) NOT NULL DEFAULT 0"),
+            ("pin_set_at", "ALTER TABLE users ADD COLUMN pin_set_at DATETIME NULL"),
+            ("pin_failed_attempts", "ALTER TABLE users ADD COLUMN pin_failed_attempts INT NOT NULL DEFAULT 0"),
+            ("pin_locked_until", "ALTER TABLE users ADD COLUMN pin_locked_until DATETIME NULL"),
+        ):
+            col_result = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'users'
+                      AND COLUMN_NAME = :col
+                    """
+                ),
+                {"col": col_name},
+            )
+            col_row = col_result.first()
+            if not bool(col_row[0] if col_row else 0):
+                conn.execute(text(col_ddl))
 except Exception as _e:
     # Fail-soft: app will still boot; detailed error returned via middleware if used
     pass

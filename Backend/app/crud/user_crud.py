@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from app.db.models.user import User
 from app.enums import RoleEnum
-from passlib.context import CryptContext
+import bcrypt
 from app.schemas.user_schema import UserCreate, AdminCreate, AdminUpdate
 from app.crud.subscription_crud import check_company_branch_subscription_limit
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
@@ -12,8 +12,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.pdfgen import canvas
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
+from app.core.config import settings
+from app.utils.timezone import now_ist
 import io
 import csv
 import os
@@ -47,11 +49,58 @@ except ImportError:
     SHOW_EMOJIS = True
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 def hash_password(password: str) -> str:
     password_bytes = password.encode("utf-8")[:72]
-    return pwd_context.hash(password_bytes)
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    if not hashed:
+        return False
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8")[:72], hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def set_user_pin(db: Session, user: User, pin: str) -> User:
+    user.pin_hash = hash_password(pin)
+    user.is_pin_set = True
+    user.pin_set_at = now_ist()
+    user.pin_failed_attempts = 0
+    user.pin_locked_until = None
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def clear_user_pin(db: Session, user: User) -> User:
+    user.pin_hash = None
+    user.is_pin_set = False
+    user.pin_set_at = None
+    user.pin_failed_attempts = 0
+    user.pin_locked_until = None
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def record_pin_failure(db: Session, user: User) -> User:
+    user.pin_failed_attempts = int(getattr(user, "pin_failed_attempts", 0) or 0) + 1
+    if user.pin_failed_attempts >= settings.PIN_MAX_ATTEMPTS:
+        user.pin_locked_until = now_ist() + timedelta(minutes=settings.PIN_LOCKOUT_MINUTES)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def reset_pin_attempts(db: Session, user: User) -> User:
+    user.pin_failed_attempts = 0
+    user.pin_locked_until = None
+    db.commit()
+    db.refresh(user)
+    return user
+
 
 def get_user_by_email(db: Session, email: str):
     if not email:
