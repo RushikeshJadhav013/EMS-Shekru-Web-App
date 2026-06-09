@@ -46,6 +46,7 @@ from sqlalchemy import func
 from starlette.responses import Response
 from starlette.background import BackgroundTask
 from app.utils.department_utils import normalize_department_string, department_tokens_lower
+from app.utils.team_lead_scope import get_team_lead_project_peer_employee_ids
 from app.db.models.super_admin import SuperAdmin
 from app.db.models.company import Company
 from app.db.models.company_branch import CompanyBranch
@@ -359,7 +360,7 @@ def get_all_employees_public(
     - Admin: Can view all users
     - HR: Can view HR, Manager, TeamLead, and Employee roles
     - Manager: Can view TeamLead and Employee of their assigned department
-    - TeamLead: Can view Employees of their assigned teams only
+    - TeamLead: Can view Employees who share an active project with the TeamLead
     - Employee: Cannot access this endpoint
     """
     employees = list_users_scoped(db, scope["company_id"], scope.get("branch_id"))
@@ -394,11 +395,15 @@ def get_all_employees_public(
         ]
     
     elif current_user.role == RoleEnum.TEAM_LEAD:
-        # TeamLead can view Employees in their department.
-        teamlead_dept = department_tokens_lower(current_user.department)
+        peer_ids = get_team_lead_project_peer_employee_ids(
+            db,
+            current_user,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
         employees = [
             emp for emp in employees
-            if emp.role == RoleEnum.EMPLOYEE and any(d in department_tokens_lower(emp.department) for d in teamlead_dept)
+            if emp.role == RoleEnum.EMPLOYEE and emp.user_id in peer_ids
         ]
     
     else:

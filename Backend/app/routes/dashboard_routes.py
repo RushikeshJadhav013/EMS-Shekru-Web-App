@@ -15,6 +15,7 @@ from app.enums import RoleEnum, TaskStatus
 from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.utils.timezone import now_ist, get_today_bounds_ist
 from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
+from app.utils.team_lead_scope import get_team_lead_project_peer_employee_ids
 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
@@ -806,28 +807,41 @@ def team_lead_dashboard(
     db: Session = Depends(get_db),
     scope: dict = Depends(get_tenant_scope),
 ):
-    # Using department as team proxy (supports comma-separated multi-departments)
-    if not current_user.department:
-        raise HTTPException(status_code=400, detail="Team Lead must have a department assigned")
-
-    dept_tokens = department_tokens_lower(getattr(current_user, "department", None))
-    if not dept_tokens:
-        raise HTTPException(status_code=400, detail="Team Lead must have a valid department configuration")
-
-    patterns = [department_token_regex_pattern(tok) for tok in dept_tokens]
-    dept_filters = [func.lower(User.department).op("RLIKE")(pat) for pat in patterns]
-    dept_match = and_(User.department.isnot(None), or_(*dept_filters))
-    # Limit visibility strictly to Employees within these departments
-    role_filter = User.role == RoleEnum.EMPLOYEE
+    # Team = Employees who share at least one active project with this TeamLead
+    peer_ids = get_team_lead_project_peer_employee_ids(
+        db,
+        current_user,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
     today_start, today_end = _today_bounds()
 
-    team_size = db.query(User).filter(dept_match, role_filter, *_user_scope_filters(scope)).count()
+    if not peer_ids:
+        return {
+            "teamSize": 0,
+            "presentToday": 0,
+            "onLeave": 0,
+            "tasksInProgress": 0,
+            "completedToday": 0,
+            "pendingReviews": 0,
+            "teamEfficiency": 0,
+            "recentActivities": [],
+        }
+
+    team_match = User.user_id.in_(peer_ids)
+    role_filter = User.role == RoleEnum.EMPLOYEE
+
+    team_size = (
+        db.query(User)
+        .filter(team_match, role_filter, *_user_scope_filters(scope))
+        .count()
+    )
     present_today = (
         db.query(func.count(Attendance.attendance_id))
         .join(User, User.user_id == Attendance.user_id)
         .filter(
             *_attendance_scope_filters(scope),
-            dept_match,
+            team_match,
             role_filter,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
@@ -841,7 +855,7 @@ def team_lead_dashboard(
         .join(User, User.user_id == Leave.user_id)
         .filter(
             *_leave_scope_filters(scope),
-            dept_match,
+            team_match,
             role_filter,
             Leave.status == "Approved",
             Leave.start_date <= today_end,
@@ -855,9 +869,10 @@ def team_lead_dashboard(
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
         .filter(
-            dept_match,
+            team_match,
             role_filter,
             Task.status == TaskStatus.IN_PROGRESS.value,
+            Task.company_id == int(scope["company_id"]),
             *_user_scope_filters(scope),
         )
         .scalar()
@@ -867,9 +882,10 @@ def team_lead_dashboard(
         db.query(func.count(Task.task_id))
         .join(User, User.user_id == Task.assigned_to)
         .filter(
-            dept_match,
+            team_match,
             role_filter,
             Task.status == TaskStatus.COMPLETED.value,
+            Task.company_id == int(scope["company_id"]),
             *_user_scope_filters(scope),
         )
         .scalar()
@@ -878,13 +894,13 @@ def team_lead_dashboard(
     pending_reviews = 0  # Not modeled
     team_efficiency = 0  # Not modeled
 
-    # Recent activities within team (today's check-ins)
+    # Recent activities within project team (today's check-ins)
     attendance_today = (
         db.query(Attendance, User)
         .join(User, User.user_id == Attendance.user_id)
         .filter(
             *_attendance_scope_filters(scope),
-            dept_match,
+            team_match,
             role_filter,
             Attendance.check_in >= today_start,
             Attendance.check_in < today_end,
