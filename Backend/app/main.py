@@ -95,6 +95,26 @@ try:
             conn.execute(
                 text("ALTER TABLE leaves ADD COLUMN leave_type VARCHAR(50) NOT NULL DEFAULT 'annual'")
             )
+
+        for col_name, col_ddl in (
+            ("duration_days", "ALTER TABLE leaves ADD COLUMN duration_days DECIMAL(3,1) NOT NULL DEFAULT 1.0"),
+            ("leave_session", "ALTER TABLE leaves ADD COLUMN leave_session VARCHAR(20) NULL"),
+        ):
+            col_result = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'leaves'
+                      AND COLUMN_NAME = :col
+                    """
+                ),
+                {"col": col_name},
+            )
+            col_row = col_result.first()
+            if not bool(col_row[0] if col_row else 0):
+                conn.execute(text(col_ddl))
         
         # Check if 'work_location' exists on 'attendances' table; if not, add it
         result = conn.execute(
@@ -322,7 +342,7 @@ app.include_router(tenant_router)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     response = JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail}
+        content=jsonable_encoder({"detail": exc.detail}),
     )
     # Add CORS headers to error responses
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -369,7 +389,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     response = JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail}
+        content=jsonable_encoder({"detail": exc.detail}),
     )
     # Add CORS headers to error responses
     response.headers["Access-Control-Allow-Origin"] = "*"

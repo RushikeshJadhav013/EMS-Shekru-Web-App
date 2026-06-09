@@ -485,6 +485,50 @@ def get_task_history(
     )
 
 
+def _team_lead_participated_in_task(db: Session, task_id: int, user_id: int) -> bool:
+    return (
+        db.query(TaskHistory)
+        .filter(TaskHistory.task_id == task_id, TaskHistory.user_id == user_id)
+        .first()
+        is not None
+    )
+
+
+def _task_notification_visible_to_user(
+    db: Session,
+    viewer: User,
+    notification: TaskNotification,
+    *,
+    company_id: int,
+    branch_id: int | None = None,
+) -> bool:
+    from app.utils.team_lead_scope import team_lead_can_view_task
+
+    viewer_role = getattr(viewer.role, "value", str(viewer.role))
+    if viewer_role != RoleEnum.TEAM_LEAD.value:
+        return True
+
+    if notification.task_id is None:
+        return True
+
+    task_query = db.query(Task).filter(Task.task_id == notification.task_id)
+    task_query = _apply_task_scope(task_query, company_id=company_id, branch_id=branch_id)
+    task = task_query.first()
+    if not task:
+        return False
+
+    if team_lead_can_view_task(
+        db,
+        viewer,
+        task,
+        company_id=company_id,
+        branch_id=branch_id,
+    ):
+        return True
+
+    return _team_lead_participated_in_task(db, int(notification.task_id), viewer.user_id)
+
+
 def create_task_notification(
     db: Session,
     *,
@@ -518,6 +562,7 @@ def list_task_notifications(
     db: Session,
     user_id: int,
     *,
+    viewer: Optional[User] = None,
     company_id: int | None = None,
     branch_id: int | None = None,
 ) -> list[TaskNotification]:
@@ -526,12 +571,27 @@ def list_task_notifications(
         db, user_id=user_id, company_id=company_id, branch_id=branch_id
     ) is None:
         return []
-    return (
+
+    notifications = (
         db.query(TaskNotification)
         .filter(TaskNotification.user_id == user_id)
         .order_by(TaskNotification.created_at.desc())
         .all()
     )
+    if viewer is None or company_id is None:
+        return notifications
+
+    return [
+        notification
+        for notification in notifications
+        if _task_notification_visible_to_user(
+            db,
+            viewer,
+            notification,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        )
+    ]
 
 
 def mark_task_notification_as_read(
@@ -539,6 +599,7 @@ def mark_task_notification_as_read(
     *,
     notification_id: int,
     user_id: int,
+    viewer: Optional[User] = None,
     company_id: int | None = None,
     branch_id: int | None = None,
 ) -> Optional[TaskNotification]:
@@ -558,6 +619,16 @@ def mark_task_notification_as_read(
 
     if not notification:
         return None
+
+    if viewer is not None and company_id is not None:
+        if not _task_notification_visible_to_user(
+            db,
+            viewer,
+            notification,
+            company_id=int(company_id),
+            branch_id=branch_id,
+        ):
+            return None
 
     if not notification.is_read:
         notification.is_read = True

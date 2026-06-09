@@ -4,7 +4,16 @@ from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Literal
 from pathlib import Path
 from app.utils.timezone import now_ist
-from app.schemas.user_schema import UserCreate, UserOut, UpdateRoleSchema, UpdateStatusSchema, BulkUpdateStatusSchema
+from app.schemas.user_schema import (
+    UserCreate,
+    UserOut,
+    UpdateRoleSchema,
+    UpdateStatusSchema,
+    BulkUpdateStatusSchema,
+    validate_employment_dates,
+    EMPLOYMENT_DATE_ORDER_MESSAGE,
+    user_validation_error_message,
+)
 from app.crud.user_crud import (
     create_user,
     list_users,
@@ -32,11 +41,12 @@ import os
 import shutil
 from datetime import datetime
 import re
-from pydantic import EmailStr
+from pydantic import EmailStr, ValidationError
 from sqlalchemy import func
 from starlette.responses import Response
 from starlette.background import BackgroundTask
 from app.utils.department_utils import normalize_department_string, department_tokens_lower
+from app.utils.team_lead_scope import get_team_lead_project_peer_employee_ids
 from app.db.models.super_admin import SuperAdmin
 from app.db.models.company import Company
 from app.db.models.company_branch import CompanyBranch
@@ -73,6 +83,17 @@ def _parse_optional_form_datetime(value: Optional[str]) -> Optional[datetime]:
     )
 
 
+def _build_user_create(**data) -> UserCreate:
+    """Build UserCreate from form fields; map Pydantic errors to HTTP 422."""
+    try:
+        return UserCreate(**data)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=user_validation_error_message(exc.errors()),
+        ) from None
+
+
 def _sanitize_user_record(user: User) -> dict:
     data = UserOut.model_validate(user).model_dump()
     if data.get("profile_photo") and not _profile_photo_exists(data["profile_photo"]):
@@ -84,7 +105,7 @@ def _sanitize_users_response(payload: Union[User, List[User]]) -> Union[dict, Li
     if isinstance(payload, list):
         return [_sanitize_user_record(item) for item in payload]
     return _sanitize_user_record(payload)
-    return _sanitize_user_record(payload)
+
 
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
@@ -136,11 +157,11 @@ def register_employee(
             detail="Only Admin or HR users can create new employees"
         )
 
-    # HRs are not permitted to create Admin users
-    if current_user.role == RoleEnum.HR and role == RoleEnum.ADMIN:
+    # HRs are not permitted to create Admin or HR users
+    if current_user.role == RoleEnum.HR and role in (RoleEnum.ADMIN, RoleEnum.HR):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="HR users are not permitted to create Admin users"
+            detail="HR users are not permitted to create Admin or HR users. Only Admins may do so."
         )
 
     # Check for duplicate email in users table
@@ -256,7 +277,7 @@ def register_employee(
     # Normalize department to consistent format (First letter uppercase, rest lowercase)
     department_normalized = normalize_department_string(department)
 
-    user_in = UserCreate(
+    user_in = _build_user_create(
         name=name,
         email=email,
         employee_id=employee_id,
@@ -272,7 +293,7 @@ def register_employee(
         aadhar_card=aadhar_card,
         shift_type=shift_type,
         employee_type=employee_type,
-        manager_id=manager_id,  # ✅ Added
+        manager_id=manager_id,
         profile_photo=profile_photo_path,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
@@ -339,7 +360,7 @@ def get_all_employees_public(
     - Admin: Can view all users
     - HR: Can view HR, Manager, TeamLead, and Employee roles
     - Manager: Can view TeamLead and Employee of their assigned department
-    - TeamLead: Can view Employees of their assigned teams only
+    - TeamLead: Can view Employees who share an active project with the TeamLead
     - Employee: Cannot access this endpoint
     """
     employees = list_users_scoped(db, scope["company_id"], scope.get("branch_id"))
@@ -374,11 +395,15 @@ def get_all_employees_public(
         ]
     
     elif current_user.role == RoleEnum.TEAM_LEAD:
-        # TeamLead can view Employees in their department.
-        teamlead_dept = department_tokens_lower(current_user.department)
+        peer_ids = get_team_lead_project_peer_employee_ids(
+            db,
+            current_user,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
         employees = [
             emp for emp in employees
-            if emp.role == RoleEnum.EMPLOYEE and any(d in department_tokens_lower(emp.department) for d in teamlead_dept)
+            if emp.role == RoleEnum.EMPLOYEE and emp.user_id in peer_ids
         ]
     
     else:
@@ -681,6 +706,11 @@ def update_employee(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="HR is not permitted to assign the Admin role. Only Admins may do so."
             )
+        if role == RoleEnum.HR and getattr(employee, "role", None) != RoleEnum.HR:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="HR is not permitted to assign the HR role. Only Admins may do so."
+            )
         employee.role = role
     
     # Validate and convert gender to GenderEnum
@@ -700,6 +730,13 @@ def update_employee(
     employee.resignation_date = _parse_optional_form_datetime(resignation_date)
     if joining_date is not None:
         employee.joining_date = _parse_optional_form_datetime(joining_date)
+    try:
+        validate_employment_dates(employee.joining_date, employee.resignation_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
     employee.pan_card = pan_card
     employee.aadhar_card = aadhar_card
     employee.shift_type = shift_type
