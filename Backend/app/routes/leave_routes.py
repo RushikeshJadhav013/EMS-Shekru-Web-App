@@ -586,8 +586,8 @@ def approvals_inbox(
     - HR (with or without department): pending requests from Managers, Team Leads, and Employees (all departments).
     - MANAGER (with one or many departments): pending requests from Team Leads and Employees
       whose department list intersects with the manager's department(s).
-    - TEAM_LEAD: pending requests from self and Employees who share the same
-      department(s) AND an active project where the TeamLead is also an active member.
+    - TEAM_LEAD: pending requests from Employees who share the same department(s)
+      AND an active project where the TeamLead is also an active member (not self).
     - Other roles: no approvals inbox (empty list).
     """
     role_value = getattr(user.role, "value", str(user.role))
@@ -647,19 +647,6 @@ def approvals_inbox(
             for leave in all_pending_employees
             if leave.user_id in managed_employee_ids
         ]
-
-        # Include self pending requests (any department value)
-        self_pending = (
-            db.query(Leave)
-            .options(joinedload(Leave.user))
-            .filter(
-                Leave.status == "Pending",
-                Leave.user_id == user.user_id,
-                Leave.company_id == int(scope["company_id"]),
-            )
-            .all()
-        )
-        pending.extend(self_pending)
     else:
         return []
 
@@ -700,8 +687,8 @@ def approvals_history(
     - ADMIN: all users except Admins and self.
     - HR: all users except Admins, HRs, and self.
     - MANAGER: users in their department(s), excluding Admins, HRs, other Managers, and self.
-    - TEAM_LEAD: own decided leaves plus Employees in same department(s) who share
-      an active project with the TeamLead.
+    - TEAM_LEAD: decided leaves from Employees in same department(s) who share
+      an active project with the TeamLead (not self).
     - EMPLOYEE: their own decided leaves.
     
     Supports filtering by date range:
@@ -771,23 +758,16 @@ def approvals_history(
             branch_id=scope.get("branch_id"),
         )
 
-        self_decided = (
-            base_query.filter(Leave.user_id == user.user_id)
-            .order_by(Leave.end_date.desc())
-            .all()
-        )
-
-        decided = list(self_decided)
-
-        if managed_employee_ids:
-            employee_decided = (
+        if not managed_employee_ids:
+            decided = []
+        else:
+            decided = (
                 base_query
                 .filter(User.role == RoleEnum.EMPLOYEE)
                 .filter(User.user_id.in_(managed_employee_ids))
                 .order_by(Leave.end_date.desc())
                 .all()
             )
-            decided.extend(employee_decided)
     elif role_value == RoleEnum.EMPLOYEE.value:
         # Employees see only their own decided leaves
         decided = base_query.filter(Leave.user_id == user.user_id).order_by(Leave.end_date.desc()).all()
