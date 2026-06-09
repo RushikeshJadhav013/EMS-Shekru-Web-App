@@ -40,6 +40,10 @@ from app.realtime.socketio_app import (
     emit_chat_message_deleted,
 )
 from app.enums import RoleEnum, ChatMemberRoleEnum
+from app.utils.team_lead_scope import (
+    get_team_lead_managed_employee_ids,
+    team_lead_can_chat_with_user,
+)
 from app.utils.timezone import now_ist
 from zoneinfo import ZoneInfo
 
@@ -285,15 +289,39 @@ def list_chat_eligible_users(
     scope: dict = Depends(get_tenant_scope),
 ):
     _assert_current_in_scope(db, current=current, scope=scope)
-    users = (
-        db.query(User)
-        .filter(
+    if getattr(current, "role", None) == RoleEnum.TEAM_LEAD:
+        managed_ids = get_team_lead_managed_employee_ids(
+            db,
+            current,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
+        team_lead_filters = [
             User.is_active.is_(True),
             User.user_id != current.user_id,
             *_user_scope_filters(scope),
+        ]
+        elevated_roles = [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]
+        if managed_ids:
+            team_lead_filters.append(
+                or_(
+                    User.role.in_(elevated_roles),
+                    User.user_id.in_(managed_ids),
+                )
+            )
+        else:
+            team_lead_filters.append(User.role.in_(elevated_roles))
+        users = db.query(User).filter(*team_lead_filters).all()
+    else:
+        users = (
+            db.query(User)
+            .filter(
+                User.is_active.is_(True),
+                User.user_id != current.user_id,
+                *_user_scope_filters(scope),
+            )
+            .all()
         )
-        .all()
-    )
     return [
         ChatUserSchema(
             user_id=u.user_id,
@@ -315,6 +343,21 @@ def create_or_get_private_conversation(
         target_user = _get_user_in_scope(db, user_id=int(user_id), scope=scope)
         if not target_user:
             raise HTTPException(404, "Target user not found")
+        if getattr(current, "role", None) == RoleEnum.TEAM_LEAD:
+            if not team_lead_can_chat_with_user(
+                db,
+                current,
+                target_user,
+                company_id=int(scope["company_id"]),
+                branch_id=scope.get("branch_id"),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "You can only start chats with Admin, HR, Manager, or employees "
+                        "in your department and a shared active project."
+                    ),
+                )
 
     conv_id = conversation_id(current.user_id, user_id)
 

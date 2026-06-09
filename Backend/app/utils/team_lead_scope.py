@@ -85,6 +85,39 @@ def get_team_lead_managed_employee_ids(
     return managed
 
 
+_TEAM_LEAD_CHAT_ELEVATED_ROLES = frozenset({
+    RoleEnum.ADMIN.value,
+    RoleEnum.HR.value,
+    RoleEnum.MANAGER.value,
+})
+
+
+def team_lead_can_chat_with_user(
+    db: Session,
+    team_lead: User,
+    target: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    """
+    TeamLead may chat with Admin/HR/Manager (any department) plus Employees
+    in the same department with a shared active project.
+    """
+    if target.user_id == team_lead.user_id:
+        return False
+    target_role = getattr(target.role, "value", str(target.role))
+    if target_role in _TEAM_LEAD_CHAT_ELEVATED_ROLES:
+        return True
+    return team_lead_can_manage_employee(
+        db,
+        team_lead,
+        target,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
+
+
 def team_lead_can_manage_employee(
     db: Session,
     team_lead: User,
