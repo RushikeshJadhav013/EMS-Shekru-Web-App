@@ -15,9 +15,9 @@ def _departments_overlap(user_a: User, user_b: User) -> bool:
     return bool(tokens_a and tokens_b and tokens_a.intersection(tokens_b))
 
 
-def _team_lead_active_project_ids(
+def _user_active_project_ids(
     db: Session,
-    team_lead_id: int,
+    user_id: int,
     *,
     company_id: int,
 ) -> list[int]:
@@ -27,13 +27,22 @@ def _team_lead_active_project_ids(
             db.query(ProjectMember.project_id)
             .join(Project, Project.project_id == ProjectMember.project_id)
             .filter(
-                ProjectMember.user_id == team_lead_id,
+                ProjectMember.user_id == user_id,
                 ProjectMember.is_active.is_(True),
                 Project.company_id == int(company_id),
             )
             .all()
         )
     ]
+
+
+def _team_lead_active_project_ids(
+    db: Session,
+    team_lead_id: int,
+    *,
+    company_id: int,
+) -> list[int]:
+    return _user_active_project_ids(db, team_lead_id, company_id=company_id)
 
 
 def get_team_lead_managed_employee_ids(
@@ -90,6 +99,70 @@ _TEAM_LEAD_CHAT_ELEVATED_ROLES = frozenset({
     RoleEnum.HR.value,
     RoleEnum.MANAGER.value,
 })
+
+
+def get_employee_project_team_lead_ids(
+    db: Session,
+    employee: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> Set[int]:
+    """TeamLeads who share at least one active project with the employee."""
+    project_ids = _user_active_project_ids(
+        db, employee.user_id, company_id=company_id
+    )
+    if not project_ids:
+        return set()
+
+    query = (
+        db.query(User.user_id)
+        .join(ProjectMember, ProjectMember.user_id == User.user_id)
+        .filter(
+            ProjectMember.project_id.in_(project_ids),
+            ProjectMember.is_active.is_(True),
+            User.role == RoleEnum.TEAM_LEAD,
+            User.is_active.is_(True),
+            User.company_id == int(company_id),
+            User.user_id != employee.user_id,
+        )
+    )
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
+
+    return {int(row[0]) for row in query.distinct().all()}
+
+
+def employee_can_chat_with_user(
+    db: Session,
+    employee: User,
+    target: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    """
+    Employees may chat with Admin/HR/Manager, other Employees, and TeamLeads
+    on their shared active projects only (not other TeamLeads).
+    """
+    if target.user_id == employee.user_id:
+        return False
+    target_role = getattr(target.role, "value", str(target.role))
+    if target_role in {
+        RoleEnum.ADMIN.value,
+        RoleEnum.HR.value,
+        RoleEnum.MANAGER.value,
+        RoleEnum.EMPLOYEE.value,
+    }:
+        return True
+    if target_role == RoleEnum.TEAM_LEAD.value:
+        return target.user_id in get_employee_project_team_lead_ids(
+            db,
+            employee,
+            company_id=company_id,
+            branch_id=branch_id,
+        )
+    return False
 
 
 def team_lead_can_chat_with_user(

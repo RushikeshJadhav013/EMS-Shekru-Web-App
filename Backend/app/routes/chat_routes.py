@@ -41,6 +41,8 @@ from app.realtime.socketio_app import (
 )
 from app.enums import RoleEnum, ChatMemberRoleEnum
 from app.utils.team_lead_scope import (
+    employee_can_chat_with_user,
+    get_employee_project_team_lead_ids,
     get_team_lead_managed_employee_ids,
     team_lead_can_chat_with_user,
 )
@@ -312,6 +314,34 @@ def list_chat_eligible_users(
         else:
             team_lead_filters.append(User.role.in_(elevated_roles))
         users = db.query(User).filter(*team_lead_filters).all()
+    elif getattr(current, "role", None) == RoleEnum.EMPLOYEE:
+        project_team_lead_ids = get_employee_project_team_lead_ids(
+            db,
+            current,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
+        employee_filters = [
+            User.is_active.is_(True),
+            User.user_id != current.user_id,
+            *_user_scope_filters(scope),
+        ]
+        allowed_roles = [
+            RoleEnum.ADMIN,
+            RoleEnum.HR,
+            RoleEnum.MANAGER,
+            RoleEnum.EMPLOYEE,
+        ]
+        allowed_clauses = [User.role.in_(allowed_roles)]
+        if project_team_lead_ids:
+            allowed_clauses.append(
+                and_(
+                    User.role == RoleEnum.TEAM_LEAD,
+                    User.user_id.in_(project_team_lead_ids),
+                )
+            )
+        employee_filters.append(or_(*allowed_clauses))
+        users = db.query(User).filter(*employee_filters).all()
     else:
         users = (
             db.query(User)
@@ -356,6 +386,21 @@ def create_or_get_private_conversation(
                     detail=(
                         "You can only start chats with Admin, HR, Manager, or employees "
                         "in your department and a shared active project."
+                    ),
+                )
+        elif getattr(current, "role", None) == RoleEnum.EMPLOYEE:
+            if not employee_can_chat_with_user(
+                db,
+                current,
+                target_user,
+                company_id=int(scope["company_id"]),
+                branch_id=scope.get("branch_id"),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "You can only start chats with Admin, HR, Manager, other employees, "
+                        "or TeamLeads on your shared active projects."
                     ),
                 )
 
