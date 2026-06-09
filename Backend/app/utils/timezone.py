@@ -4,13 +4,18 @@ All timestamps are naive datetimes representing IST (Asia/Kolkata).
 """
 from datetime import datetime, date, time
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
+
 
 def now_ist() -> datetime:
-    """Get current IST time as naive datetime (server is already set to IST)."""
-    return datetime.now()
+    """Current wall-clock time in Asia/Kolkata as a naive datetime."""
+    return datetime.now(IST).replace(tzinfo=None)
+
 
 def today_ist() -> date:
-    """Get current date in IST (server local date)."""
+    """Current calendar date in Asia/Kolkata."""
     return now_ist().date()
 
 def ist_start_of_day(date_obj: Optional[date] = None) -> datetime:
