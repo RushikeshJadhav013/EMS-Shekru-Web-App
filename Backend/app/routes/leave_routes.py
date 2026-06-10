@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from typing import Optional, Literal
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
 from datetime import datetime, timedelta, time
 from app.db.database import get_db
 from app.utils.timezone import now_ist
@@ -51,7 +50,6 @@ from app.schemas.leave_config_schema import (
 )
 from app.db.models.user import User
 from app.db.models.leave import Leave
-from app.db.models.shift import Shift, ShiftAssignment
 from app.services.office_timing_service import resolve_office_start_time
 from fastapi import Body
 from app.enums import RoleEnum
@@ -109,7 +107,9 @@ def _enforce_leave_business_rules(
         validate_advance_notice(
             leave_type=leave_type,
             start_dt=start_dt,
-            shift_start_time_resolver=lambda d: _resolve_user_shift_start_time(db, user, d),
+            shift_start_time_resolver=lambda d: _resolve_office_start_time_for_user(
+                db, user, company_id
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -195,49 +195,17 @@ def _ensure_leave_in_scope(db: Session, leave_id: int, scope: dict) -> Leave:
     return leave
 
 
-def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optional[time]:
-    company_id = getattr(user, "company_id", None)
-    if company_id is None:
-        return None
-
-    # 1) Date-specific shift assignment has highest precedence.
-    assignment = (
-        db.query(ShiftAssignment)
-        .join(Shift, Shift.shift_id == ShiftAssignment.shift_id)
-        .filter(
-            ShiftAssignment.user_id == user.user_id,
-            ShiftAssignment.assignment_date == leave_date,
-            Shift.is_active.is_(True),
-            Shift.company_id == user.company_id,
-        )
-        .order_by(ShiftAssignment.updated_at.desc(), ShiftAssignment.created_at.desc())
-        .first()
+def _resolve_office_start_time_for_user(
+    db: Session,
+    user: User,
+    company_id: int,
+) -> Optional[time]:
+    """Department office timing for sick leave; falls back to company default."""
+    return resolve_office_start_time(
+        db,
+        getattr(user, "department", None),
+        int(company_id),
     )
-    if assignment and assignment.shift:
-        return assignment.shift.start_time
-
-    # 2) Fallback to user's shift_type mapping (best-effort by shift name).
-    user_shift_type = (getattr(user, "shift_type", None) or "").strip().lower()
-    if user_shift_type:
-        normalized_name = func.lower(func.trim(Shift.name))
-        shift_by_type = (
-            db.query(Shift)
-            .filter(
-                Shift.is_active.is_(True),
-                Shift.company_id == int(company_id),
-                (
-                    normalized_name == user_shift_type
-                )
-                | (normalized_name.like(f"%{user_shift_type}%")),
-            )
-            .order_by(Shift.department.isnot(None).desc(), Shift.start_time.asc())
-            .first()
-        )
-        if shift_by_type:
-            return shift_by_type.start_time
-
-    # 3) Final fallback to office timing (department-specific, then company default).
-    return resolve_office_start_time(db, getattr(user, "department", None), int(company_id))
 
 # Employee applies for leave
 @router.post("/", response_model=LeaveOut)

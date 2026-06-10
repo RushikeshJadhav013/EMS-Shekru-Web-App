@@ -215,7 +215,8 @@ def validate_advance_notice(
     shift_start_time_resolver,
 ) -> None:
     """
-    Sick: shift-based window. Unpaid: today/tomorrow only (handled in shape).
+    Sick: office-timing window (department, then company default).
+    Unpaid: today/tomorrow only (handled in shape).
     Others: 24 hours minimum advance notice.
     """
     leave_type = leave_type.strip().lower()
@@ -230,20 +231,23 @@ def validate_advance_notice(
         shift_start_time = shift_start_time_resolver(start_dt.date())
         if shift_start_time is None:
             raise ValueError(
-                "Sick leave cannot be validated because office/shift start time is not configured."
+                "Sick leave cannot be validated because office start time is not configured "
+                "for your department or company."
             )
         shift_start_dt = datetime.combine(start_dt.date(), shift_start_time)
         shift_hours_difference = (shift_start_dt - now).total_seconds() / 3600
         if shift_hours_difference < 0:
-            raise ValueError("Sick leave cannot be applied for past dates.")
+            raise ValueError(
+                "Sick leave cannot be applied after office start time for the selected date."
+            )
         if shift_hours_difference > 24:
             raise ValueError(
                 "Sick leave cannot be applied for future dates. "
-                "It must be applied only within 24 hours of the start date."
+                "It must be applied only within 24 hours of office start time."
             )
         if shift_hours_difference < 2:
             raise ValueError(
-                "Sick leave cannot be applied within 2 hours of the start date."
+                "Sick leave cannot be applied within 2 hours of office start time."
             )
         return
 
