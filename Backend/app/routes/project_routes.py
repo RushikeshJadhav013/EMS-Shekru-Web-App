@@ -135,6 +135,17 @@ def _reject_if_active_member(member: Optional[ProjectMember], user_id: int) -> N
         )
 
 
+def _validate_project_member_add(
+    project: Project,
+    user_id: int,
+    role: str,
+    member: Optional[ProjectMember],
+) -> None:
+    """Reject PIC re-add and already-active members before add/reactivate."""
+    _reject_pic_member_add(project, user_id)
+    _reject_if_active_member(member, user_id)
+
+
 def _validate_bulk_member_add_targets(
     project: Project,
     user_ids: list[int],
@@ -791,12 +802,7 @@ def add_project_member(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
 
-    member = (
-        db.query(ProjectMember)
-        .filter(ProjectMember.project_id == project.project_id, ProjectMember.user_id == payload.user_id)
-        .first()
-    )
-    _validate_project_member_add(project, payload.user_id, payload.role, member)
+    member = _get_project_member_record(db, project.project_id, payload.user_id)
 
     # Managers: enforce department configuration, project ownership, and department match
     if current_user.role == RoleEnum.MANAGER:
@@ -831,9 +837,7 @@ def add_project_member(
                 detail="Managers can manage members only from their own department(s).",
             )
 
-    member = _get_project_member_record(db, project.project_id, payload.user_id)
-    _reject_pic_member_add(project, payload.user_id)
-    _reject_if_active_member(member, payload.user_id)
+    _validate_project_member_add(project, payload.user_id, payload.role, member)
 
     if member:
         # Reactivate previously removed member only
@@ -1030,7 +1034,6 @@ def add_project_members_bulk(
                 )
 
         member = members_by_user_id.get(user.user_id)
-        _validate_project_member_add(project, user.user_id, payload.role, member)
 
         if member:
             # Reactivate previously removed member only (active members rejected above)
