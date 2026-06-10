@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from typing import Optional, Literal
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
 from datetime import datetime, timedelta, time
 from app.db.database import get_db
 from app.utils.timezone import now_ist
@@ -51,7 +50,6 @@ from app.schemas.leave_config_schema import (
 )
 from app.db.models.user import User
 from app.db.models.leave import Leave
-from app.db.models.shift import Shift, ShiftAssignment
 from app.services.office_timing_service import resolve_office_start_time
 from fastapi import Body
 from app.enums import RoleEnum
@@ -109,7 +107,9 @@ def _enforce_leave_business_rules(
         validate_advance_notice(
             leave_type=leave_type,
             start_dt=start_dt,
-            shift_start_time_resolver=lambda d: _resolve_user_shift_start_time(db, user, d),
+            shift_start_time_resolver=lambda d: _resolve_office_start_time_for_user(
+                db, user, company_id
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -195,49 +195,17 @@ def _ensure_leave_in_scope(db: Session, leave_id: int, scope: dict) -> Leave:
     return leave
 
 
-def _resolve_user_shift_start_time(db: Session, user: User, leave_date) -> Optional[time]:
-    company_id = getattr(user, "company_id", None)
-    if company_id is None:
-        return None
-
-    # 1) Date-specific shift assignment has highest precedence.
-    assignment = (
-        db.query(ShiftAssignment)
-        .join(Shift, Shift.shift_id == ShiftAssignment.shift_id)
-        .filter(
-            ShiftAssignment.user_id == user.user_id,
-            ShiftAssignment.assignment_date == leave_date,
-            Shift.is_active.is_(True),
-            Shift.company_id == user.company_id,
-        )
-        .order_by(ShiftAssignment.updated_at.desc(), ShiftAssignment.created_at.desc())
-        .first()
+def _resolve_office_start_time_for_user(
+    db: Session,
+    user: User,
+    company_id: int,
+) -> Optional[time]:
+    """Department office timing for sick leave; falls back to company default."""
+    return resolve_office_start_time(
+        db,
+        getattr(user, "department", None),
+        int(company_id),
     )
-    if assignment and assignment.shift:
-        return assignment.shift.start_time
-
-    # 2) Fallback to user's shift_type mapping (best-effort by shift name).
-    user_shift_type = (getattr(user, "shift_type", None) or "").strip().lower()
-    if user_shift_type:
-        normalized_name = func.lower(func.trim(Shift.name))
-        shift_by_type = (
-            db.query(Shift)
-            .filter(
-                Shift.is_active.is_(True),
-                Shift.company_id == int(company_id),
-                (
-                    normalized_name == user_shift_type
-                )
-                | (normalized_name.like(f"%{user_shift_type}%")),
-            )
-            .order_by(Shift.department.isnot(None).desc(), Shift.start_time.asc())
-            .first()
-        )
-        if shift_by_type:
-            return shift_by_type.start_time
-
-    # 3) Final fallback to office timing (department-specific, then company default).
-    return resolve_office_start_time(db, getattr(user, "department", None), int(company_id))
 
 # Employee applies for leave
 @router.post("/", response_model=LeaveOut)
@@ -586,8 +554,8 @@ def approvals_inbox(
     - HR (with or without department): pending requests from Managers, Team Leads, and Employees (all departments).
     - MANAGER (with one or many departments): pending requests from Team Leads and Employees
       whose department list intersects with the manager's department(s).
-    - TEAM_LEAD: pending requests from self and Employees who share the same
-      department(s) AND an active project where the TeamLead is also an active member.
+    - TEAM_LEAD: pending requests from Employees who share the same department(s)
+      AND an active project where the TeamLead is also an active member (not self).
     - Other roles: no approvals inbox (empty list).
     """
     role_value = getattr(user.role, "value", str(user.role))
@@ -647,19 +615,6 @@ def approvals_inbox(
             for leave in all_pending_employees
             if leave.user_id in managed_employee_ids
         ]
-
-        # Include self pending requests (any department value)
-        self_pending = (
-            db.query(Leave)
-            .options(joinedload(Leave.user))
-            .filter(
-                Leave.status == "Pending",
-                Leave.user_id == user.user_id,
-                Leave.company_id == int(scope["company_id"]),
-            )
-            .all()
-        )
-        pending.extend(self_pending)
     else:
         return []
 
@@ -700,8 +655,8 @@ def approvals_history(
     - ADMIN: all users except Admins and self.
     - HR: all users except Admins, HRs, and self.
     - MANAGER: users in their department(s), excluding Admins, HRs, other Managers, and self.
-    - TEAM_LEAD: own decided leaves plus Employees in same department(s) who share
-      an active project with the TeamLead.
+    - TEAM_LEAD: decided leaves from Employees in same department(s) who share
+      an active project with the TeamLead (not self).
     - EMPLOYEE: their own decided leaves.
     
     Supports filtering by date range:
@@ -771,23 +726,16 @@ def approvals_history(
             branch_id=scope.get("branch_id"),
         )
 
-        self_decided = (
-            base_query.filter(Leave.user_id == user.user_id)
-            .order_by(Leave.end_date.desc())
-            .all()
-        )
-
-        decided = list(self_decided)
-
-        if managed_employee_ids:
-            employee_decided = (
+        if not managed_employee_ids:
+            decided = []
+        else:
+            decided = (
                 base_query
                 .filter(User.role == RoleEnum.EMPLOYEE)
                 .filter(User.user_id.in_(managed_employee_ids))
                 .order_by(Leave.end_date.desc())
                 .all()
             )
-            decided.extend(employee_decided)
     elif role_value == RoleEnum.EMPLOYEE.value:
         # Employees see only their own decided leaves
         decided = base_query.filter(Leave.user_id == user.user_id).order_by(Leave.end_date.desc()).all()

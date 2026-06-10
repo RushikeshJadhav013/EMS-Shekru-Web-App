@@ -57,6 +57,13 @@ class User(Base):
     is_active = Column(Boolean, default=True)  # Active/Deactivate status
     is_email_verified = Column(Boolean, default=False)  # Email verification status for salary documents
 
+    # PIN login (4-digit; users only — not super admins)
+    pin_hash = Column(String(255), nullable=True)
+    is_pin_set = Column(Boolean, default=False, nullable=False)
+    pin_set_at = Column(DateTime, nullable=True)
+    pin_failed_attempts = Column(Integer, default=0, nullable=False)
+    pin_locked_until = Column(DateTime, nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, default=now_ist)
 

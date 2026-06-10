@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Environment-based OTP settings
     ENVIRONMENT: str = os.getenv("development", "testing")  # development, testing, production
     TESTING_OTP: str = os.getenv("TESTING_OTP", "123456")  # Fixed OTP for testing
+    TESTING_PIN: str = os.getenv("TESTING_PIN", "1234")  # Fixed 4-digit PIN for testing
+    PIN_MAX_ATTEMPTS: int = int(os.getenv("PIN_MAX_ATTEMPTS", "5"))
+    PIN_LOCKOUT_MINUTES: int = int(os.getenv("PIN_LOCKOUT_MINUTES", "15"))
     ENABLE_EMAIL_OTP: bool = os.getenv("ENABLE_EMAIL_OTP", "false").lower() == "true"
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
@@ -57,6 +60,11 @@ class Settings(BaseSettings):
     @property
     def should_use_fixed_otp(self) -> bool:
         """Use fixed OTP in development and testing environments"""
+        return self.is_development or self.is_testing
+
+    @property
+    def should_use_fixed_pin(self) -> bool:
+        """Use fixed PIN in development and testing environments"""
         return self.is_development or self.is_testing
     
     @property

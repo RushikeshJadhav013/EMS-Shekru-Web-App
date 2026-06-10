@@ -21,6 +21,7 @@ from app.crud.user_crud import (
     update_user_role,
     update_user_status,
     update_users_status_bulk,
+    clear_user_pin,
     delete_user,
     get_user_by_email,
     get_user_by_employee_id,
@@ -848,6 +849,51 @@ def update_employee_status(
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return _sanitize_users_response(updated)
+
+
+@router.post("/{user_id}/reset-pin", summary="Reset employee PIN (forces OTP login + new PIN setup)")
+def reset_employee_pin(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    """
+    Clear a user's PIN so they must log in with email OTP and set a new PIN.
+    Only Admin and HR can reset PINs for users in their scope.
+    """
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR users can reset PINs")
+
+    if employee.user_id == current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reset your own PIN here. Use forgot PIN flow or change-pin while logged in.",
+        )
+
+    if current_user.role == RoleEnum.ADMIN and getattr(employee, "role", None) == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reset PIN for other Admin users.",
+        )
+
+    if current_user.role == RoleEnum.HR and getattr(employee, "role", None) in (RoleEnum.ADMIN, RoleEnum.HR):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HR users cannot reset PIN for Admin or HR users.",
+        )
+
+    clear_user_pin(db, employee)
+    return {
+        "message": "PIN reset successfully. User must log in with email OTP and set a new PIN.",
+        "user_id": employee.user_id,
+        "is_pin_set": False,
+    }
+
 
 @router.get("/export/pdf", summary="Download user details as PDF with optional filters")
 def download_users_pdf(
