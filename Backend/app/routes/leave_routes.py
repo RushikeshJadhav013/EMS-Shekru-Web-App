@@ -293,9 +293,9 @@ def approve_leave_request(
     requester_role = getattr(requester.role, "value", str(requester.role))
 
     # Role-based approval rules:
-    # - Employee -> TeamLead (same dept + shared project), Manager, or HR (same department)
-    # - TeamLead -> Manager or HR (must be same department)
-    # - Manager -> Admin or HR
+    # - Employee -> TeamLead (same dept + shared project), Manager (same dept), or HR (any dept)
+    # - TeamLead -> Manager (same dept) or HR (any dept)
+    # - Manager -> Admin or HR (any dept)
     # - HR -> Admin only
     if requester_role == RoleEnum.EMPLOYEE.value:
         if current_user.role not in (RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR):
@@ -315,8 +315,7 @@ def approve_leave_request(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You can only approve/reject leave requests from your project team members in your department",
                 )
-        else:
-            # Manager/HR: same department(s) only
+        elif current_user.role == RoleEnum.MANAGER:
             requester_tokens = set(department_tokens_lower(getattr(requester, "department", None)))
             approver_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
             if not requester_tokens or not approver_tokens or not (requester_tokens & approver_tokens):
@@ -324,19 +323,22 @@ def approve_leave_request(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You can only approve/reject requests from your department",
                 )
+        # HR: company-wide approval for employees (with or without department)
     elif requester_role == RoleEnum.TEAM_LEAD.value:
         if current_user.role not in (RoleEnum.MANAGER, RoleEnum.HR):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only Manager or HR can approve/reject this request",
             )
-        requester_tokens = set(department_tokens_lower(getattr(requester, "department", None)))
-        approver_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
-        if not requester_tokens or not approver_tokens or not (requester_tokens & approver_tokens):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only approve/reject requests from your department",
-            )
+        if current_user.role == RoleEnum.MANAGER:
+            requester_tokens = set(department_tokens_lower(getattr(requester, "department", None)))
+            approver_tokens = set(department_tokens_lower(getattr(current_user, "department", None)))
+            if not requester_tokens or not approver_tokens or not (requester_tokens & approver_tokens):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only approve/reject requests from your department",
+                )
+        # HR: company-wide approval for team leads (with or without department)
     elif requester_role == RoleEnum.MANAGER.value:
         if current_user.role not in (RoleEnum.ADMIN, RoleEnum.HR):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Admin or HR can approve/reject Manager requests")
