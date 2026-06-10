@@ -997,6 +997,27 @@ def build_monthly_attendance_grid(
                 User.user_id != current_user.user_id,
                 User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
             )
+        elif user_role == RoleEnum.TEAM_LEAD:
+            from app.utils.team_lead_scope import get_team_lead_project_peer_employee_ids
+
+            peer_ids = get_team_lead_project_peer_employee_ids(
+                db,
+                current_user,
+                company_id=int(company_id) if company_id is not None else int(current_user.company_id),
+                branch_id=branch_id if branch_id is not None else current_user.branch_id,
+            )
+            if not peer_ids:
+                return {
+                    "title": "Monthly Standard Attendance Report",
+                    "duration": f"01/{month:02d}/{year} - {total_days}/{month:02d}/{year}",
+                    "printed_on": date.today().strftime("%d/%m/%Y"),
+                    "days": days,
+                    "rows": [],
+                }
+            user_query = user_query.filter(
+                User.role == RoleEnum.EMPLOYEE,
+                User.user_id.in_(peer_ids),
+            )
         # Other roles are not expected to call the grid download endpoints;
         # access is enforced at the router level (require_roles).
 

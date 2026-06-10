@@ -31,6 +31,7 @@ from app.services.office_timing_service import (
     normalize_department,
     resolve_office_timing,
 )
+from app.utils.team_lead_scope import get_team_lead_project_peer_employee_ids
 
 
 
@@ -73,6 +74,27 @@ def _ensure_user_in_scope(db: Session, user_id: int, scope: dict) -> User:
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found in this company scope")
     return user
+
+
+def _team_lead_peer_employee_ids(db: Session, team_lead: User, scope: dict) -> set[int]:
+    """Employees who share at least one active project with the TeamLead."""
+    return get_team_lead_project_peer_employee_ids(
+        db,
+        team_lead,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
+
+
+def _team_lead_can_view_user_attendance(
+    db: Session,
+    team_lead: User,
+    target_user_id: int,
+    scope: dict,
+) -> bool:
+    if target_user_id == team_lead.user_id:
+        return True
+    return target_user_id in _team_lead_peer_employee_ids(db, team_lead, scope)
 
 # Logout endpoint that handles pause/resume functionality
 class LogoutPayload(BaseModel):
@@ -629,8 +651,32 @@ def get_attendance_summary(db: Session, current_user: User) -> Dict[str, Any]:
                 User.department.isnot(None),
                 or_(*dept_filters),
             )
+        elif user_role == RoleEnum.TEAM_LEAD:
+            if current_user.company_id is None:
+                peer_ids: set[int] = set()
+            else:
+                peer_ids = get_team_lead_project_peer_employee_ids(
+                    db,
+                    current_user,
+                    company_id=int(current_user.company_id),
+                    branch_id=current_user.branch_id,
+                )
+            if not peer_ids:
+                return {
+                    "total_employees": 0,
+                    "present_today": 0,
+                    "absent_today": 0,
+                    "late_arrivals": 0,
+                    "early_departures": 0,
+                    "average_work_hours": 0.0,
+                    "date": today.isoformat(),
+                }
+            pop_query = pop_query.filter(
+                User.role == RoleEnum.EMPLOYEE,
+                User.user_id.in_(peer_ids),
+            )
         else:
-            # TeamLead/Employee (and any other roles): only see own summary
+            # Employee (and any other roles): only see own summary
             pop_query = pop_query.filter(User.user_id == current_user.user_id)
 
         total_employees = pop_query.count()
@@ -756,6 +802,22 @@ def get_attendance_summary_scoped(db: Session, current_user: User, scope: dict) 
                 User.role.in_([RoleEnum.TEAM_LEAD, RoleEnum.EMPLOYEE]),
                 User.department.isnot(None),
                 or_(*dept_filters),
+            )
+        elif user_role == RoleEnum.TEAM_LEAD:
+            peer_ids = _team_lead_peer_employee_ids(db, current_user, scope)
+            if not peer_ids:
+                return {
+                    "total_employees": 0,
+                    "present_today": 0,
+                    "absent_today": 0,
+                    "late_arrivals": 0,
+                    "early_departures": 0,
+                    "average_work_hours": 0.0,
+                    "date": today.isoformat(),
+                }
+            pop_query = pop_query.filter(
+                User.role == RoleEnum.EMPLOYEE,
+                User.user_id.in_(peer_ids),
             )
         else:
             pop_query = pop_query.filter(User.user_id == current_user.user_id)
@@ -1738,8 +1800,8 @@ def get_self_attendance(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
 ):
-    # Strictly "my attendance": users can only view their own records
     if current_user.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1834,7 +1896,8 @@ def get_today_attendance(
     - HR: See all users' attendance except Admins, other HRs, and self.
     - MANAGER: See users in their department(s) (supports comma-separated departments),
       excluding Admins, HRs, other Managers, and self.
-    - TEAM_LEAD and EMPLOYEE: Cannot view this data (403).
+    - TEAM_LEAD: See Employees on shared active projects only.
+    - EMPLOYEE: Cannot view this data (403).
     """
     target_date: Optional[date] = None
     if date:
@@ -1895,7 +1958,12 @@ def get_today_attendance(
 
         return [r for r in records if r.get("user_id") in allowed_ids]
 
-    # TeamLead / Employee (and any other roles): forbidden
+    if user_role == RoleEnum.TEAM_LEAD:
+        peer_ids = _team_lead_peer_employee_ids(db, current_user, scope)
+        if not peer_ids:
+            return []
+        return [r for r in records if r.get("user_id") in peer_ids]
+
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view attendance records")
 @router.get("/download/csv")
 def download_attendance_csv(
@@ -2098,6 +2166,7 @@ def get_today_status(
     - HR: See all employees except Admins, other HRs, and self.
     - MANAGER: See employees in their department(s) (supports comma-separated values),
       excluding Admins, HRs, other Managers, and self.
+    - TEAM_LEAD: See Employees on shared active projects only.
     - Others: Not allowed.
     """
     user_role = current_user.role
@@ -2143,9 +2212,15 @@ def get_today_status(
 
         return [r for r in records if r.get("user_id") in allowed_ids]
 
+    if user_role == RoleEnum.TEAM_LEAD:
+        peer_ids = _team_lead_peer_employee_ids(db, current_user, scope)
+        if not peer_ids:
+            return []
+        return [r for r in records if r.get("user_id") in peer_ids]
+
     raise HTTPException(status_code=403, detail="Not authorized to view attendance")
 
-# Get All Attendance History (for Admin/HR/Manager)
+# Get All Attendance History (for Admin/HR/Manager/TeamLead)
 @router.get("/all")
 def get_all_attendance_history(
     department: Optional[str] = None,
@@ -2159,6 +2234,7 @@ def get_all_attendance_history(
     - HR: See all users except Admins, HRs, and self.
     - MANAGER: See users in their department(s) (supports comma-separated),
       excluding Admins, HRs, other Managers, and self.
+    - TEAM_LEAD: See Employees on shared active projects only.
     - Others: Not allowed
     """
     # Auto-checkout overdue open attendances so /attendance/all reflects
@@ -2211,6 +2287,14 @@ def get_all_attendance_history(
             records_query = records_query.filter(or_(*filters))
         else:
             records_query = records_query.filter(User.department == user_department)
+    elif user_role == RoleEnum.TEAM_LEAD:
+        peer_ids = _team_lead_peer_employee_ids(db, current_user, scope)
+        if not peer_ids:
+            return []
+        records_query = records_query.filter(
+            User.role == RoleEnum.EMPLOYEE,
+            User.user_id.in_(peer_ids),
+        )
     else:
         raise HTTPException(status_code=403, detail="Not authorized to view attendance")
 
@@ -2514,10 +2598,18 @@ def get_online_status_history(
     
     # Check permissions
     if attendance.user_id != current_user.user_id:
-        if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+        if current_user.role == RoleEnum.TEAM_LEAD:
+            if not _team_lead_can_view_user_attendance(
+                db, current_user, attendance.user_id, scope
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied",
+                )
+        elif current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
+                detail="Access denied",
             )
     
     # Get status history
@@ -2548,31 +2640,41 @@ def get_all_current_online_status(
     """
     Get current online/offline status for all users who are checked in today.
     Returns a map of user_id to online status.
-    Only accessible by admin, hr, and manager roles.
+    Accessible by admin, hr, manager, and team lead (project peers only).
     """
     from app.db.models.online_status import OnlineStatus
     
-    # Check permissions
-    if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+    if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied"
+            detail="Access denied",
         )
+
+    team_lead_peer_ids: set[int] | None = None
+    if current_user.role == RoleEnum.TEAM_LEAD:
+        team_lead_peer_ids = _team_lead_peer_employee_ids(db, current_user, scope)
+        if not team_lead_peer_ids:
+            return {}
     
     # Get today's date in UTC
     today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
     # Get all attendance records for today that haven't checked out
+    attendance_filters = [
+        Attendance.check_in >= today_start,
+        Attendance.check_in < today_end,
+        Attendance.check_out.is_(None),
+        *_attendance_tenant_filters(scope),
+    ]
+    if team_lead_peer_ids is not None:
+        attendance_filters.append(User.user_id.in_(team_lead_peer_ids))
+        attendance_filters.append(User.role == RoleEnum.EMPLOYEE)
+
     today_attendances = (
         db.query(Attendance)
         .join(User, Attendance.user_id == User.user_id)
-        .filter(
-            Attendance.check_in >= today_start,
-            Attendance.check_in < today_end,
-            Attendance.check_out.is_(None),
-            *_attendance_tenant_filters(scope),
-        )
+        .filter(*attendance_filters)
         .all()
     )
     
@@ -2611,14 +2713,19 @@ def get_user_current_online_status(
     """
     from app.db.models.online_status import OnlineStatus
     
-    # Check permissions - user can check their own status, or admin/hr/manager can check anyone
+    # Check permissions - self, admin/hr/manager, or team lead (project peers)
     if current_user.user_id != user_id:
-        if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+        if current_user.role == RoleEnum.TEAM_LEAD:
+            if not _team_lead_can_view_user_attendance(db, current_user, user_id, scope):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied",
+                )
+        elif current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
+                detail="Access denied",
             )
-        # Ensure target user is within current tenant scope
         _ensure_user_in_scope(db, user_id, scope)
     
     # Get today's attendance for this user
@@ -2696,7 +2803,8 @@ def working_hours_summary(
     # - Everyone can view their own summary
     # - ADMIN: can view all except Admins (and self already handled)
     # - HR: can view all except Admins + HRs
-    # - MANAGER: can view non-privileged users (not Admin/HR/Manager) in their department(s) (supports comma-separated)
+    # - MANAGER: can view non-privileged users (not Admin/HR/Manager) in their department(s)
+    # - TEAM_LEAD: can view Employees on shared active projects
     if target_user_id != current_user.user_id:
         target_user = (
             db.query(User)
@@ -2719,8 +2827,10 @@ def working_hours_summary(
             target_tokens = set(department_tokens_lower(getattr(target_user, "department", None)))
             if not manager_tokens or not target_tokens or not manager_tokens.intersection(target_tokens):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        elif current_user.role == RoleEnum.TEAM_LEAD:
+            if not _team_lead_can_view_user_attendance(db, current_user, target_user_id, scope):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         else:
-            # TeamLead/Employee/etc cannot view other users
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     def shift_month(year: int, month: int, delta_months: int) -> tuple[int, int]:
@@ -2954,10 +3064,18 @@ def calculate_working_hours(
         
         # Check permissions
         if attendance.user_id != current_user.user_id:
-            if current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
+            if current_user.role == RoleEnum.TEAM_LEAD:
+                if not _team_lead_can_view_user_attendance(
+                    db, current_user, attendance.user_id, scope
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access denied",
+                    )
+            elif current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied"
+                    detail="Access denied",
                 )
         
         # Get status history
@@ -3061,7 +3179,9 @@ def attendance_monthly_grid_report(
         month,
         year,
         department,
-        current_user=current_user if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR] else None,
+        current_user=current_user
+        if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.TEAM_LEAD]
+        else None,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )
