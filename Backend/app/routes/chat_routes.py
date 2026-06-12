@@ -20,6 +20,7 @@ from app.db.models.chat import ChatSession, ChatMember, ChatMessage
 from app.db.models.notification import ChatNotification
 from app.schemas.chat_schema import (
     ChatUserSchema,
+    GroupChatMemberOut,
     MessageSchema,
     CreateGroupPayload,
     AddRemoveMemberPayload,
@@ -42,6 +43,7 @@ from app.realtime.socketio_app import (
 from app.enums import RoleEnum, ChatMemberRoleEnum
 from app.utils.team_lead_scope import (
     employee_can_chat_with_user,
+    get_employee_project_peer_employee_ids,
     get_employee_project_team_lead_ids,
     get_team_lead_managed_employee_ids,
     team_lead_can_chat_with_user,
@@ -315,24 +317,28 @@ def list_chat_eligible_users(
             team_lead_filters.append(User.role.in_(elevated_roles))
         users = db.query(User).filter(*team_lead_filters).all()
     elif getattr(current, "role", None) == RoleEnum.EMPLOYEE:
+        peer_employee_ids = get_employee_project_peer_employee_ids(
+            db,
+            current,
+            company_id=int(scope["company_id"]),
+            branch_id=scope.get("branch_id"),
+        )
         project_team_lead_ids = get_employee_project_team_lead_ids(
             db,
             current,
             company_id=int(scope["company_id"]),
             branch_id=scope.get("branch_id"),
         )
-        employee_filters = [
-            User.is_active.is_(True),
-            User.user_id != current.user_id,
-            *_user_scope_filters(scope),
+        allowed_clauses = [
+            User.role.in_([RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER]),
         ]
-        allowed_roles = [
-            RoleEnum.ADMIN,
-            RoleEnum.HR,
-            RoleEnum.MANAGER,
-            RoleEnum.EMPLOYEE,
-        ]
-        allowed_clauses = [User.role.in_(allowed_roles)]
+        if peer_employee_ids:
+            allowed_clauses.append(
+                and_(
+                    User.role == RoleEnum.EMPLOYEE,
+                    User.user_id.in_(peer_employee_ids),
+                )
+            )
         if project_team_lead_ids:
             allowed_clauses.append(
                 and_(
@@ -340,8 +346,16 @@ def list_chat_eligible_users(
                     User.user_id.in_(project_team_lead_ids),
                 )
             )
-        employee_filters.append(or_(*allowed_clauses))
-        users = db.query(User).filter(*employee_filters).all()
+        users = (
+            db.query(User)
+            .filter(
+                User.is_active.is_(True),
+                User.user_id != current.user_id,
+                *_user_scope_filters(scope),
+                or_(*allowed_clauses),
+            )
+            .all()
+        )
     else:
         users = (
             db.query(User)
@@ -399,8 +413,8 @@ def create_or_get_private_conversation(
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=(
-                        "You can only start chats with Admin, HR, Manager, other employees, "
-                        "or TeamLeads on your shared active projects."
+                        "You can only start chats with Admin, HR, Manager, employees, "
+                        "and TeamLeads on your shared active projects."
                     ),
                 )
 
@@ -516,6 +530,53 @@ def create_group_chat(
             )
 
     return {"group_id": group_id}
+
+
+@router.get("/group/{group_id}/members", response_model=List[GroupChatMemberOut])
+def list_group_chat_members(
+    group_id: str,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    scope: dict = Depends(get_tenant_scope),
+):
+    """
+    List all members of a group chat with display names.
+
+    Any member of the group may call this (including Team Lead and Employee).
+    Access is based on group membership only, not private-chat or employee-directory rules.
+    """
+    _assert_current_in_scope(db, current=current, scope=scope)
+    session_obj = (
+        db.query(ChatSession)
+        .filter(
+            ChatSession.chat_id == group_id,
+            ChatSession.chat_type == "group",
+            ChatSession.is_deleted == False,  # noqa: E712
+        )
+        .filter(*_chat_session_scope_filters(scope))
+        .first()
+    )
+    if not session_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group chat not found")
+    _assert_chat_member(db, group_id, int(current.user_id))
+
+    rows = (
+        db.query(ChatMember, User)
+        .join(User, User.user_id == ChatMember.user_id)
+        .filter(ChatMember.chat_id == group_id)
+        .order_by(User.name.asc())
+        .all()
+    )
+    return [
+        GroupChatMemberOut(
+            user_id=user.user_id,
+            name=user.name or "",
+            role=user.role.value if hasattr(user.role, "value") else str(user.role),
+            group_role=member.role,
+            joined_at=member.joined_at,
+        )
+        for member, user in rows
+    ]
 
 
 @router.post("/group/{group_id}/members/add")

@@ -7,6 +7,23 @@ class ChatUserSchema(BaseModel):
     name: str
     role: str
 
+
+class GroupChatMemberOut(BaseModel):
+    """Group member with display fields for chat UI (any group member may view)."""
+    user_id: int
+    name: str
+    role: str
+    group_role: str
+    joined_at: Optional[datetime] = None
+
+    @field_validator("role", "group_role", mode="before")
+    @classmethod
+    def _coerce_role(cls, v):
+        if hasattr(v, "value"):
+            return v.value
+        return str(v)
+
+
 class MessageSchema(BaseModel):
     id: str
     sender_id: int

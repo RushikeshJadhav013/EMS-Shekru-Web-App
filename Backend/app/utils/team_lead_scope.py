@@ -133,6 +133,38 @@ def get_employee_project_team_lead_ids(
     return {int(row[0]) for row in query.distinct().all()}
 
 
+def get_employee_project_peer_employee_ids(
+    db: Session,
+    employee: User,
+    *,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> Set[int]:
+    """Other employees who share at least one active project with the employee."""
+    project_ids = _user_active_project_ids(
+        db, employee.user_id, company_id=company_id
+    )
+    if not project_ids:
+        return set()
+
+    query = (
+        db.query(User.user_id)
+        .join(ProjectMember, ProjectMember.user_id == User.user_id)
+        .filter(
+            ProjectMember.project_id.in_(project_ids),
+            ProjectMember.is_active.is_(True),
+            User.role == RoleEnum.EMPLOYEE,
+            User.is_active.is_(True),
+            User.company_id == int(company_id),
+            User.user_id != employee.user_id,
+        )
+    )
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
+
+    return {int(row[0]) for row in query.distinct().all()}
+
+
 def employee_can_chat_with_user(
     db: Session,
     employee: User,
@@ -142,8 +174,8 @@ def employee_can_chat_with_user(
     branch_id: Optional[int] = None,
 ) -> bool:
     """
-    Employees may chat with Admin/HR/Manager, other Employees, and TeamLeads
-    on their shared active projects only (not other TeamLeads).
+    Employees may chat privately with Admin, HR, and Manager in the same company,
+    plus employees and TeamLeads on shared active projects only.
     """
     if target.user_id == employee.user_id:
         return False
@@ -152,9 +184,15 @@ def employee_can_chat_with_user(
         RoleEnum.ADMIN.value,
         RoleEnum.HR.value,
         RoleEnum.MANAGER.value,
-        RoleEnum.EMPLOYEE.value,
     }:
         return True
+    if target_role == RoleEnum.EMPLOYEE.value:
+        return target.user_id in get_employee_project_peer_employee_ids(
+            db,
+            employee,
+            company_id=company_id,
+            branch_id=branch_id,
+        )
     if target_role == RoleEnum.TEAM_LEAD.value:
         return target.user_id in get_employee_project_team_lead_ids(
             db,
