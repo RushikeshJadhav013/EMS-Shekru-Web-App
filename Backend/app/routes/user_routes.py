@@ -895,8 +895,36 @@ def reset_employee_pin(
     }
 
 
+def _validate_export_target_user(
+    db: Session,
+    user_id: int,
+    current_user: User,
+    scope: dict,
+) -> None:
+    """Ensure the requested user can be included in an Admin/HR export."""
+    employee = get_user_scoped(db, user_id, scope["company_id"], scope.get("branch_id"))
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if employee.user_id == current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot export your own profile via this endpoint",
+        )
+    if current_user.role == RoleEnum.ADMIN and employee.role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot export other admin profiles",
+        )
+    if current_user.role == RoleEnum.HR and employee.role in {RoleEnum.ADMIN, RoleEnum.HR}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot export Admin or HR profiles",
+        )
+
+
 @router.get("/export/pdf", summary="Download user details as PDF with optional filters")
 def download_users_pdf(
+    user_id: Optional[int] = Query(None, description="Export a single employee by user ID"),
     department: Optional[str] = Query(
         None,
         description="Filter by department. Supports comma-separated values (e.g. 'Sales,HR,IT'). Matches users who have at least one of these departments."
@@ -921,9 +949,13 @@ def download_users_pdf(
     - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
     - designation: Filter by designation
     - status: Filter by active status (true for active, false for inactive)
+    - user_id: Export a single employee by database user ID
     
     When no filters are provided, returns the full employee directory.
     """
+    if user_id is not None:
+        _validate_export_target_user(db, user_id, current_user, scope)
+
     # Parse comma-separated department values
     department_filters: Optional[List[str]] = None
     if department:
@@ -977,6 +1009,7 @@ def download_users_pdf(
             role=role,
             designation=designation,
             status=active_status,
+            user_id=user_id,
             exclude_user_ids=exclude_user_ids,
             exclude_roles=exclude_roles,
             company_id=scope["company_id"],
@@ -985,6 +1018,8 @@ def download_users_pdf(
         
         # Build filename based on filters
         filename_parts = ["employees_report"]
+        if user_id is not None:
+            filename_parts.append(f"user_{user_id}")
         if department_filters:
             filename_parts.append(f"dept_{'-'.join(department_filters)}")
         if role:
@@ -1012,6 +1047,7 @@ def download_users_pdf(
 
 @router.get("/export/csv", summary="Download user details as CSV with optional filters")
 def download_users_csv(
+    user_id: Optional[int] = Query(None, description="Export a single employee by user ID"),
     department: Optional[str] = Query(
         None,
         description="Filter by department. Supports comma-separated values (e.g. 'Sales,HR,IT'). Matches users who have at least one of these departments."
@@ -1031,10 +1067,14 @@ def download_users_csv(
     - HR: Cannot see admins, self, and other HRs. Cannot filter by ADMIN or HR roles.
     
     Filters:
+    - user_id: Export a single employee by database user ID
     - department: Filter by department name(s). Comma-separated values (e.g. 'Sales,HR'). Matches users who have at least one of these departments (including users with multiple departments).
     - role: Filter by role (HR, MANAGER, TEAM_LEAD, EMPLOYEE for Admin; MANAGER, TEAM_LEAD, EMPLOYEE for HR)
     - status: Filter by active status (true for active, false for inactive)
     """
+    if user_id is not None:
+        _validate_export_target_user(db, user_id, current_user, scope)
+
     # Parse comma-separated department values
     department_filters: Optional[List[str]] = None
     if department:
@@ -1086,6 +1126,7 @@ def download_users_csv(
         departments=department_filters,
         role=role,
         status=active_status,
+        user_id=user_id,
         exclude_user_ids=exclude_user_ids,
         exclude_roles=exclude_roles,
         company_id=scope["company_id"],
@@ -1094,6 +1135,8 @@ def download_users_csv(
     
     # Build filename based on filters
     filename_parts = ["users_report"]
+    if user_id is not None:
+        filename_parts.append(f"user_{user_id}")
     if department_filters:
         filename_parts.append(f"dept_{'-'.join(department_filters)}")
     if role:

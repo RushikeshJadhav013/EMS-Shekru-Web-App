@@ -384,6 +384,7 @@ def export_users_pdf(
     role: Optional[str] = None,
     designation: Optional[str] = None,
     status: Optional[bool] = None,
+    user_id: Optional[int] = None,
     company_id: Optional[int] = None,
     branch_id: Optional[int] = None,
     exclude_user_ids: Optional[list[int]] = None,
@@ -548,6 +549,9 @@ def export_users_pdf(
     if branch_id is not None:
         query = query.filter(User.branch_id == int(branch_id))
 
+    if user_id is not None:
+        query = query.filter(User.user_id == int(user_id))
+
     # Department filter: user has at least one of the requested departments (token-based)
     # Supports users with multiple comma-separated departments (e.g. "Sales, HR")
     if departments:
@@ -705,6 +709,7 @@ def export_users_csv(
     departments: Optional[List[str]] = None,
     role: Optional[str] = None,
     status: Optional[bool] = None,
+    user_id: Optional[int] = None,
     company_id: Optional[int] = None,
     branch_id: Optional[int] = None,
     exclude_user_ids: Optional[list[int]] = None,
@@ -721,6 +726,9 @@ def export_users_csv(
         query = query.filter(User.company_id == int(company_id))
     if branch_id is not None:
         query = query.filter(User.branch_id == int(branch_id))
+
+    if user_id is not None:
+        query = query.filter(User.user_id == int(user_id))
 
     # Department filter: user has at least one of the requested departments (token-based)
     # Supports users with multiple comma-separated departments (e.g. "Sales, HR")
