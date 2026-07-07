@@ -352,7 +352,10 @@ def get_all_employees_public(
     search: Optional[str] = Query(None, description="Search by name, email or department"),
     department: Optional[str] = Query(None, description="Filter by department"),
     role: Optional[RoleEnum] = Query(None, description="Filter by role"),
-    is_active: Literal["true", "false", "all"] = Query("all", description="Filter by active status: 'true', 'false', or 'all' (default)")
+    is_active: Literal["true", "false", "all", "ex-employee"] = Query(
+        "all",
+        description="Filter by status: 'true', 'false', 'ex-employee', or 'all' (default)",
+    )
 ):
     """
     Get all employees with role-based access control.
@@ -458,10 +461,23 @@ def get_all_employees_public(
 
         employees = [emp for emp in employees if emp.role == role]
 
-    # Apply is_active filter (default: True, or 'all' for all employees)
-    if is_active != "all":
+    # Apply status filter. Ex-employees are exclusive and excluded from other status buckets.
+    today_ist = now_ist().date()
+
+    def _is_ex_employee(emp: User) -> bool:
+        resignation_dt = getattr(emp, "resignation_date", None)
+        return resignation_dt is not None and resignation_dt.date() <= today_ist
+
+    if is_active == "ex-employee":
+        employees = [emp for emp in employees if _is_ex_employee(emp)]
+    elif is_active == "all":
+        employees = [emp for emp in employees if not _is_ex_employee(emp)]
+    else:
         is_active_bool = is_active == "true"
-        employees = [emp for emp in employees if getattr(emp, "is_active", True) == is_active_bool]
+        employees = [
+            emp for emp in employees
+            if not _is_ex_employee(emp) and getattr(emp, "is_active", True) == is_active_bool
+        ]
 
     return _sanitize_users_response(employees)
 
