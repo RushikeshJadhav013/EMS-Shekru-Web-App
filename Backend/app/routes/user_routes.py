@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Literal
 from pathlib import Path
-from app.utils.timezone import now_ist
+from app.utils.employee_status import is_ex_employee
 from app.schemas.user_schema import (
     UserCreate,
     UserOut,
@@ -462,21 +462,15 @@ def get_all_employees_public(
         employees = [emp for emp in employees if emp.role == role]
 
     # Apply status filter. Ex-employees are exclusive and excluded from other status buckets.
-    today_ist = now_ist().date()
-
-    def _is_ex_employee(emp: User) -> bool:
-        resignation_dt = getattr(emp, "resignation_date", None)
-        return resignation_dt is not None and resignation_dt.date() <= today_ist
-
     if is_active == "ex-employee":
-        employees = [emp for emp in employees if _is_ex_employee(emp)]
+        employees = [emp for emp in employees if is_ex_employee(emp)]
     elif is_active == "all":
-        employees = [emp for emp in employees if not _is_ex_employee(emp)]
+        employees = [emp for emp in employees if not is_ex_employee(emp)]
     else:
         is_active_bool = is_active == "true"
         employees = [
             emp for emp in employees
-            if not _is_ex_employee(emp) and getattr(emp, "is_active", True) == is_active_bool
+            if not is_ex_employee(emp) and getattr(emp, "is_active", True) == is_active_bool
         ]
 
     return _sanitize_users_response(employees)

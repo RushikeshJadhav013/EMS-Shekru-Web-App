@@ -25,6 +25,7 @@ from app.crud.user_crud import (
     record_pin_failure,
     reset_pin_attempts,
 )
+from app.utils.employee_status import is_ex_employee
 from app.db.models.company import Company
 from app.db.models.company_branch import CompanyBranch
 from app.db.models.branch_admin_assignment import BranchAdminAssignment
@@ -56,6 +57,11 @@ def _get_active_user_by_email(db: Session, email: str) -> User:
         raise HTTPException(
             status_code=403,
             detail="Account is inactive. Please contact your administrator for assistance.",
+        )
+    if is_ex_employee(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Account access revoked. This employee has resigned.",
         )
     return user
 

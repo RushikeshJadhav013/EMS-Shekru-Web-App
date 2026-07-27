@@ -13,6 +13,7 @@ from app.db.models.branch_admin_assignment import BranchAdminAssignment
 from app.db.models.company_admin_assignment import CompanyAdminAssignment
 from app.db.models.company_branch import CompanyBranch
 from app.crud.company_crud import get_company_by_slug
+from app.utils.employee_status import is_ex_employee
 
 api_key_header = APIKeyHeader(name="Authorization")
 
@@ -38,6 +39,12 @@ def get_current_user(token: str = Depends(api_key_header), db: Session = Depends
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, 
                 detail="Account is inactive. Please contact your administrator."
+            )
+
+        if is_ex_employee(user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account access revoked. This employee has resigned.",
             )
 
         # Detach authenticated user object so the pooled connection can be released early.
