@@ -308,6 +308,31 @@ def get_project_employee_member_ids(
     return {int(row[0]) for row in query.distinct().all()}
 
 
+def employee_can_assign_task_to(
+    db: Session,
+    employee: User,
+    assignee: User,
+    *,
+    project_id: Optional[int] = None,
+) -> bool:
+    """Employee may assign to self or to another Employee on the same active project."""
+    if assignee.user_id == employee.user_id:
+        return True
+
+    assigner_role = getattr(employee.role, "value", str(employee.role))
+    assignee_role = getattr(assignee.role, "value", str(assignee.role))
+    if assigner_role != RoleEnum.EMPLOYEE.value or assignee_role != RoleEnum.EMPLOYEE.value:
+        return False
+
+    if project_id is None:
+        return False
+
+    project_id_int = int(project_id)
+    if not is_active_project_member(db, project_id_int, employee.user_id):
+        return False
+    return is_active_project_member(db, project_id_int, assignee.user_id)
+
+
 def is_active_project_member(db: Session, project_id: int, user_id: int) -> bool:
     return (
         db.query(ProjectMember)
