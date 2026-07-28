@@ -346,6 +346,39 @@ def is_active_project_member(db: Session, project_id: int, user_id: int) -> bool
     )
 
 
+def team_lead_can_add_employee_to_project(
+    db: Session,
+    team_lead: User,
+    employee: User,
+    *,
+    target_project_id: int,
+    company_id: int,
+    branch_id: Optional[int] = None,
+) -> bool:
+    """
+    TeamLead may add an Employee to a target project when:
+    - the TeamLead is an active member of the target project, and
+    - the Employee is an active member of at least one other project shared with the TeamLead.
+    """
+    team_lead_role = getattr(team_lead.role, "value", str(team_lead.role))
+    if team_lead_role != RoleEnum.TEAM_LEAD.value:
+        return False
+
+    employee_role = getattr(employee.role, "value", str(employee.role))
+    if employee_role != RoleEnum.EMPLOYEE.value:
+        return False
+
+    if not is_active_project_member(db, int(target_project_id), team_lead.user_id):
+        return False
+
+    return int(employee.user_id) in get_team_lead_project_peer_employee_ids(
+        db,
+        team_lead,
+        company_id=company_id,
+        branch_id=branch_id,
+    )
+
+
 def team_lead_can_assign_task_to(
     db: Session,
     team_lead: User,
