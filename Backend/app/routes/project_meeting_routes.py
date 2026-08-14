@@ -1,8 +1,7 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -105,8 +104,6 @@ def _get_project_or_404(db: Session, project_id: int, *, scope: dict) -> Project
 
 
 def _ensure_project_access(db: Session, project_id: int, current_user: User) -> None:
-    if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
-        return
     member = (
         db.query(ProjectMember)
         .filter(
@@ -123,53 +120,53 @@ def _ensure_project_access(db: Session, project_id: int, current_user: User) -> 
         )
 
 
-def _is_invited_to_project_meeting(db: Session, project_id: int, meeting_id: int, user_id: int) -> bool:
-    row = (
-        db.query(MeetingParticipant.id)
-        .join(Meeting, MeetingParticipant.meeting_id == Meeting.id)
-        .filter(
-            Meeting.id == meeting_id,
-            Meeting.project_id == project_id,
-            MeetingParticipant.user_id == user_id,
-        )
-        .first()
-    )
-    return bool(row)
-
-
-def _ensure_project_or_invited_access(
-    db: Session, project_id: int, meeting_id: Optional[int], current_user: User
+def _validate_project_member_participants(
+    db: Session, project_id: int, user_ids: list[int]
 ) -> None:
-    """
-    Access rule for project meetings:
-    - Admin/HR: always allowed
-    - Project active member: allowed
-    - Otherwise: allowed only if user is invited to the specific meeting (meeting_id required)
-    """
-    if current_user.role in (RoleEnum.ADMIN, RoleEnum.HR):
+    if not user_ids:
         return
-
-    member = (
-        db.query(ProjectMember.id)
+    rows = (
+        db.query(ProjectMember.user_id)
         .filter(
             ProjectMember.project_id == project_id,
-            ProjectMember.user_id == current_user.user_id,
+            ProjectMember.user_id.in_(user_ids),
             ProjectMember.is_active.is_(True),
         )
-        .first()
+        .all()
     )
-    if member:
-        return
+    allowed = {uid for (uid,) in rows}
+    invalid = [uid for uid in user_ids if uid not in allowed]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User(s) are not active members of this project: {invalid}",
+        )
 
-    if meeting_id is not None and _is_invited_to_project_meeting(
-        db, project_id, meeting_id, current_user.user_id
-    ):
-        return
 
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="You must be an active project member or invited to this meeting",
+def _validate_project_meeting_participants(
+    db: Session,
+    project_id: int,
+    user_ids: list[int],
+    scope: dict,
+    current_user: User,
+) -> None:
+    if not user_ids:
+        return
+    _validate_project_member_participants(db, project_id, user_ids)
+    users = (
+        db.query(User)
+        .filter(User.user_id.in_(user_ids), User.is_active.is_(True), *_user_scope_filters(scope))
+        .all()
     )
+    found_ids = {u.user_id for u in users}
+    if current_user.role == RoleEnum.ADMIN and current_user.user_id in user_ids:
+        found_ids.add(current_user.user_id)
+    missing = [uid for uid in user_ids if uid not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User(s) not found or inactive: {missing}",
+        )
 
 
 def _meeting_scope_filters(scope: dict) -> list:
@@ -240,7 +237,9 @@ def create_project_meeting(
     """
     Create a meeting linked to a project.
 
-    If `participant_ids` is empty, it defaults to all active project members (+ creator).
+    Requires the creator to be an active project member (all roles).
+    If `participant_ids` is empty, it defaults to all active project members.
+    Explicit participants must also be active project members.
     """
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
@@ -273,27 +272,14 @@ def create_project_meeting(
             )
         ]
 
-    # Always include creator
+    # Always include creator (must be a project member via _ensure_project_access)
     participant_ids = list({*participant_ids, current_user.user_id})
+    _validate_project_meeting_participants(
+        db, project_id, participant_ids, scope, current_user
+    )
 
-    if participant_ids:
-        users = (
-            db.query(User)
-            .filter(User.user_id.in_(participant_ids), User.is_active.is_(True), *_user_scope_filters(scope))
-            .all()
-        )
-        found_ids = {u.user_id for u in users}
-        if current_user.role == RoleEnum.ADMIN and current_user.user_id in participant_ids:
-            found_ids.add(current_user.user_id)
-        missing = [uid for uid in participant_ids if uid not in found_ids]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User(s) not found or inactive: {missing}",
-            )
-
-        for uid in participant_ids:
-            db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
+    for uid in participant_ids:
+        db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
 
     db.commit()
     db.refresh(meeting)
@@ -346,6 +332,7 @@ def list_project_invited_meetings(
     """
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
+    _ensure_project_access(db, project_id, current_user)
 
     meetings = (
         db.query(Meeting)
@@ -374,7 +361,7 @@ def get_project_meeting(
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
-    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+    _ensure_project_access(db, project_id, current_user)
     return _serialize_meeting(db, meeting)
 
 
@@ -390,7 +377,7 @@ def update_project_meeting(
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
-    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+    _ensure_project_access(db, project_id, current_user)
 
     if meeting.created_by_id != current_user.user_id:
         raise HTTPException(
@@ -416,20 +403,9 @@ def update_project_meeting(
 
         user_ids = list({uid for uid in participant_ids if uid is not None})
         if user_ids:
-            users = (
-                db.query(User)
-                .filter(User.user_id.in_(user_ids), User.is_active.is_(True), *_user_scope_filters(scope))
-                .all()
+            _validate_project_meeting_participants(
+                db, project_id, user_ids, scope, current_user
             )
-            found_ids = {u.user_id for u in users}
-            if current_user.role == RoleEnum.ADMIN and current_user.user_id in user_ids:
-                found_ids.add(current_user.user_id)
-            missing = [uid for uid in user_ids if uid not in found_ids]
-            if missing:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"User(s) not found or inactive: {missing}",
-                )
             for uid in user_ids:
                 db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
 
@@ -462,7 +438,7 @@ def delete_project_meeting(
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
-    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+    _ensure_project_access(db, project_id, current_user)
 
     if meeting.created_by_id != current_user.user_id:
         raise HTTPException(
@@ -497,7 +473,7 @@ def list_project_meeting_participants(
     _assert_current_in_scope(db, current_user, scope)
     _get_project_or_404(db, project_id, scope=scope)
     meeting = _get_project_meeting_or_404(db, project_id, meeting_id, scope=scope)
-    _ensure_project_or_invited_access(db, project_id, meeting_id, current_user)
+    _ensure_project_access(db, project_id, current_user)
 
     rows = (
         db.query(MeetingParticipant, User)
