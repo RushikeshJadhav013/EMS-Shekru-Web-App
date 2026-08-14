@@ -39,12 +39,21 @@ from app.db.models.project import Project
 from app.db.models.project_member import ProjectMember
 from app.utils.department_utils import department_tokens_lower
 from app.utils.team_lead_scope import (
+    employee_can_assign_task_to,
     get_project_employee_member_ids,
     get_team_lead_project_peer_employee_ids,
     is_active_project_member,
     team_lead_can_assign_task_to,
     team_lead_can_view_task,
 )
+
+ROLE_HIERARCHY = [
+    RoleEnum.ADMIN,
+    RoleEnum.HR,
+    RoleEnum.MANAGER,
+    RoleEnum.TEAM_LEAD,
+    RoleEnum.EMPLOYEE,
+]
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
@@ -240,6 +249,53 @@ def _assert_team_lead_assignee_allowed(
         )
 
 
+def _assert_assignee_allowed(
+    db: Session,
+    user: User,
+    assignee: User,
+    scope: dict,
+    *,
+    project_id: int | None = None,
+) -> None:
+    """Validate assigner may assign or reassign a task to assignee (self always allowed)."""
+    if assignee.user_id == user.user_id:
+        return
+
+    if user.role == RoleEnum.EMPLOYEE:
+        if not employee_can_assign_task_to(db, user, assignee, project_id=project_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Employees can assign tasks only to other employees in the same project",
+            )
+        return
+
+    try:
+        assigner_index = ROLE_HIERARCHY.index(user.role)
+        assignee_index = ROLE_HIERARCHY.index(assignee.role)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
+
+    if assignee_index <= assigner_index:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign task to same or higher role")
+
+    if user.role == RoleEnum.MANAGER and user.department:
+        manager_tokens = set(department_tokens_lower(user.department))
+        assignee_tokens = set(department_tokens_lower(assignee.department))
+        if not manager_tokens.intersection(assignee_tokens):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can assign tasks only to users in their departments",
+            )
+
+    if user.role == RoleEnum.TEAM_LEAD:
+        if project_id and not is_active_project_member(db, int(project_id), user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You must be a member of the project to create project tasks",
+            )
+        _assert_team_lead_assignee_allowed(db, user, assignee, scope, project_id=project_id)
+
+
 def _standalone_tasks_for_team_lead(
     db: Session,
     team_lead: User,
@@ -372,37 +428,7 @@ def assign_task(
     if not assignee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
 
-    # Allow self-assignment always
-    if task.assigned_to != user.user_id:
-        # Enforce role hierarchy: cannot assign to users with higher role
-        try:
-            assigner_index = ROLE_HIERARCHY.index(user.role)
-            assignee_index = ROLE_HIERARCHY.index(assignee.role)
-        except ValueError:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
-
-        # Disallow assigning to users with the same or higher role (except self-assignment)
-        if assignee_index <= assigner_index:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign task to same or higher role")
-
-        # Manager-specific department restriction
-        if user.role == RoleEnum.MANAGER and user.department:
-            manager_tokens = set(department_tokens_lower(user.department))
-            assignee_tokens = set(department_tokens_lower(assignee.department))
-            if not manager_tokens.intersection(assignee_tokens):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
-
-        if user.role == RoleEnum.TEAM_LEAD:
-            if task.project_id and not is_active_project_member(
-                db, int(task.project_id), user.user_id
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You must be a member of the project to create project tasks",
-                )
-            _assert_team_lead_assignee_allowed(
-                db, user, assignee, scope, project_id=task.project_id
-            )
+    _assert_assignee_allowed(db, user, assignee, scope, project_id=task.project_id)
 
     _validate_project_exists(db, task.project_id, scope)
 
@@ -476,50 +502,9 @@ def assign_tasks_bulk(
             detail=f"Assignee(s) not found for user_id(s): {missing}",
         )
 
-    # Apply the same role/department checks as in `assign_task` for each assignee
     validated_assignees: list[User] = []
     for assignee in assignees:
-        if assignee.user_id == user.user_id:
-            # Self-assignment always allowed
-            validated_assignees.append(assignee)
-            continue
-
-        try:
-            assigner_index = ROLE_HIERARCHY.index(user.role)
-            assignee_index = ROLE_HIERARCHY.index(assignee.role)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid role configuration",
-            )
-
-        if assignee_index <= assigner_index:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Cannot asstcsign task to same or higher role (assignee_id={assignee.user_id})",
-            )
-
-        if user.role == RoleEnum.MANAGER and user.department:
-            manager_tokens = set(department_tokens_lower(user.department))
-            assignee_tokens = set(department_tokens_lower(assignee.department))
-            if not manager_tokens.intersection(assignee_tokens):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Managers can assign tasks only to users in their departments (assignee_id={assignee.user_id})",
-                )
-
-        if user.role == RoleEnum.TEAM_LEAD:
-            if payload.project_id and not is_active_project_member(
-                db, int(payload.project_id), user.user_id
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You must be a member of the project to create project tasks",
-                )
-            _assert_team_lead_assignee_allowed(
-                db, user, assignee, scope, project_id=payload.project_id
-            )
-
+        _assert_assignee_allowed(db, user, assignee, scope, project_id=payload.project_id)
         validated_assignees.append(assignee)
 
     _validate_project_exists(db, payload.project_id, scope)
@@ -871,15 +856,6 @@ def project_tasks(
         for t in tasks
     ]
 
-ROLE_HIERARCHY = [
-    RoleEnum.ADMIN,
-    RoleEnum.HR,
-    RoleEnum.MANAGER,
-    RoleEnum.TEAM_LEAD,
-    RoleEnum.EMPLOYEE,
-]
-
-
 def _ensure_can_pass(current_user: User, new_assignee: User) -> None:
     try:
         current_index = ROLE_HIERARCHY.index(current_user.role)
@@ -1112,33 +1088,10 @@ def edit_task(
         if not assignee:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignee not found")
 
-        # Allow self-assignment always
-        if new_assignee_id != user.user_id:
-            try:
-                editor_index = ROLE_HIERARCHY.index(user.role)
-                assignee_index = ROLE_HIERARCHY.index(assignee.role)
-            except ValueError:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role configuration")
-
-            # Disallow assigning to same or higher role
-            if assignee_index <= editor_index:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot assign task to same or higher role")
-
-            # Manager-specific department restriction
-            if user.role == RoleEnum.MANAGER and user.department:
-                manager_tokens = set(department_tokens_lower(user.department))
-                assignee_tokens = set(department_tokens_lower(assignee.department))
-                if not manager_tokens.intersection(assignee_tokens):
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Managers can assign tasks only to users in their departments")
-
-            if user.role == RoleEnum.TEAM_LEAD:
-                _assert_team_lead_assignee_allowed(
-                    db,
-                    user,
-                    assignee,
-                    scope,
-                    project_id=existing.project_id,
-                )
+        effective_project_id = updates.get("project_id", existing.project_id)
+        _assert_assignee_allowed(
+            db, user, assignee, scope, project_id=effective_project_id
+        )
 
     updated = update_task(
         db,
@@ -1240,16 +1193,20 @@ def pass_task_route(
     if not new_assignee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="New assignee not found")
 
-    _ensure_can_pass(current_user, new_assignee)
-
-    if current_user.role == RoleEnum.TEAM_LEAD:
-        _assert_team_lead_assignee_allowed(
-            db,
-            current_user,
-            new_assignee,
-            scope,
-            project_id=task.project_id,
+    if current_user.role == RoleEnum.EMPLOYEE:
+        _assert_assignee_allowed(
+            db, current_user, new_assignee, scope, project_id=task.project_id
         )
+    else:
+        _ensure_can_pass(current_user, new_assignee)
+        if current_user.role == RoleEnum.TEAM_LEAD:
+            _assert_team_lead_assignee_allowed(
+                db,
+                current_user,
+                new_assignee,
+                scope,
+                project_id=task.project_id,
+            )
 
     previous_assignee = task.assigned_to
 

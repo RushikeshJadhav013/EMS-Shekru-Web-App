@@ -23,6 +23,7 @@ from app.schemas.project_schema import (
 from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut, ProjectMembersBulkAdd
 from app.utils.timezone import now_ist
 from app.utils.department_utils import department_tokens_lower
+from app.utils.team_lead_scope import team_lead_can_add_employee_to_project
 
 router = APIRouter(
     prefix="/projects",
@@ -144,6 +145,37 @@ def _validate_project_member_add(
     """Reject PIC re-add and already-active members before add/reactivate."""
     _reject_pic_member_add(project, user_id)
     _reject_if_active_member(member, user_id)
+
+
+def _assert_team_lead_can_add_project_member(
+    db: Session,
+    team_lead: User,
+    employee: User,
+    project_id: int,
+    scope: dict,
+    *,
+    project_role: str,
+) -> None:
+    if project_role != "member":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="TeamLeads can only add employees with the 'member' project role.",
+        )
+    if not team_lead_can_add_employee_to_project(
+        db,
+        team_lead,
+        employee,
+        target_project_id=project_id,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "TeamLeads can add only employees from their project teams "
+                "to projects where they are active members."
+            ),
+        )
 
 
 def _validate_bulk_member_add_targets(
@@ -774,7 +806,7 @@ def delete_project(
     "/{project_id}/members",
     response_model=ProjectMemberOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD))],
 )
 def add_project_member(
     project_id: int,
@@ -789,6 +821,8 @@ def add_project_member(
     - Admin/HR (PIC roles): can manage any project members.
     - Manager: can manage members only for their own projects and must have
       at least one department assigned (supports comma-separated departments).
+    - TeamLead: can add employees from their project teams to other projects
+      where they are also active members (member role only).
     - Person in charge cannot be added again (already on project at creation).
     - Already-active members must be removed before they can be added again.
     """
@@ -836,6 +870,16 @@ def add_project_member(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Managers can manage members only from their own department(s).",
             )
+
+    if current_user.role == RoleEnum.TEAM_LEAD:
+        _assert_team_lead_can_add_project_member(
+            db,
+            current_user,
+            user,
+            project_id,
+            scope,
+            project_role=payload.role,
+        )
 
     _validate_project_member_add(project, payload.user_id, payload.role, member)
 
@@ -949,7 +993,7 @@ def list_project_members(
     "/{project_id}/members/bulk",
     response_model=List[ProjectMemberOut],
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER))],
+    dependencies=[Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.MANAGER, RoleEnum.TEAM_LEAD))],
 )
 def add_project_members_bulk(
     project_id: int,
@@ -965,6 +1009,7 @@ def add_project_members_bulk(
     - Creates new members where needed.
     - Rejects person in charge and already-active members.
     - Single role applied to all provided user IDs.
+    - TeamLeads: same rules as single add (employees from their teams, member role only).
     """
     _assert_current_in_scope(db, current_user, scope)
     project = _ensure_project_exists(db, project_id, scope=scope)
@@ -1032,6 +1077,16 @@ def add_project_members_bulk(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Managers can manage members only from their own department(s).",
                 )
+
+        if current_user.role == RoleEnum.TEAM_LEAD:
+            _assert_team_lead_can_add_project_member(
+                db,
+                current_user,
+                user,
+                project_id,
+                scope,
+                project_role=payload.role,
+            )
 
         member = members_by_user_id.get(user.user_id)
 
