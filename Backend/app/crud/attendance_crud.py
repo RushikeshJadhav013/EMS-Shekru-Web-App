@@ -364,10 +364,6 @@ def _evaluate_attendance_status(
 
 
 def get_today_attendance_status(db: Session, department: str = None, company_id: int | None = None):
-    # First, auto-checkout any overdue open attendances so today's status
-    # reflects accurate working hours and check-out information.
-    auto_checkout_overdue_attendances(db)
-
     records_query = (
         db.query(
             Attendance,
@@ -419,9 +415,6 @@ def get_today_attendance_status(db: Session, department: str = None, company_id:
 
 def get_today_attendance_records(db: Session, company_id: int | None = None):
     """Get today's attendance records with user details for manager view"""
-    # Ensure overdue open attendances are auto-checked-out before
-    # returning today's records.
-    auto_checkout_overdue_attendances(db)
     today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
@@ -472,9 +465,6 @@ def get_today_attendance_records(db: Session, company_id: int | None = None):
 
 def get_attendance_summary(db: Session, company_id: int | None = None):
     """Get attendance summary with statistics"""
-    # Keep statistics consistent by auto-checking-out any overdue
-    # open attendances before computing the summary.
-    auto_checkout_overdue_attendances(db)
     today_start = now_ist().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     

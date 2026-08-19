@@ -939,11 +939,6 @@ def get_today_attendance_records(db: Session, target_date: Optional[date] = None
     Only shows users who have checked in today.
     """
     try:
-        # Auto-checkout overdue open attendances so "today" views reflect
-        # the latest persisted check_out/total_hours.
-        from app.crud.attendance_crud import auto_checkout_overdue_attendances
-        auto_checkout_overdue_attendances(db, scope=scope)
-
         # Clean up broken selfie references periodically
         _cleanup_broken_selfie_urls(db, scope=scope)
         
@@ -2237,11 +2232,6 @@ def get_all_attendance_history(
     - TEAM_LEAD: See Employees on shared active projects only.
     - Others: Not allowed
     """
-    # Auto-checkout overdue open attendances so /attendance/all reflects
-    # latest persisted check_out/total_hours.
-    from app.crud.attendance_crud import auto_checkout_overdue_attendances
-    auto_checkout_overdue_attendances(db, scope=scope)
-
     user_role = current_user.role
     user_department = current_user.department
     
