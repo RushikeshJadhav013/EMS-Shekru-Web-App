@@ -655,7 +655,7 @@ def preview_salary_calculation(
             medical_allowance_annual=components["medical_allowance_annual"],
             other_allowance_annual=components["other_allowance_annual"],
             professional_tax_annual=components["professional_tax_annual"],
-            other_tax_annual=components["other_tax_annual"],
+            other_tax_annual=0.0,
             employer_pf_annual=components["employer_pf_annual"],
             variable_pay_annual=components["variable_pay_annual"],
             
@@ -669,7 +669,7 @@ def preview_salary_calculation(
             monthly_medical=round(components["medical_allowance_annual"] / 12, 2),
             monthly_other=round(components["other_allowance_annual"] / 12, 2),
             monthly_professional_tax=round(components["professional_tax_annual"] / 12, 2),
-            monthly_other_tax=round(components["other_tax_annual"] / 12, 2),
+            monthly_other_tax=0.0,
             monthly_employer_pf=round(components["employer_pf_annual"] / 12, 2),
             monthly_variable_pay=components["monthly_variable_pay"],
             monthly_in_hand=components["monthly_in_hand"],

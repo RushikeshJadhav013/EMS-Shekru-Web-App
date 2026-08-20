@@ -2,13 +2,13 @@
 Salary Model - Employee Salary Information and Increment History
 
 STRICT CALCULATION RULES:
-1. Total Gross = CTC − (Employer PF + Medical ₹13,200 + Conveyance ₹15,000 + Other ₹3,000 + Professional Tax ₹2,500 + Other Tax ₹12,000)
+1. Total Gross = CTC − (Employer PF + Medical ₹13,200 + Conveyance ₹15,000 + Other ₹3,000 + Professional Tax ₹2,500)
 2. Basic = 50% of Total Gross
 3. HRA = 50% of Basic
 4. Special Allowance = Total Gross − (Basic + HRA + Medical + Conveyance + Other)
 5. Total Earnings Annual = Total Gross
 6. Employer PF is part of CTC, NEVER deducted from employee
-7. Monthly In-Hand = (Total Gross − Professional Tax − Other Tax) / 12
+7. Monthly In-Hand = (Total Gross − Professional Tax − PF) / 12
 """
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Numeric
 from sqlalchemy.orm import relationship
@@ -31,8 +31,8 @@ class EmployeeSalary(Base):
     STRICT RULES:
     - Total Gross = Basic + HRA + Special Allowance + Medical + Conveyance + Other
     - Total Earnings = Total Gross
-    - CTC = Total Gross + Employer PF + PT + Other Tax
-    - Monthly In-Hand = (Total Gross - PT - Other Tax - PF) / 12
+    - CTC = Total Gross + Employer PF + PT
+    - Monthly In-Hand = (Total Gross - PT - PF) / 12
     """
     __tablename__ = "employee_salaries"
 
@@ -126,22 +126,20 @@ class EmployeeSalary(Base):
     @property
     def total_employee_deductions_annual(self):
         """
-        Total employee deductions (Professional Tax + Other Tax + PF).
+        Total employee deductions (Professional Tax + PF).
         These are deducted from Total Gross for in-hand calculation.
         """
-        return self.professional_tax_annual + self.other_deduction_annual + (self.pf_annual or 0.0)
+        return self.professional_tax_annual + (self.pf_annual or 0.0)
     
     @property
     def total_deductions_annual(self):
         """
         Total deductions annual used in responses and reports.
-        Includes employee deductions (Professional Tax + Other Tax) PLUS
+        Includes employee deductions (Professional Tax) PLUS
         Employer PF to present the full deductions/ employer contributions
         related to the salary package where required.
-        Note: Historically this was an alias for employee deductions only;
-        changed to include PF per updated requirement.
         """
-        return self.professional_tax_annual + self.other_deduction_annual + (self.pf_annual or 0.0)
+        return self.professional_tax_annual + (self.pf_annual or 0.0)
     
     @property
     def ctc_annual(self):
@@ -151,7 +149,7 @@ class EmployeeSalary(Base):
         and API responses (offered package CTC).
 
         Otherwise, fall back to computed CTC:
-        CTC = Total Gross + Employer PF + PT + Other Tax
+        CTC = Total Gross + Employer PF + PT
         """
         if self.package_ctc_annual is not None:
             return self.package_ctc_annual
@@ -160,7 +158,6 @@ class EmployeeSalary(Base):
             self.total_gross_annual
             + (self.pf_annual or 0.0)
             + self.professional_tax_annual
-            + self.other_deduction_annual
         )
     
     @property
@@ -172,7 +169,7 @@ class EmployeeSalary(Base):
     def net_annual(self):
         """
         Net annual salary (after employee deductions).
-        Net = Total Gross − (Professional Tax + Other Tax + PF)
+        Net = Total Gross − (Professional Tax + PF)
         """
         return self.total_gross_annual - self.total_employee_deductions_annual
     
@@ -180,10 +177,10 @@ class EmployeeSalary(Base):
     def monthly_in_hand(self):
         """
         Monthly in-hand salary (STRICT RULE #7).
-        Monthly In-Hand = (Total Gross − PT − Other Tax − PF) / 12
+        Monthly In-Hand = (Total Gross − PT − PF) / 12
         """
         return round(
-            (self.total_gross_annual - self.professional_tax_annual - self.other_deduction_annual - (self.pf_annual or 0.0))
+            (self.total_gross_annual - self.professional_tax_annual - (self.pf_annual or 0.0))
             / 12,
             2,
         )
