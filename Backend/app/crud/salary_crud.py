@@ -865,23 +865,71 @@ def create_salary_slip_history(
     gross_salary: float,
     total_deductions: float,
     net_salary: float,
-    generated_by: int
+    generated_by: int,
+    *,
+    optional_deduction_1_label: Optional[str] = None,
+    optional_deduction_1_amount: Optional[float] = None,
+    optional_deduction_2_label: Optional[str] = None,
+    optional_deduction_2_amount: Optional[float] = None,
+    optional_deduction_3_label: Optional[str] = None,
+    optional_deduction_3_amount: Optional[float] = None,
+    optional_deduction_4_label: Optional[str] = None,
+    optional_deduction_4_amount: Optional[float] = None,
+    manual_leave_days: float = 0.0,
+    manual_leave_amount: float = 0.0,
 ) -> SalarySlipHistory:
-    """Create salary slip history record"""
+    """
+    Upsert salary slip history for (user_id, month, year).
+
+    Updates the latest existing row when present so repeated finalize for the
+    same month does not create unbounded duplicates. Legacy totals on older
+    duplicate rows are left untouched.
+    """
+    existing = (
+        db.query(SalarySlipHistory)
+        .filter(
+            SalarySlipHistory.user_id == user_id,
+            SalarySlipHistory.month == month,
+            SalarySlipHistory.year == year,
+        )
+        .order_by(SalarySlipHistory.id.desc())
+        .first()
+    )
+
+    breakdown = {
+        "gross_salary": float(gross_salary),
+        "total_deductions": float(total_deductions),
+        "net_salary": float(net_salary),
+        "optional_deduction_1_label": optional_deduction_1_label,
+        "optional_deduction_1_amount": optional_deduction_1_amount,
+        "optional_deduction_2_label": optional_deduction_2_label,
+        "optional_deduction_2_amount": optional_deduction_2_amount,
+        "optional_deduction_3_label": optional_deduction_3_label,
+        "optional_deduction_3_amount": optional_deduction_3_amount,
+        "optional_deduction_4_label": optional_deduction_4_label,
+        "optional_deduction_4_amount": optional_deduction_4_amount,
+        "manual_leave_days": float(manual_leave_days or 0.0),
+        "manual_leave_amount": float(manual_leave_amount or 0.0),
+        "generated_by": generated_by,
+        "generated_at": now_ist(),
+    }
+
+    if existing:
+        for key, value in breakdown.items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     db_history = SalarySlipHistory(
         user_id=user_id,
         month=month,
         year=year,
-        gross_salary=gross_salary,
-        total_deductions=total_deductions,
-        net_salary=net_salary,
-        generated_by=generated_by
+        **breakdown,
     )
-    
     db.add(db_history)
     db.commit()
     db.refresh(db_history)
-    
     return db_history
 
 
@@ -891,14 +939,19 @@ def get_salary_slip_history(
     month: int, 
     year: int
 ) -> Optional[SalarySlipHistory]:
-    """Get salary slip history for specific month/year"""
-    return db.query(SalarySlipHistory).filter(
-        and_(
-            SalarySlipHistory.user_id == user_id,
-            SalarySlipHistory.month == month,
-            SalarySlipHistory.year == year
+    """Get latest salary slip history for specific month/year"""
+    return (
+        db.query(SalarySlipHistory)
+        .filter(
+            and_(
+                SalarySlipHistory.user_id == user_id,
+                SalarySlipHistory.month == month,
+                SalarySlipHistory.year == year,
+            )
         )
-    ).first()
+        .order_by(SalarySlipHistory.id.desc())
+        .first()
+    )
 
 
 def update_slip_email_sent(

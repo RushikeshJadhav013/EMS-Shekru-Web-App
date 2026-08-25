@@ -256,6 +256,18 @@ class SalarySlipHistory(Base):
     gross_salary = Column(Float, nullable=False)
     total_deductions = Column(Float, nullable=False)
     net_salary = Column(Float, nullable=False)
+
+    # Optional deduction breakdown (saved on finalize; absent on legacy rows)
+    optional_deduction_1_label = Column(String(120), nullable=True)
+    optional_deduction_1_amount = Column(Float, nullable=True)
+    optional_deduction_2_label = Column(String(120), nullable=True)
+    optional_deduction_2_amount = Column(Float, nullable=True)
+    optional_deduction_3_label = Column(String(120), nullable=True)
+    optional_deduction_3_amount = Column(Float, nullable=True)
+    optional_deduction_4_label = Column(String(120), nullable=True)
+    optional_deduction_4_amount = Column(Float, nullable=True)
+    manual_leave_days = Column(Float, default=0.0)
+    manual_leave_amount = Column(Float, default=0.0)
     
     # Generation info
     generated_by = Column(Integer, ForeignKey("users.user_id"), nullable=True)
