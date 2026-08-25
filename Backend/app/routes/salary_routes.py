@@ -797,13 +797,20 @@ def _parse_slip_optional_custom_deductions(
     amount_2: Optional[float],
     label_3: Optional[str],
     amount_3: Optional[float],
+    label_4: Optional[str],
+    amount_4: Optional[float],
 ) -> Tuple[List[Tuple[str, float]], float]:
     """
-    Up to three optional manual deductions for the slip (label + monthly amount).
+    Up to four optional manual deductions for the slip (label + monthly amount).
     If amount > 0, a non-empty label is required for that slot.
     Label with no positive amount is ignored.
     """
-    slots = [(label_1, amount_1), (label_2, amount_2), (label_3, amount_3)]
+    slots = [
+        (label_1, amount_1),
+        (label_2, amount_2),
+        (label_3, amount_3),
+        (label_4, amount_4),
+    ]
     out: List[Tuple[str, float]] = []
     total = 0.0
     for idx, (lab, amt) in enumerate(slots, start=1):
@@ -855,6 +862,8 @@ def download_salary_slip(
     optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
+    optional_deduction_4_label: Optional[str] = Query(None, description="Optional deduction 4 label"),
+    optional_deduction_4_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 4 amount (monthly)"),
     manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     inline: bool = Query(
         False,
@@ -882,7 +891,7 @@ def download_salary_slip(
     - Monthly Gross = total_earnings_annual / 12
     - Deductions = Professional Tax (₹200/month, Feb ₹300) + Other Tax (other_deduction_annual/12) + PF (pf_annual/12)
       + manual leave deduction based on calendar days in month
-      + up to 3 optional manual deductions (optional_deduction_N_label + optional_deduction_N_amount)
+      + up to 4 optional manual deductions (optional_deduction_N_label + optional_deduction_N_amount)
     - Net Payable = (Monthly Gross + Variable Pay Monthly) - Deductions
     """
     # Check permissions
@@ -926,6 +935,8 @@ def download_salary_slip(
             optional_deduction_2_amount,
             optional_deduction_3_label,
             optional_deduction_3_amount,
+            optional_deduction_4_label,
+            optional_deduction_4_amount,
         )
         gross = salary.total_earnings_annual / 12
         leave_deduction_rows, leave_deduction_total = _build_manual_leave_deduction(
@@ -995,6 +1006,8 @@ def send_salary_slip(
     optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
+    optional_deduction_4_label: Optional[str] = Query(None, description="Optional deduction 4 label"),
+    optional_deduction_4_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 4 amount (monthly)"),
     manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
@@ -1007,7 +1020,7 @@ def send_salary_slip(
     Future calendar months (after the current month in IST) are not allowed.
 
     Optional query params:
-    - optional_deduction_1/2/3 _label and _amount (monthly)
+    - optional_deduction_1/2/3/4 _label and _amount (monthly)
     - manual_leave_days (monthly deduction by calendar days in selected month)
     """
     _enforce_admin_block_by_user_id(db, current_user, user_id, "send salary slip")
@@ -1059,6 +1072,8 @@ def send_salary_slip(
             optional_deduction_2_amount,
             optional_deduction_3_label,
             optional_deduction_3_amount,
+            optional_deduction_4_label,
+            optional_deduction_4_amount,
         )
         gross = salary.total_earnings_annual / 12
         leave_deduction_rows, leave_deduction_total = _build_manual_leave_deduction(
