@@ -1850,7 +1850,8 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "medical_allowance_annual": salary.medical_allowance_annual,
         "other_allowance_annual": salary.other_allowance_annual,
         "professional_tax_annual": salary.professional_tax_annual,
-        "other_deduction_annual": salary.other_deduction_annual,
+        # Other Tax is fixed at 0 internally and is hidden from salary JSON.
+        # "other_deduction_annual": salary.other_deduction_annual,
         "pf_annual": salary.pf_annual,
         "pan_number": salary.pan_number,
         "uan_number": salary.uan_number,
