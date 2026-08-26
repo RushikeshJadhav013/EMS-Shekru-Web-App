@@ -35,7 +35,8 @@ from app.crud.salary_crud import (
     create_salary_slip_history, get_salary_slip_history, update_slip_email_sent,
     get_user_salary_slip_history,
     create_salary_notification, list_salary_notifications,
-    mark_salary_notification_as_read, get_unread_salary_notifications_count
+    mark_salary_notification_as_read, get_unread_salary_notifications_count,
+    _has_pf_account,
 )
 from app.services.salary_pdf_service import (
     generate_salary_slip_pdf, generate_salary_annexure_pdf,
@@ -797,13 +798,20 @@ def _parse_slip_optional_custom_deductions(
     amount_2: Optional[float],
     label_3: Optional[str],
     amount_3: Optional[float],
+    label_4: Optional[str],
+    amount_4: Optional[float],
 ) -> Tuple[List[Tuple[str, float]], float]:
     """
-    Up to three optional manual deductions for the slip (label + monthly amount).
+    Up to four optional manual deductions for the slip (label + monthly amount).
     If amount > 0, a non-empty label is required for that slot.
     Label with no positive amount is ignored.
     """
-    slots = [(label_1, amount_1), (label_2, amount_2), (label_3, amount_3)]
+    slots = [
+        (label_1, amount_1),
+        (label_2, amount_2),
+        (label_3, amount_3),
+        (label_4, amount_4),
+    ]
     out: List[Tuple[str, float]] = []
     total = 0.0
     for idx, (lab, amt) in enumerate(slots, start=1):
@@ -844,6 +852,184 @@ def _build_manual_leave_deduction(
     return [(f"Leave Deduction ({leave_days:g} {day_label})", leave_amount)], leave_amount
 
 
+def _normalize_optional_slot(
+    label: Optional[str],
+    amount: Optional[float],
+) -> Tuple[Optional[str], Optional[float]]:
+    lab_s = (label or "").strip() if label is not None else ""
+    if not lab_s or amount is None or float(amount) <= 0:
+        return None, None
+    return lab_s, round(float(amount), 2)
+
+
+def _slip_request_has_optional_params(
+    label_1: Optional[str],
+    amount_1: Optional[float],
+    label_2: Optional[str],
+    amount_2: Optional[float],
+    label_3: Optional[str],
+    amount_3: Optional[float],
+    label_4: Optional[str],
+    amount_4: Optional[float],
+    manual_leave_days: float,
+) -> bool:
+    if float(manual_leave_days or 0) > 0:
+        return True
+    for lab, amt in (
+        (label_1, amount_1),
+        (label_2, amount_2),
+        (label_3, amount_3),
+        (label_4, amount_4),
+    ):
+        if (lab or "").strip():
+            return True
+        if amt is not None and float(amt) > 0:
+            return True
+    return False
+
+
+def _history_has_breakdown(history) -> bool:
+    if not history:
+        return False
+    if float(getattr(history, "manual_leave_days", 0) or 0) > 0:
+        return True
+    if float(getattr(history, "manual_leave_amount", 0) or 0) > 0:
+        return True
+    for idx in range(1, 5):
+        lab = getattr(history, f"optional_deduction_{idx}_label", None)
+        amt = getattr(history, f"optional_deduction_{idx}_amount", None)
+        if (lab or "").strip():
+            return True
+        if amt is not None and float(amt) > 0:
+            return True
+    return False
+
+
+def _breakdown_kwargs_from_slots(
+    slots: List[Tuple[Optional[str], Optional[float]]],
+    manual_leave_days: float,
+    manual_leave_amount: float,
+) -> dict:
+    out = {}
+    for idx in range(1, 5):
+        lab, amt = slots[idx - 1] if idx <= len(slots) else (None, None)
+        out[f"optional_deduction_{idx}_label"] = lab
+        out[f"optional_deduction_{idx}_amount"] = amt
+    out["manual_leave_days"] = float(manual_leave_days or 0.0)
+    out["manual_leave_amount"] = float(manual_leave_amount or 0.0)
+    return out
+
+
+def _custom_deductions_from_history(history) -> Tuple[List[Tuple[str, float]], float, dict]:
+    """Rebuild optional + leave rows from a saved history breakdown."""
+    slots = []
+    for idx in range(1, 5):
+        slots.append(
+            _normalize_optional_slot(
+                getattr(history, f"optional_deduction_{idx}_label", None),
+                getattr(history, f"optional_deduction_{idx}_amount", None),
+            )
+        )
+    custom, total = _parse_slip_optional_custom_deductions(
+        slots[0][0], slots[0][1],
+        slots[1][0], slots[1][1],
+        slots[2][0], slots[2][1],
+        slots[3][0], slots[3][1],
+    )
+    leave_days = round(float(getattr(history, "manual_leave_days", 0) or 0), 2)
+    leave_amount = round(float(getattr(history, "manual_leave_amount", 0) or 0), 2)
+    if leave_amount > 0:
+        if leave_days > 0:
+            day_label = "day" if leave_days == 1 else "days"
+            custom.append((f"Leave Deduction ({leave_days:g} {day_label})", leave_amount))
+        else:
+            custom.append(("Leave Deduction", leave_amount))
+        total += leave_amount
+    return custom, total, _breakdown_kwargs_from_slots(slots, leave_days, leave_amount)
+
+
+def _resolve_slip_custom_deductions(
+    db: Session,
+    user_id: int,
+    month: int,
+    year: int,
+    monthly_gross: float,
+    label_1: Optional[str],
+    amount_1: Optional[float],
+    label_2: Optional[str],
+    amount_2: Optional[float],
+    label_3: Optional[str],
+    amount_3: Optional[float],
+    label_4: Optional[str],
+    amount_4: Optional[float],
+    manual_leave_days: float,
+) -> Tuple[List[Tuple[str, float]], float, dict, bool, bool]:
+    """
+    Resolve optional/leave deductions for a slip.
+
+    Returns:
+      custom_rows, custom_total, breakdown_kwargs, from_request, used_saved_breakdown
+    """
+    from_request = _slip_request_has_optional_params(
+        label_1, amount_1, label_2, amount_2, label_3, amount_3, label_4, amount_4, manual_leave_days
+    )
+    if from_request:
+        slots = [
+            _normalize_optional_slot(label_1, amount_1),
+            _normalize_optional_slot(label_2, amount_2),
+            _normalize_optional_slot(label_3, amount_3),
+            _normalize_optional_slot(label_4, amount_4),
+        ]
+        # Validate via shared parser (raises if amount without label)
+        custom, total = _parse_slip_optional_custom_deductions(
+            label_1, amount_1, label_2, amount_2, label_3, amount_3, label_4, amount_4
+        )
+        leave_rows, leave_total = _build_manual_leave_deduction(
+            month, year, monthly_gross, manual_leave_days
+        )
+        if leave_rows:
+            custom.extend(leave_rows)
+            total += leave_total
+        leave_days = round(float(manual_leave_days or 0), 2)
+        breakdown = _breakdown_kwargs_from_slots(slots, leave_days, leave_total)
+        return custom, total, breakdown, True, False
+
+    history = get_salary_slip_history(db, user_id, month, year)
+    if _history_has_breakdown(history):
+        custom, total, breakdown = _custom_deductions_from_history(history)
+        return custom, total, breakdown, False, True
+
+    empty_slots = [(None, None)] * 4
+    return [], 0.0, _breakdown_kwargs_from_slots(empty_slots, 0.0, 0.0), False, False
+
+
+def _compute_slip_matched_totals(
+    salary: EmployeeSalary,
+    month: int,
+    custom_deductions_total: float,
+) -> Tuple[float, float, float]:
+    """
+    Totals aligned with salary-slip PDF:
+    total_deductions = PT + PF(if pf_no) + optionals + leave
+    (Other Tax is not included.)
+    """
+    gross = round(float(salary.total_earnings_annual or 0) / 12, 2)
+    variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
+    pt_monthly = (
+        0.0
+        if (salary.professional_tax_annual or 0) <= 0
+        else (300.0 if month == 2 else 200.0)
+    )
+    pf_monthly = (
+        round((salary.pf_annual or 0) / 12, 2)
+        if _has_pf_account(getattr(salary, "pf_no", None))
+        else 0.0
+    )
+    total_deductions = round(pt_monthly + pf_monthly + float(custom_deductions_total or 0), 2)
+    net = round((gross + variable_pay_monthly) - total_deductions, 2)
+    return gross, total_deductions, net
+
+
 @router.get("/slip/download/{user_id}")
 def download_salary_slip(
     user_id: int,
@@ -855,6 +1041,8 @@ def download_salary_slip(
     optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
+    optional_deduction_4_label: Optional[str] = Query(None, description="Optional deduction 4 label"),
+    optional_deduction_4_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 4 amount (monthly)"),
     manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     inline: bool = Query(
         False,
@@ -880,9 +1068,10 @@ def download_salary_slip(
     
     The salary slip uses the current salary-structure logic:
     - Monthly Gross = total_earnings_annual / 12
-    - Deductions = Professional Tax (₹200/month, Feb ₹300) + Other Tax (other_deduction_annual/12) + PF (pf_annual/12)
+    - Deductions = Professional Tax (₹200/month, Feb ₹300) + PF (if pf_no) 
       + manual leave deduction based on calendar days in month
-      + up to 3 optional manual deductions (optional_deduction_N_label + optional_deduction_N_amount)
+      + up to 4 optional manual deductions (optional_deduction_N_label + optional_deduction_N_amount)
+    - When optional/leave query params are omitted, saved breakdown for that month is reused if present
     - Net Payable = (Monthly Gross + Variable Pay Monthly) - Deductions
     """
     # Check permissions
@@ -918,45 +1107,60 @@ def download_salary_slip(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Salary record not found for this employee"
             )
-        
-        custom_deductions, custom_deductions_total = _parse_slip_optional_custom_deductions(
+
+        monthly_gross = round(float(salary.total_earnings_annual or 0) / 12, 2)
+        (
+            custom_deductions,
+            custom_deductions_total,
+            breakdown_kwargs,
+            from_request,
+            used_saved_breakdown,
+        ) = _resolve_slip_custom_deductions(
+            db,
+            user_id,
+            month,
+            year,
+            monthly_gross,
             optional_deduction_1_label,
             optional_deduction_1_amount,
             optional_deduction_2_label,
             optional_deduction_2_amount,
             optional_deduction_3_label,
             optional_deduction_3_amount,
+            optional_deduction_4_label,
+            optional_deduction_4_amount,
+            manual_leave_days,
         )
-        gross = salary.total_earnings_annual / 12
-        leave_deduction_rows, leave_deduction_total = _build_manual_leave_deduction(
-            month, year, gross, manual_leave_days
-        )
-        if leave_deduction_rows:
-            custom_deductions.extend(leave_deduction_rows)
-            custom_deductions_total += leave_deduction_total
 
         # Generate PDF (PF No is taken from salary record)
         pdf_buffer = _generate_salary_slip(
             user, salary, month, year, custom_deductions=custom_deductions
         )
-        
-        # Record in history using slip calculation values
-        variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
-        
-        # Employee deductions = Professional Tax (month-specific) + Other Tax + PF + optional manual
-        pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
-        pf_monthly = round((salary.pf_annual or 0) / 12, 2)
-        employee_deductions = (
-            pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly + custom_deductions_total
+
+        gross, employee_deductions, net = _compute_slip_matched_totals(
+            salary, month, custom_deductions_total
         )
-        
-        # Net = Gross + variable pay - employee deductions
-        net = (gross + variable_pay_monthly) - employee_deductions
 
         if not preview:
-            create_salary_slip_history(
-                db, user_id, month, year, gross, employee_deductions, net, current_user.user_id
+            existing_history = get_salary_slip_history(db, user_id, month, year)
+            # Keep legacy totals-only rows untouched when no params and no saved breakdown.
+            should_persist = (
+                from_request
+                or used_saved_breakdown
+                or existing_history is None
             )
+            if should_persist:
+                create_salary_slip_history(
+                    db,
+                    user_id,
+                    month,
+                    year,
+                    gross,
+                    employee_deductions,
+                    net,
+                    current_user.user_id,
+                    **breakdown_kwargs,
+                )
 
         # Return PDF
         month_name = _get_month_name(month)
@@ -995,6 +1199,8 @@ def send_salary_slip(
     optional_deduction_2_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 2 amount (monthly)"),
     optional_deduction_3_label: Optional[str] = Query(None, description="Optional deduction 3 label"),
     optional_deduction_3_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 3 amount (monthly)"),
+    optional_deduction_4_label: Optional[str] = Query(None, description="Optional deduction 4 label"),
+    optional_deduction_4_amount: Optional[float] = Query(None, ge=0, description="Optional deduction 4 amount (monthly)"),
     manual_leave_days: float = Query(0.0, ge=0, description="Manual unpaid leave days (deducted using calendar days in month)"),
     # pf_no: Optional[str] = Query(None, description="PF Number"),
     db: Session = Depends(get_db),
@@ -1007,8 +1213,10 @@ def send_salary_slip(
     Future calendar months (after the current month in IST) are not allowed.
 
     Optional query params:
-    - optional_deduction_1/2/3 _label and _amount (monthly)
+    - optional_deduction_1/2/3/4 _label and _amount (monthly)
     - manual_leave_days (monthly deduction by calendar days in selected month)
+    When optional/leave params are omitted, a previously saved breakdown for that
+    month is reused if present. Legacy history totals are left unchanged.
     """
     _enforce_admin_block_by_user_id(db, current_user, user_id, "send salary slip")
     _reject_future_salary_slip_period(month, year)
@@ -1051,36 +1259,39 @@ def send_salary_slip(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Salary record not found for this employee"
             )
-        
-        custom_deductions, custom_deductions_total = _parse_slip_optional_custom_deductions(
+
+        monthly_gross = round(float(salary.total_earnings_annual or 0) / 12, 2)
+        (
+            custom_deductions,
+            custom_deductions_total,
+            breakdown_kwargs,
+            from_request,
+            used_saved_breakdown,
+        ) = _resolve_slip_custom_deductions(
+            db,
+            user_id,
+            month,
+            year,
+            monthly_gross,
             optional_deduction_1_label,
             optional_deduction_1_amount,
             optional_deduction_2_label,
             optional_deduction_2_amount,
             optional_deduction_3_label,
             optional_deduction_3_amount,
+            optional_deduction_4_label,
+            optional_deduction_4_amount,
+            manual_leave_days,
         )
-        gross = salary.total_earnings_annual / 12
-        leave_deduction_rows, leave_deduction_total = _build_manual_leave_deduction(
-            month, year, gross, manual_leave_days
-        )
-        if leave_deduction_rows:
-            custom_deductions.extend(leave_deduction_rows)
-            custom_deductions_total += leave_deduction_total
 
         # Generate PDF (PF No is taken from salary record)
         pdf_buffer = _generate_salary_slip(
             user, salary, month, year, custom_deductions=custom_deductions
         )
-        
-        # Calculate net salary using slip logic (include variable pay when present)
-        variable_pay_monthly = round(salary.variable_pay / 12, 2) if salary.variable_pay else 0.0
-        pt_monthly = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
-        pf_monthly = round((salary.pf_annual or 0) / 12, 2)
-        employee_deductions = (
-            pt_monthly + (salary.other_deduction_annual / 12) + pf_monthly + custom_deductions_total
+
+        gross, employee_deductions, net_salary = _compute_slip_matched_totals(
+            salary, month, custom_deductions_total
         )
-        net_salary = (gross + variable_pay_monthly) - employee_deductions
         
         # Send email
         success = send_salary_slip_email(
@@ -1093,11 +1304,27 @@ def send_salary_slip(
         )
         
         if success:
-            # Record in history using CTC-based calculation
-            history = create_salary_slip_history(
-                db, user_id, month, year, gross, employee_deductions, net_salary, current_user.user_id
+            existing_history = get_salary_slip_history(db, user_id, month, year)
+            should_persist = (
+                from_request
+                or used_saved_breakdown
+                or existing_history is None
             )
-            update_slip_email_sent(db, history.id)
+            if should_persist:
+                history = create_salary_slip_history(
+                    db,
+                    user_id,
+                    month,
+                    year,
+                    gross,
+                    employee_deductions,
+                    net_salary,
+                    current_user.user_id,
+                    **breakdown_kwargs,
+                )
+                update_slip_email_sent(db, history.id)
+            elif existing_history is not None:
+                update_slip_email_sent(db, existing_history.id)
             
             # Create notification for the employee
             create_salary_notification(
@@ -1850,7 +2077,8 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
         "medical_allowance_annual": salary.medical_allowance_annual,
         "other_allowance_annual": salary.other_allowance_annual,
         "professional_tax_annual": salary.professional_tax_annual,
-        "other_deduction_annual": salary.other_deduction_annual,
+        # Other Tax is fixed at 0 internally and is hidden from salary JSON.
+        # "other_deduction_annual": salary.other_deduction_annual,
         "pf_annual": salary.pf_annual,
         "pan_number": salary.pan_number,
         "uan_number": salary.uan_number,

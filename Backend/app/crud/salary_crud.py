@@ -149,6 +149,8 @@ def create_employee_salary_from_ctc(
     
     # Package CTC is required — store it for display
     calculated_data["package_ctc_annual"] = salary_data.package_ctc_annual
+    # Other Tax is not accepted from the client; always persist 0.
+    calculated_data["other_deduction_annual"] = 0.0
     
     # Create salary record
     db_salary = EmployeeSalary(**calculated_data)
@@ -261,6 +263,8 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
 
     calculated_data["user_id"] = salary_data.user_id
     calculated_data["package_ctc_annual"] = package_ctc_annual
+    # Other Tax is not accepted from the client; always persist 0.
+    calculated_data["other_deduction_annual"] = 0.0
 
     db_salary = EmployeeSalary(**calculated_data)
     db.add(db_salary)
@@ -326,6 +330,8 @@ def update_employee_salary_from_ctc(
     
     # Update stored package CTC (required)
     salary.package_ctc_annual = ctc_update.package_ctc_annual
+    # Other Tax is not accepted from the client; always persist 0.
+    salary.other_deduction_annual = 0.0
     
     salary.updated_at = now_ist()
     db.commit()
@@ -471,6 +477,9 @@ def update_employee_salary(
             setattr(salary, key, None)
         elif key not in ['variable_pay_type', 'variable_pay_value', 'employer_pf_percentage'] and value is not None:
             setattr(salary, key, value)
+
+    # Other Tax is not accepted from the client; always persist 0.
+    salary.other_deduction_annual = 0.0
     
     salary.updated_at = now_ist()
     db.commit()
@@ -568,6 +577,9 @@ def update_employee_salary_manual_full(
             # allow explicit clearing for PF fields
             setattr(salary, key, None)
 
+    # Other Tax is not accepted from the client; always persist 0.
+    salary.other_deduction_annual = 0.0
+
     # Recompute package CTC aligned with other salary APIs (earnings-side basis).
     salary.package_ctc_annual = (
         float(salary.basic_annual or 0)
@@ -655,7 +667,7 @@ def preview_salary_calculation(
             medical_allowance_annual=components["medical_allowance_annual"],
             other_allowance_annual=components["other_allowance_annual"],
             professional_tax_annual=components["professional_tax_annual"],
-            other_tax_annual=components["other_tax_annual"],
+            # Other Tax is hidden from salary JSON and is always 0 internally.
             employer_pf_annual=components["employer_pf_annual"],
             variable_pay_annual=components["variable_pay_annual"],
             
@@ -669,7 +681,6 @@ def preview_salary_calculation(
             monthly_medical=round(components["medical_allowance_annual"] / 12, 2),
             monthly_other=round(components["other_allowance_annual"] / 12, 2),
             monthly_professional_tax=round(components["professional_tax_annual"] / 12, 2),
-            monthly_other_tax=round(components["other_tax_annual"] / 12, 2),
             monthly_employer_pf=round(components["employer_pf_annual"] / 12, 2),
             monthly_variable_pay=components["monthly_variable_pay"],
             monthly_in_hand=components["monthly_in_hand"],
@@ -854,23 +865,71 @@ def create_salary_slip_history(
     gross_salary: float,
     total_deductions: float,
     net_salary: float,
-    generated_by: int
+    generated_by: int,
+    *,
+    optional_deduction_1_label: Optional[str] = None,
+    optional_deduction_1_amount: Optional[float] = None,
+    optional_deduction_2_label: Optional[str] = None,
+    optional_deduction_2_amount: Optional[float] = None,
+    optional_deduction_3_label: Optional[str] = None,
+    optional_deduction_3_amount: Optional[float] = None,
+    optional_deduction_4_label: Optional[str] = None,
+    optional_deduction_4_amount: Optional[float] = None,
+    manual_leave_days: float = 0.0,
+    manual_leave_amount: float = 0.0,
 ) -> SalarySlipHistory:
-    """Create salary slip history record"""
+    """
+    Upsert salary slip history for (user_id, month, year).
+
+    Updates the latest existing row when present so repeated finalize for the
+    same month does not create unbounded duplicates. Legacy totals on older
+    duplicate rows are left untouched.
+    """
+    existing = (
+        db.query(SalarySlipHistory)
+        .filter(
+            SalarySlipHistory.user_id == user_id,
+            SalarySlipHistory.month == month,
+            SalarySlipHistory.year == year,
+        )
+        .order_by(SalarySlipHistory.id.desc())
+        .first()
+    )
+
+    breakdown = {
+        "gross_salary": float(gross_salary),
+        "total_deductions": float(total_deductions),
+        "net_salary": float(net_salary),
+        "optional_deduction_1_label": optional_deduction_1_label,
+        "optional_deduction_1_amount": optional_deduction_1_amount,
+        "optional_deduction_2_label": optional_deduction_2_label,
+        "optional_deduction_2_amount": optional_deduction_2_amount,
+        "optional_deduction_3_label": optional_deduction_3_label,
+        "optional_deduction_3_amount": optional_deduction_3_amount,
+        "optional_deduction_4_label": optional_deduction_4_label,
+        "optional_deduction_4_amount": optional_deduction_4_amount,
+        "manual_leave_days": float(manual_leave_days or 0.0),
+        "manual_leave_amount": float(manual_leave_amount or 0.0),
+        "generated_by": generated_by,
+        "generated_at": now_ist(),
+    }
+
+    if existing:
+        for key, value in breakdown.items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     db_history = SalarySlipHistory(
         user_id=user_id,
         month=month,
         year=year,
-        gross_salary=gross_salary,
-        total_deductions=total_deductions,
-        net_salary=net_salary,
-        generated_by=generated_by
+        **breakdown,
     )
-    
     db.add(db_history)
     db.commit()
     db.refresh(db_history)
-    
     return db_history
 
 
@@ -880,14 +939,19 @@ def get_salary_slip_history(
     month: int, 
     year: int
 ) -> Optional[SalarySlipHistory]:
-    """Get salary slip history for specific month/year"""
-    return db.query(SalarySlipHistory).filter(
-        and_(
-            SalarySlipHistory.user_id == user_id,
-            SalarySlipHistory.month == month,
-            SalarySlipHistory.year == year
+    """Get latest salary slip history for specific month/year"""
+    return (
+        db.query(SalarySlipHistory)
+        .filter(
+            and_(
+                SalarySlipHistory.user_id == user_id,
+                SalarySlipHistory.month == month,
+                SalarySlipHistory.year == year,
+            )
         )
-    ).first()
+        .order_by(SalarySlipHistory.id.desc())
+        .first()
+    )
 
 
 def update_slip_email_sent(

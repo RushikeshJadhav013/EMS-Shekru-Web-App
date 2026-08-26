@@ -106,7 +106,8 @@ def generate_salary_slip_pdf(
     custom_deductions: Optional[List[Tuple[str, float]]] = None,
 ) -> io.BytesIO:
     """
-    Generate Salary Slip PDF matching the exact sample format
+    Generate Salary Slip PDF matching the exact sample format.
+    Other Tax (other_deduction) is not shown in the deductions section.
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -151,9 +152,9 @@ def generate_salary_slip_pdf(
             # Plain-text cell; truncate very long labels
             custom_rows.append((lbl[:120], amt))
 
-    # Employee deductions for "Net Payable"
-    employee_total_deductions = professional_tax + other_deduction + pf_numeric + custom_extra
-    total_deductions = professional_tax + other_deduction + pf_numeric + custom_extra
+    # Employee deductions for "Net Payable". Other Tax is not shown on the slip.
+    employee_total_deductions = professional_tax + pf_numeric + custom_extra
+    total_deductions = professional_tax + pf_numeric + custom_extra
     # Variable pay should only affect "Total Net Payable" when it has a value.
     variable_pay_amount = float(variable_pay) if variable_pay else 0.0
     net_payable = (total_earnings + variable_pay_amount) - employee_total_deductions
@@ -393,33 +394,12 @@ def generate_salary_slip_pdf(
         return lbl[:120], format_currency(float(amt))
 
     # Pair optional deductions with fixed earnings rows so the earnings column has no gaps:
-    # - With PF: optional[0..2] sit on Medical / Conveyance / Other Allowance rows (under PF).
-    # - Without PF: optional[0] on Special row (under Other), optional[1..2] on Medical / Conveyance.
+    # - With PF: optional[0..3] sit on Special / Medical / Conveyance / Other Allowance rows.
+    # - Without PF: optional[0..3] sit on HRA / Special / Medical / Conveyance rows.
     if show_pf:
         earnings_deductions_data = [
             ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
-            ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
-            ["Special Allowance", format_currency(special_allowance), pf_label, pf_display],
-            [
-                "Medical Allowance",
-                format_currency(medical_allowance),
-                *_pair_optional_deduction(0),
-            ],
-            [
-                "Conveyance Allowance",
-                format_currency(conveyance),
-                *_pair_optional_deduction(1),
-            ],
-            [
-                "Other Allowance",
-                format_currency(other_allowance),
-                *_pair_optional_deduction(2),
-            ],
-        ]
-    else:
-        earnings_deductions_data = [
-            ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
-            ["House Rent Allowance", format_currency(hra), "Other", format_currency(other_deduction)],
+            ["House Rent Allowance", format_currency(hra), pf_label, pf_display],
             [
                 "Special Allowance",
                 format_currency(special_allowance),
@@ -435,11 +415,50 @@ def generate_salary_slip_pdf(
                 format_currency(conveyance),
                 *_pair_optional_deduction(2),
             ],
+            [
+                "Other Allowance",
+                format_currency(other_allowance),
+                *_pair_optional_deduction(3),
+            ],
+        ]
+    else:
+        earnings_deductions_data = [
+            ["Basic", format_currency(basic), "Professional Tax", format_currency(professional_tax)],
+            [
+                "House Rent Allowance",
+                format_currency(hra),
+                *_pair_optional_deduction(0),
+            ],
+            [
+                "Special Allowance",
+                format_currency(special_allowance),
+                *_pair_optional_deduction(1),
+            ],
+            [
+                "Medical Allowance",
+                format_currency(medical_allowance),
+                *_pair_optional_deduction(2),
+            ],
+            [
+                "Conveyance Allowance",
+                format_currency(conveyance),
+                *_pair_optional_deduction(3),
+            ],
             ["Other Allowance", format_currency(other_allowance), "", ""],
         ]
 
-    # Custom deductions beyond the 3 slots paired with earnings rows (e.g. leave after 3 optionals)
-    for lbl, amt in custom_rows[3:]:
+    # Place unpaired custom deductions (e.g. leave after 4 optionals) into any
+    # empty deduction cells first so leave sits directly under the last deduction
+    # with no blank gap. Only then append extra rows.
+    remaining_custom = list(custom_rows[4:])
+    for row in earnings_deductions_data:
+        if not remaining_custom:
+            break
+        if not str(row[2] or "").strip():
+            lbl, amt = remaining_custom.pop(0)
+            row[2] = str(lbl).strip()[:120]
+            row[3] = format_currency(float(amt))
+    for lbl, amt in remaining_custom:
         earnings_deductions_data.append(
             ["", "", str(lbl).strip()[:120], format_currency(float(amt))]
         )

@@ -17,14 +17,14 @@ STRICT CALCULATION RULES (FINAL – LOCKED):
 6. Employer PF is part of CTC and is deducted from employee for in-hand
 
     7. Monthly In-Hand =
-   (Total Earnings − Professional Tax − Other Tax − PF) / 12
+   (Total Earnings − Professional Tax − PF) / 12
    (Total Earnings = Total Gross)
 
 CTC IDENTITY:
 CTC =
 Total Gross
 
-# Note: Employer PF, Professional Tax, and Other Tax are computed separately from the
+# Note: Employer PF and Professional Tax are computed separately from the
 # fixed rules and used for net/in-hand calculations (not for splitting Total Gross).
 """
 
@@ -55,7 +55,6 @@ class SalaryCalculator:
 
     # Professional Tax is treated as ₹200/month, except February ₹300 (₹2,500/year).
     PROFESSIONAL_TAX_ANNUAL = 2500.0
-    OTHER_TAX_ANNUAL = 12000.0
 
     EMPLOYER_PF_PERCENTAGE = 0.12   # 12% of Basic
     BASIC_PERCENTAGE = 0.50
@@ -89,7 +88,6 @@ class SalaryCalculator:
         other = cls.OTHER_ALLOWANCE_ANNUAL
 
         professional_tax = cls.PROFESSIONAL_TAX_ANNUAL
-        other_tax = cls.OTHER_TAX_ANNUAL
 
         # ---------- BASIC & EMPLOYER PF ----------
         # Variable Pay is NOT part of the CTC breakup, so it must not affect Basic/HRA.
@@ -135,8 +133,8 @@ class SalaryCalculator:
             raise ValueError("CTC too low to calculate salary")
 
         # ---------- NET PAY ----------
-        # Total Gross here means earnings before employee deductions (PT + Other Tax + PF).
-        net_annual = total_gross - professional_tax - other_tax - employer_pf
+        # Total Gross here means earnings before employee deductions (PT + PF).
+        net_annual = total_gross - professional_tax - employer_pf
         monthly_in_hand = round(net_annual / 12, 2)
 
         # ---------- CTC RECONSTRUCTION ----------
@@ -164,12 +162,12 @@ class SalaryCalculator:
 
             # Deductions
             "professional_tax_annual": professional_tax,
-            "other_tax_annual": other_tax,
-            "total_deductions_annual": round(professional_tax + other_tax + employer_pf, 2),
+            "other_tax_annual": 0.0,
+            "total_deductions_annual": round(professional_tax + employer_pf, 2),
 
             # Totals
             "total_earnings_annual": total_gross,
-            "total_employee_deductions_annual": round(professional_tax + other_tax + employer_pf, 2),
+            "total_employee_deductions_annual": round(professional_tax + employer_pf, 2),
             "total_employer_contributions_annual": employer_pf,
             "net_annual": net_annual,
             "monthly_in_hand": monthly_in_hand,
@@ -177,7 +175,7 @@ class SalaryCalculator:
             # CTC
             "package_ctc_annual": annual_ctc,
             # Monthly CTC should be based on computed CTC (model definition):
-            # ctc_annual = total_gross + pf_annual + professional_tax_annual + other_deduction_annual
+            # ctc_annual = total_gross + pf_annual + professional_tax_annual
             "monthly_ctc": round(
                 # Keep this consistent with auto salary APIs where `monthly_ctc`
                 # comes directly from `package_ctc_annual` (i.e., offered CTC).
@@ -249,7 +247,7 @@ def calculate_salary_from_ctc(
         "conveyance_annual": components["conveyance_annual"],
         "other_allowance_annual": components["other_allowance_annual"],
         "professional_tax_annual": components["professional_tax_annual"],
-        "other_deduction_annual": components["other_tax_annual"],
+        "other_deduction_annual": 0.0,
         "pf_annual": components["employer_pf_annual"],
         "variable_pay": components["variable_pay_annual"],
         "uan_number": uan_number,

@@ -126,7 +126,8 @@ class EmployeeSalaryCreate(BaseModel):
     
     # Deductions
     professional_tax_annual: float = Field(default=0.0, ge=0)
-    other_deduction_annual: float = Field(default=0.0, ge=0)
+    # Other Tax is fixed at 0 internally and is hidden from salary JSON.
+    # other_deduction_annual: float = Field(default=0.0, ge=0)
     pf_annual: Optional[float] = Field(default=None, ge=0)
     employer_pf_percentage: Optional[float] = Field(
         default=None,
@@ -243,7 +244,8 @@ class EmployeeSalaryManualFullUpdate(BaseModel):
     medical_allowance_annual: Optional[float] = Field(default=None, ge=0)
     other_allowance_annual: Optional[float] = Field(default=None, ge=0)
     professional_tax_annual: Optional[float] = Field(default=None, ge=0)
-    other_deduction_annual: Optional[float] = Field(default=None, ge=0)
+    # Other Tax is fixed at 0 internally and is hidden from salary JSON.
+    # other_deduction_annual: Optional[float] = Field(default=None, ge=0)
     pf_annual: Optional[float] = Field(default=None, ge=0)
     employer_pf_percentage: Optional[float] = Field(
         default=None,
@@ -343,7 +345,8 @@ class EmployeeSalaryOut(BaseModel):
     medical_allowance_annual: float
     other_allowance_annual: float
     professional_tax_annual: float
-    other_deduction_annual: float
+    # Other Tax is fixed at 0 internally and is hidden from salary JSON.
+    # other_deduction_annual: float
     pf_annual: Optional[float]
     pan_number: Optional[str]
     uan_number: Optional[str]
@@ -387,7 +390,8 @@ class SalaryCalculationPreview(BaseModel):
     medical_allowance_annual: float
     other_allowance_annual: float
     professional_tax_annual: float
-    other_tax_annual: float
+    # Other Tax is fixed at 0 internally and is hidden from salary JSON.
+    # other_tax_annual: float
     employer_pf_annual: float
     variable_pay_annual: float
     
@@ -401,7 +405,7 @@ class SalaryCalculationPreview(BaseModel):
     monthly_medical: float
     monthly_other: float
     monthly_professional_tax: float
-    monthly_other_tax: float
+    # monthly_other_tax: float
     monthly_employer_pf: float
     monthly_variable_pay: float
     monthly_in_hand: float
