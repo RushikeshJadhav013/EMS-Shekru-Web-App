@@ -861,9 +861,15 @@ async def export_performance_report(
         }
 
         total_working_days = 0
+        company_holiday_days = 0
+        weekend_holiday_days = 0
         current_day = period_start
         while current_day <= period_end:
-            if _is_report_working_day(current_day, holiday_dates):
+            if current_day.weekday() >= 5:
+                weekend_holiday_days += 1
+            elif current_day in holiday_dates:
+                company_holiday_days += 1
+            else:
                 total_working_days += 1
             current_day += timedelta(days=1)
 
@@ -949,6 +955,8 @@ async def export_performance_report(
                 
                 # Attendance metrics
                 'working_days': total_working_days,
+                'company_holiday_days': company_holiday_days,
+                'weekend_holiday_days': weekend_holiday_days,
                 'attendance_days': attendance_days,
                 'attendance_score': attendance_score,
                 'late_arrivals': late_count,
@@ -1017,7 +1025,7 @@ def generate_csv_export(data: List[dict], start_date: str, end_date: str, employ
     # Write employee data headers
     writer.writerow([
         'Employee ID', 'Name', 'Email', 'Department', 'Designation', 'Role',
-        'Working Days', 'Attendance Days', 'Attendance %', 'Late Arrivals', 'Early Departures', 'Absent Days',
+        'Working Days', 'Company Holidays', 'Weekend Holidays', 'Attendance Days', 'Attendance %', 'Late Arrivals', 'Early Departures', 'Absent Days',
         'Total Tasks', 'Completed Tasks', 'Pending Tasks', 'In Progress Tasks', 'Task Completion %',
         'Total Leaves', 'Approved Leaves', 'Pending Leaves', 'Rejected Leaves', 'Total Leave Days',
         'Performance Score'
@@ -1027,7 +1035,8 @@ def generate_csv_export(data: List[dict], start_date: str, end_date: str, employ
     for emp in data:
         writer.writerow([
             emp['employee_id'], emp['name'], emp['email'], emp['department'], emp['designation'], emp['role'],
-            emp['working_days'], emp['attendance_days'], emp['attendance_score'], 
+            emp['working_days'], emp['company_holiday_days'], emp['weekend_holiday_days'],
+            emp['attendance_days'], emp['attendance_score'], 
             emp['late_arrivals'], emp['early_departures'], emp['absent_days'],
             emp['total_tasks'], emp['completed_tasks'], emp['pending_tasks'], emp['in_progress_tasks'], 
             emp['task_completion_rate'],
@@ -1234,6 +1243,12 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         metrics_data.extend([
             _metric_row('Attendance Score', f"{emp['attendance_score']}%", 'Task Completion', f"{emp['task_completion_rate']}%"),
             _metric_row('Total Days', str(total_days), 'Total Working Days', str(emp['working_days'])),
+            _metric_row(
+                'Company Holidays',
+                str(emp['company_holiday_days']),
+                'Weekend Holidays',
+                str(emp['weekend_holiday_days']),
+            ),
             _metric_row(
                 'Attendance Days',
                 f"{emp['attendance_days']}/{emp['working_days']}",
