@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status as http_sta
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, or_
-from datetime import datetime, timedelta
-from typing import Optional, List
+from datetime import datetime, timedelta, date
+from typing import Optional, List, Set
 from app.utils.timezone import now_ist, get_date_bounds_ist
 import traceback
 import io
@@ -31,8 +31,14 @@ from app.config.company_config import (
     COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, COMPANY_WEBSITE
 )
 from app.utils.department_utils import department_tokens_lower, department_token_regex_pattern
+from app.crud.leave_calendar_crud import list_holidays
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+
+def _is_report_working_day(day: date, holiday_dates: Set[date]) -> bool:
+    """Mon–Fri that is not a company holiday (recurring holidays already projected)."""
+    return day.weekday() < 5 and day not in holiday_dates
 
 
 def _pdf_paragraph(text, style: ParagraphStyle) -> Paragraph:
@@ -842,34 +848,58 @@ async def export_performance_report(
                 detail="You are not allowed to export performance report for the requested employees.",
             )
 
+        period_start = start.date()
+        period_end = end.date()
+        holiday_dates = {
+            h.date
+            for h in list_holidays(
+                db,
+                company_id=int(scope["company_id"]),
+                start=period_start,
+                end=period_end,
+            )
+        }
+
+        total_working_days = 0
+        current_day = period_start
+        while current_day <= period_end:
+            if _is_report_working_day(current_day, holiday_dates):
+                total_working_days += 1
+            current_day += timedelta(days=1)
+
+        late_cutoff = datetime.strptime("09:30", "%H:%M").time()
+        early_cutoff = datetime.strptime("18:00", "%H:%M").time()
+
         # Collect comprehensive data for each employee
         report_data = []
         
         for emp in employees:
-            # Calculate working days in range
-            total_working_days = 0
-            current = start
-            while current <= end:
-                if current.weekday() < 5:  # Monday-Friday
-                    total_working_days += 1
-                current += timedelta(days=1)
-            
-            # Attendance data
             attendance_records = db.query(Attendance).filter(
                 Attendance.user_id == emp.user_id,
                 Attendance.company_id == int(scope["company_id"]),
                 Attendance.check_in >= start,
                 Attendance.check_in <= end
             ).all()
-            
-            attendance_days = len(attendance_records)
-            attendance_score = round((attendance_days / total_working_days) * 100) if total_working_days > 0 else 0
-            
-            # Calculate late arrivals
-            late_count = sum(1 for att in attendance_records if att.check_in.time() > datetime.strptime('09:30', '%H:%M').time())
-            
-            # Calculate early departures
-            early_departure_count = sum(1 for att in attendance_records if att.check_out and att.check_out.time() < datetime.strptime('18:00', '%H:%M').time())
+
+            working_day_records = [
+                att for att in attendance_records
+                if att.check_in and _is_report_working_day(att.check_in.date(), holiday_dates)
+            ]
+
+            attendance_days = len({att.check_in.date() for att in working_day_records})
+            attendance_score = (
+                round((attendance_days / total_working_days) * 100)
+                if total_working_days > 0 else 0
+            )
+
+            late_count = sum(
+                1 for att in working_day_records
+                if att.check_in.time() > late_cutoff
+            )
+            early_departure_count = sum(
+                1 for att in working_day_records
+                if att.check_out and att.check_out.time() < early_cutoff
+            )
             
             # Task data
             tasks = db.query(Task).filter(
@@ -1114,14 +1144,10 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     elements.append(info_table)
     elements.append(Spacer(1, 20))
 
-    # Period-wide counters used in the metrics table
+    # Period-wide calendar length; working days come from per-employee holiday-aware counts.
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
     total_days = (end_dt - start_dt).days + 1
-    total_working_days = sum(
-        1 for i in range(total_days)
-        if (start_dt + timedelta(days=i)).weekday() < 5  # Monday-Friday only
-    )
     
     # Employee performance summary
     for emp in data:
@@ -1207,7 +1233,7 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         ]
         metrics_data.extend([
             _metric_row('Attendance Score', f"{emp['attendance_score']}%", 'Task Completion', f"{emp['task_completion_rate']}%"),
-            _metric_row('Total Days', str(total_days), 'Total Working Days', str(total_working_days)),
+            _metric_row('Total Days', str(total_days), 'Total Working Days', str(emp['working_days'])),
             _metric_row(
                 'Attendance Days',
                 f"{emp['attendance_days']}/{emp['working_days']}",
