@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, or_
 from datetime import datetime, timedelta, date
 from typing import Optional, List, Set
-from app.utils.timezone import now_ist, get_date_bounds_ist
+from app.utils.timezone import now_ist, get_date_bounds_ist, today_ist
 import traceback
 import io
 import csv
@@ -780,6 +780,10 @@ async def export_performance_report(
     """
     Export comprehensive performance report in CSV or PDF format.
     Includes: performance metrics, attendance, tasks, leaves, and leave type summary.
+
+    Attendance days require both check-in and check-out. Missing checkout counts as absent.
+    The report period is capped at yesterday (IST) so in-progress today is excluded from
+    attendance and leave metrics.
     """
 
     # Role-based access: only Admin and HR can export this performance report
@@ -850,28 +854,34 @@ async def export_performance_report(
 
         period_start = start.date()
         period_end = end.date()
-        holiday_dates = {
-            h.date
-            for h in list_holidays(
-                db,
-                company_id=int(scope["company_id"]),
-                start=period_start,
-                end=period_end,
-            )
-        }
+        # Exclude today until the day is over (attendance + leave use the same cap).
+        effective_end = min(period_end, today_ist() - timedelta(days=1))
+        effective_start_dt, _ = get_date_bounds_ist(period_start)
+        _, effective_end_dt = get_date_bounds_ist(effective_end) if effective_end >= period_start else (None, None)
 
+        holiday_dates = set()
         total_working_days = 0
         company_holiday_days = 0
         weekend_holiday_days = 0
-        current_day = period_start
-        while current_day <= period_end:
-            if current_day.weekday() >= 5:
-                weekend_holiday_days += 1
-            elif current_day in holiday_dates:
-                company_holiday_days += 1
-            else:
-                total_working_days += 1
-            current_day += timedelta(days=1)
+        if effective_end >= period_start:
+            holiday_dates = {
+                h.date
+                for h in list_holidays(
+                    db,
+                    company_id=int(scope["company_id"]),
+                    start=period_start,
+                    end=effective_end,
+                )
+            }
+            current_day = period_start
+            while current_day <= effective_end:
+                if current_day.weekday() >= 5:
+                    weekend_holiday_days += 1
+                elif current_day in holiday_dates:
+                    company_holiday_days += 1
+                else:
+                    total_working_days += 1
+                current_day += timedelta(days=1)
 
         late_cutoff = datetime.strptime("09:30", "%H:%M").time()
         early_cutoff = datetime.strptime("18:00", "%H:%M").time()
@@ -880,31 +890,36 @@ async def export_performance_report(
         report_data = []
         
         for emp in employees:
-            attendance_records = db.query(Attendance).filter(
-                Attendance.user_id == emp.user_id,
-                Attendance.company_id == int(scope["company_id"]),
-                Attendance.check_in >= start,
-                Attendance.check_in <= end
-            ).all()
+            attendance_records = []
+            if effective_end_dt is not None:
+                attendance_records = db.query(Attendance).filter(
+                    Attendance.user_id == emp.user_id,
+                    Attendance.company_id == int(scope["company_id"]),
+                    Attendance.check_in >= effective_start_dt,
+                    Attendance.check_in <= effective_end_dt,
+                ).all()
 
-            working_day_records = [
+            # Present only when both check-in and check-out exist on a working day.
+            present_day_records = [
                 att for att in attendance_records
-                if att.check_in and _is_report_working_day(att.check_in.date(), holiday_dates)
+                if att.check_in
+                and att.check_out
+                and _is_report_working_day(att.check_in.date(), holiday_dates)
             ]
 
-            attendance_days = len({att.check_in.date() for att in working_day_records})
+            attendance_days = len({att.check_in.date() for att in present_day_records})
             attendance_score = (
                 round((attendance_days / total_working_days) * 100)
                 if total_working_days > 0 else 0
             )
 
             late_count = sum(
-                1 for att in working_day_records
+                1 for att in present_day_records
                 if att.check_in.time() > late_cutoff
             )
             early_departure_count = sum(
-                1 for att in working_day_records
-                if att.check_out and att.check_out.time() < early_cutoff
+                1 for att in present_day_records
+                if att.check_out.time() < early_cutoff
             )
             
             # Task data
@@ -920,13 +935,15 @@ async def export_performance_report(
             
             task_completion_rate = round((completed_tasks / total_tasks) * 100) if total_tasks > 0 else 0
             
-            # Leave data
-            leaves = db.query(Leave).filter(
-                Leave.user_id == emp.user_id,
-                Leave.company_id == int(scope["company_id"]),
-                Leave.start_date >= start,
-                Leave.end_date <= end
-            ).all()
+            # Leave data (same effective period as attendance — today excluded until day is over)
+            leaves = []
+            if effective_end_dt is not None:
+                leaves = db.query(Leave).filter(
+                    Leave.user_id == emp.user_id,
+                    Leave.company_id == int(scope["company_id"]),
+                    Leave.start_date >= effective_start_dt,
+                    Leave.end_date <= effective_end_dt,
+                ).all()
             
             total_leaves = len(leaves)
             approved_leaves = sum(1 for l in leaves if l.status == 'approved')
@@ -982,11 +999,16 @@ async def export_performance_report(
                 'performance_score': performance_score,
             })
         
-        # Generate export based on format
+        # Report period in exports reflects the capped (completed days only) window.
+        export_end_date = (
+            effective_end.isoformat()
+            if effective_end >= period_start
+            else (period_start - timedelta(days=1)).isoformat()
+        )
         if format.lower() == 'csv':
-            return generate_csv_export(report_data, start_date, end_date, employee_id)
+            return generate_csv_export(report_data, start_date, export_end_date, employee_id)
         elif format.lower() == 'pdf':
-            return generate_pdf_export(report_data, start_date, end_date, employee_id)
+            return generate_pdf_export(report_data, start_date, export_end_date, employee_id)
         else:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
@@ -1156,7 +1178,7 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
     # Period-wide calendar length; working days come from per-employee holiday-aware counts.
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-    total_days = (end_dt - start_dt).days + 1
+    total_days = max(0, (end_dt - start_dt).days + 1)
     
     # Employee performance summary
     for emp in data:
