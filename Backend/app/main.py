@@ -298,43 +298,24 @@ app.add_middleware(
 )
 
 
-# Routers
-app.include_router(user_routes.router)
-app.include_router(attendance_routes.router)
-app.include_router(leave_routes.router)
-app.include_router(leave_calendar_routes.router)
-app.include_router(task_routes.router)
-app.include_router(task_comment_routes.router)
+# -------------------------------------------------------------------
+# Platform routers (no company_slug) — auth, companies, super-admin, etc.
+# -------------------------------------------------------------------
 app.include_router(auth_routes.router)
-app.include_router(dashboard_routes.router)
-app.include_router(hiring_routes.router)
-app.include_router(interview_routes.router)
-app.include_router(shift_routes.router)
-app.include_router(department_routes.router)
-app.include_router(report_routes.router)
 app.include_router(super_admin_routes.router)
 app.include_router(subscription_routes.router)
 app.include_router(company_routes.router)
 app.include_router(company_salary_structure_routes.router)
 app.include_router(company_branch_routes.router)
 app.include_router(branch_admin_assignment_routes.router)
-app.include_router(chat_routes.router)
-app.include_router(wfh_routes.router)
-app.include_router(salary_routes.router)  # Salary slip and increment letter routes
-app.include_router(interview_feedback_routes.router)
-app.include_router(project_routes.router)
-app.include_router(meeting_routes.router)
-app.include_router(project_meeting_routes.router)
 
 # -------------------------------------------------------------------
-# Tenant routing (path-based): /{company_slug}/<tenant-endpoint>
+# Tenant routing only: /{company_slug}/<tenant-endpoint>
 # -------------------------------------------------------------------
-# This keeps your existing root endpoints working, while also exposing
-# a tenant-aware URL structure for Swagger/testing + frontend calls.
+# All company-scoped APIs are reachable only via company_slug.
+# get_tenant_scope() resolves slug -> company_id and checks access.
 tenant_router = APIRouter(
     prefix="/{company_slug}",
-    # Validate that the authenticated user can access this company.
-    # get_tenant_scope() resolves slug -> company_id automatically.
     dependencies=[Depends(get_tenant_scope)],
 )
 
@@ -352,7 +333,7 @@ tenant_router.include_router(department_routes.router)
 tenant_router.include_router(report_routes.router)
 tenant_router.include_router(chat_routes.router)
 tenant_router.include_router(wfh_routes.router)
-tenant_router.include_router(salary_routes.router)  # Salary slip & increment endpoints
+tenant_router.include_router(salary_routes.router)
 tenant_router.include_router(interview_feedback_routes.router)
 tenant_router.include_router(project_routes.router)
 tenant_router.include_router(meeting_routes.router)
