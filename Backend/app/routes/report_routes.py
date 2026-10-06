@@ -6,6 +6,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, or_
 from datetime import datetime, timedelta, date
+from app.utils.timezone import now_ist
+from typing import Optional
 from typing import Optional, List, Set
 from app.utils.timezone import now_ist, get_date_bounds_ist
 import traceback
@@ -1367,6 +1369,477 @@ def generate_pdf_export(data: List[dict], start_date: str, end_date: str, employ
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+@router.get("/export-previous-month")
+async def export_previous_month_performance_report(
+    format: str = Query(
+        "pdf",
+        description="Export format: csv or pdf"
+    ),
+    employee_id: Optional[str] = Query(
+        None,
+        description="Specific employee ID like EMP011. Leave blank for all employees."
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    """
+    Export previous month's performance report.
+
+    Available from 5th day of current month.
+
+    HR/Admin:
+        - No employee_id -> all eligible employees
+        - employee_id -> specific employee
+
+    Employee:
+        - Only own report is allowed
+    """
+
+    try:
+        # --------------------------------------------------
+        # 1. Report available from 5th day
+        # --------------------------------------------------
+        today = now_ist().date()
+
+        if today.day < 5:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Previous month performance report "
+                    "will be available from the 5th day "
+                    "of the current month."
+                ),
+            )
+
+        # --------------------------------------------------
+        # 2. Calculate previous month
+        # --------------------------------------------------
+        if today.month == 1:
+            report_month = 12
+            report_year = today.year - 1
+        else:
+            report_month = today.month - 1
+            report_year = today.year
+
+        start = datetime(report_year, report_month, 1)
+
+        current_month_start = datetime(
+            today.year,
+            today.month,
+            1
+        )
+
+        end = current_month_start - timedelta(seconds=1)
+
+        start_date_str = start.strftime("%Y-%m-%d")
+        end_date_str = end.strftime("%Y-%m-%d")
+
+        # --------------------------------------------------
+        # 3. Validate format
+        # --------------------------------------------------
+        if format.lower() not in ("pdf", "csv"):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid format. Use 'csv' or 'pdf'"
+            )
+
+        # --------------------------------------------------
+        # 4. Base employee query
+        # --------------------------------------------------
+        query = db.query(User).filter(
+            User.is_active.is_(True),
+            *_user_scope_filters(scope),
+
+            # Employee must have joined before/during report
+            or_(
+                User.joining_date.is_(None),
+                User.joining_date <= end.date()
+            ),
+
+            # Employee must not have resigned before report
+            or_(
+                User.resignation_date.is_(None),
+                User.resignation_date >= start.date()
+            ),
+        )
+
+        # --------------------------------------------------
+        # 5. HR / ADMIN
+        # --------------------------------------------------
+        if current_user.role in (
+            RoleEnum.ADMIN,
+            RoleEnum.HR
+        ):
+
+            # Specific employee requested
+            if employee_id:
+                query = query.filter(
+                    User.employee_id == employee_id
+                )
+
+                # HR/Admin should not export Admin/HR/self
+                employees = [
+                    emp for emp in query.all()
+                    if getattr(emp, "user_id", None)
+                    != current_user.user_id
+                    and (
+                        current_user.role == RoleEnum.ADMIN
+                        and getattr(emp, "role", None)
+                        != RoleEnum.ADMIN
+                        or
+                        current_user.role == RoleEnum.HR
+                        and getattr(emp, "role", None)
+                        not in (
+                            RoleEnum.ADMIN,
+                            RoleEnum.HR
+                        )
+                    )
+                ]
+
+            # All employees
+            else:
+                employees_raw = query.all()
+
+                if current_user.role == RoleEnum.ADMIN:
+                    employees = [
+                        emp for emp in employees_raw
+                        if getattr(emp, "user_id", None)
+                        != current_user.user_id
+                        and getattr(emp, "role", None)
+                        != RoleEnum.ADMIN
+                    ]
+
+                else:
+                    employees = [
+                        emp for emp in employees_raw
+                        if getattr(emp, "user_id", None)
+                        != current_user.user_id
+                        and getattr(emp, "role", None)
+                        not in (
+                            RoleEnum.ADMIN,
+                            RoleEnum.HR
+                        )
+                    ]
+
+        # --------------------------------------------------
+        # 6. NORMAL EMPLOYEE
+        # --------------------------------------------------
+        else:
+
+            # Employee cannot access another employee's report
+            if employee_id and employee_id != current_user.employee_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="You can access only your own performance report."
+                )
+
+            # Always use logged-in employee
+            employees = query.filter(
+                User.user_id == current_user.user_id
+            ).all()
+
+        # --------------------------------------------------
+        # 7. Employee not found
+        # --------------------------------------------------
+        if not employees:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No eligible employees found for previous month report."
+            )
+
+        # --------------------------------------------------
+        # 8. Holiday calculation
+        # --------------------------------------------------
+        period_start = start.date()
+        period_end = end.date()
+
+        holiday_dates = {
+            h.date
+            for h in list_holidays(
+                db,
+                company_id=int(scope["company_id"]),
+                start=period_start,
+                end=period_end,
+            )
+        }
+
+        total_working_days = 0
+        company_holiday_days = 0
+        weekend_holiday_days = 0
+
+        current_day = period_start
+
+        while current_day <= period_end:
+
+            if current_day.weekday() >= 5:
+                weekend_holiday_days += 1
+
+            elif current_day in holiday_dates:
+                company_holiday_days += 1
+
+            else:
+                total_working_days += 1
+
+            current_day += timedelta(days=1)
+
+        late_cutoff = datetime.strptime(
+            "09:30",
+            "%H:%M"
+        ).time()
+
+        early_cutoff = datetime.strptime(
+            "18:00",
+            "%H:%M"
+        ).time()
+
+        # --------------------------------------------------
+        # 9. Generate report data
+        # --------------------------------------------------
+        report_data = []
+
+        for emp in employees:
+
+            # ---------------- Attendance ----------------
+            attendance_records = db.query(Attendance).filter(
+                Attendance.user_id == emp.user_id,
+                Attendance.company_id == int(
+                    scope["company_id"]
+                ),
+                Attendance.check_in >= start,
+                Attendance.check_in <= end
+            ).all()
+
+            working_day_records = [
+                att
+                for att in attendance_records
+                if att.check_in
+                and _is_report_working_day(
+                    att.check_in.date(),
+                    holiday_dates
+                )
+            ]
+
+            attendance_days = len({
+                att.check_in.date()
+                for att in working_day_records
+            })
+
+            attendance_score = (
+                round(
+                    (attendance_days / total_working_days) * 100
+                )
+                if total_working_days > 0
+                else 0
+            )
+
+            late_count = sum(
+                1
+                for att in working_day_records
+                if att.check_in.time() > late_cutoff
+            )
+
+            early_departure_count = sum(
+                1
+                for att in working_day_records
+                if att.check_out
+                and att.check_out.time() < early_cutoff
+            )
+
+            # ---------------- Tasks ----------------
+            tasks = db.query(Task).filter(
+                Task.assigned_to == emp.user_id,
+                Task.company_id == int(
+                    scope["company_id"]
+                ),
+            ).all()
+
+            total_tasks = len(tasks)
+
+            pending_tasks = sum(
+                1 for t in tasks
+                if t.status == TaskStatus.PENDING.value
+            )
+
+            in_progress_tasks = sum(
+                1 for t in tasks
+                if t.status == TaskStatus.IN_PROGRESS.value
+            )
+
+            completed_tasks = sum(
+                1 for t in tasks
+                if t.status == TaskStatus.COMPLETED.value
+            )
+
+            task_completion_rate = (
+                round(
+                    (completed_tasks / total_tasks) * 100
+                )
+                if total_tasks > 0
+                else 0
+            )
+
+            # ---------------- Leaves ----------------
+            leaves = db.query(Leave).filter(
+                Leave.user_id == emp.user_id,
+                Leave.company_id == int(
+                    scope["company_id"]
+                ),
+                Leave.start_date >= start,
+                Leave.end_date <= end
+            ).all()
+
+            total_leaves = len(leaves)
+
+            approved_leaves = sum(
+                1 for l in leaves
+                if l.status == "approved"
+            )
+
+            pending_leaves = sum(
+                1 for l in leaves
+                if l.status == "pending"
+            )
+
+            rejected_leaves = sum(
+                1 for l in leaves
+                if l.status == "rejected"
+            )
+
+            leave_types = {}
+
+            for leave in leaves:
+
+                leave_type = (
+                    leave.leave_type
+                    or "unspecified"
+                )
+
+                leave_types[leave_type] = (
+                    leave_types.get(
+                        leave_type,
+                        0
+                    ) + 1
+                )
+
+            total_leave_days = sum(
+                (
+                    l.end_date - l.start_date
+                ).days + 1
+                for l in leaves
+                if l.status == "approved"
+            )
+
+            # ---------------- Performance ----------------
+            performance_score = round(
+                (
+                    attendance_score
+                    + task_completion_rate
+                ) / 2
+            )
+
+            report_data.append({
+                "employee_id": (
+                    emp.employee_id
+                    or str(emp.user_id)
+                ),
+                "name": emp.name,
+                "email": emp.email,
+                "department": (
+                    emp.department or "N/A"
+                ),
+                "designation": (
+                    emp.designation or "N/A"
+                ),
+                "role": (
+                    emp.role.value
+                    if hasattr(emp.role, "value")
+                    else str(emp.role)
+                ),
+
+                "working_days": total_working_days,
+                "company_holiday_days":
+                    company_holiday_days,
+                "weekend_holiday_days":
+                    weekend_holiday_days,
+                "attendance_days":
+                    attendance_days,
+                "attendance_score":
+                    attendance_score,
+                "late_arrivals":
+                    late_count,
+                "early_departures":
+                    early_departure_count,
+                "absent_days":
+                    total_working_days
+                    - attendance_days,
+
+                "total_tasks": total_tasks,
+                "completed_tasks":
+                    completed_tasks,
+                "pending_tasks":
+                    pending_tasks,
+                "in_progress_tasks":
+                    in_progress_tasks,
+                "task_completion_rate":
+                    task_completion_rate,
+
+                "total_leaves":
+                    total_leaves,
+                "approved_leaves":
+                    approved_leaves,
+                "pending_leaves":
+                    pending_leaves,
+                "rejected_leaves":
+                    rejected_leaves,
+                "total_leave_days":
+                    total_leave_days,
+                "leave_types":
+                    leave_types,
+
+                "performance_score":
+                    performance_score,
+            })
+
+        # --------------------------------------------------
+        # 10. Generate PDF / CSV
+        # --------------------------------------------------
+        if format.lower() == "pdf":
+
+            return generate_pdf_export(
+                report_data,
+                start_date_str,
+                end_date_str,
+                employee_id,
+            )
+
+        return generate_csv_export(
+            report_data,
+            start_date_str,
+            end_date_str,
+            employee_id,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print(
+            f"Previous month export error: {str(e)}"
+        )
+
+        print(
+            traceback.format_exc()
+        )
+
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Error generating previous month "
+                f"performance report: {str(e)}"
+            )
+        )
 
 @router.get("/task-management")
 async def export_task_management_report(
