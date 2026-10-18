@@ -499,7 +499,7 @@ def delete_meeting(
         notification_type="Meeting Cancelled",
         title="Meeting Cancelled",
         message=f"Meeting '{meeting.title}' was cancelled.",
-        store_meeting_id=None,
+        store_meeting_id=meeting.id,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )

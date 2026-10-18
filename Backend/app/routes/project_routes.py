@@ -2,7 +2,6 @@ from typing import List, Optional
 from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -24,6 +23,7 @@ from app.schemas.project_member_schema import ProjectMemberAdd, ProjectMemberOut
 from app.utils.timezone import now_ist
 from app.utils.department_utils import department_tokens_lower
 from app.utils.team_lead_scope import team_lead_can_add_employee_to_project
+from app.utils.tenant_scope import user_in_tenant_scope_clauses
 
 router = APIRouter(
     prefix="/projects",
@@ -32,11 +32,12 @@ router = APIRouter(
 
 
 def _user_scope_filters(scope: dict, user_alias=User) -> list:
-    clauses = [user_alias.company_id == scope["company_id"]]
-    branch_id = scope.get("branch_id")
-    if branch_id is not None:
-        clauses.append(user_alias.branch_id == branch_id)
-    return clauses
+    return user_in_tenant_scope_clauses(
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+        user_alias=user_alias,
+        include_assigned_admins=True,
+    )
 
 
 def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
@@ -73,6 +74,10 @@ def _project_in_scope_clause(scope: dict):
     if branch_id is not None:
         clauses.append(Project.branch_id == branch_id)
     return clauses
+
+
+def _project_notification_company_clause(scope: dict):
+    return [Project.company_id == int(scope["company_id"])]
 
 
 def _validate_project_dates(start_date: Optional[date], end_date: Optional[date]) -> None:
@@ -288,13 +293,10 @@ def _notify_project_members(
 def _list_project_notifications(db: Session, user_id: int, *, scope: dict) -> list[ProjectNotification]:
     return (
         db.query(ProjectNotification)
-        .outerjoin(Project, Project.project_id == ProjectNotification.project_id)
+        .join(Project, Project.project_id == ProjectNotification.project_id)
         .filter(
             ProjectNotification.user_id == user_id,
-            or_(
-                ProjectNotification.project_id.is_(None),
-                and_(Project.project_id.isnot(None), *_project_in_scope_clause(scope)),
-            ),
+            *_project_notification_company_clause(scope),
         )
         .order_by(ProjectNotification.created_at.desc())
         .all()
@@ -310,14 +312,11 @@ def _mark_project_notification_as_read(
 ) -> ProjectNotification | None:
     notification = (
         db.query(ProjectNotification)
-        .outerjoin(Project, Project.project_id == ProjectNotification.project_id)
+        .join(Project, Project.project_id == ProjectNotification.project_id)
         .filter(
             ProjectNotification.notification_id == notification_id,
             ProjectNotification.user_id == user_id,
-            or_(
-                ProjectNotification.project_id.is_(None),
-                and_(Project.project_id.isnot(None), *_project_in_scope_clause(scope)),
-            ),
+            *_project_notification_company_clause(scope),
         )
         .first()
     )
@@ -790,7 +789,7 @@ def delete_project(
             scope=scope,
             exclude_user_id=current_user.user_id,
         ),
-        project_id=None,
+        project_id=project.project_id,
         notification_type="Project Deleted",
         title="Project Deleted",
         message=f"{current_user.name} deleted project '{project.name}'.",
