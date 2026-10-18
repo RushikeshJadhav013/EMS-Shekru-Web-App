@@ -9,13 +9,11 @@ import uuid
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import and_, or_, exists, select
+from sqlalchemy import and_, or_
 
 from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.db.database import get_db, SessionLocal
 from app.db.models.user import User
-from app.db.models.company_admin_assignment import CompanyAdminAssignment
-from app.db.models.branch_admin_assignment import BranchAdminAssignment
 from app.db.models.chat import ChatSession, ChatMember, ChatMessage
 from app.db.models.notification import ChatNotification
 from app.schemas.chat_schema import (
@@ -49,6 +47,7 @@ from app.utils.team_lead_scope import (
     team_lead_can_chat_with_user,
 )
 from app.utils.timezone import now_ist
+from app.utils.tenant_scope import user_in_tenant_scope_clauses
 from zoneinfo import ZoneInfo
 
 router = APIRouter(prefix="/chats", tags=["Chat"])
@@ -98,34 +97,12 @@ def _user_scope_filters(scope: dict, user_alias=User) -> list:
     Tenant scope for chat: users on company/branch rows, plus admins linked via
     company_admin_assignments / branch_admin_assignments (often company_id NULL).
     """
-    company_id = int(scope["company_id"])
-    branch_id = scope.get("branch_id")
-
-    direct_parts = [user_alias.company_id == company_id]
-    if branch_id is not None:
-        direct_parts.append(user_alias.branch_id == int(branch_id))
-    direct_clause = and_(*direct_parts)
-
-    company_admin_clause = exists(
-        select(CompanyAdminAssignment.assignment_id).where(
-            CompanyAdminAssignment.admin_user_id == user_alias.user_id,
-            CompanyAdminAssignment.company_id == company_id,
-            CompanyAdminAssignment.is_active.is_(True),
-        )
+    return user_in_tenant_scope_clauses(
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+        user_alias=user_alias,
+        include_assigned_admins=True,
     )
-
-    scope_clauses = [direct_clause, company_admin_clause]
-    if branch_id is not None:
-        branch_admin_clause = exists(
-            select(BranchAdminAssignment.assignment_id).where(
-                BranchAdminAssignment.admin_user_id == user_alias.user_id,
-                BranchAdminAssignment.branch_id == int(branch_id),
-                BranchAdminAssignment.is_active.is_(True),
-            )
-        )
-        scope_clauses.append(branch_admin_clause)
-
-    return [or_(*scope_clauses)]
 
 
 def _get_user_in_scope(db: Session, *, user_id: int, scope: dict) -> User | None:
@@ -1130,10 +1107,13 @@ def mark_chat_notification_read(
     _assert_current_in_scope(db, current=current, scope=scope)
     notification = (
         db.query(ChatNotification)
+        .join(ChatSession, ChatSession.chat_id == ChatNotification.chat_id)
         .filter(
             ChatNotification.notification_id == notification_id,
             ChatNotification.user_id == current.user_id,
+            ChatSession.is_deleted == False,  # noqa: E712
         )
+        .filter(*_chat_session_scope_filters(scope))
         .first()
     )
     if not notification:

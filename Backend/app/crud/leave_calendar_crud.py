@@ -4,10 +4,10 @@ from typing import Optional, List
 
 from app.db.models.leave_calendar import CompanyHoliday, DeptWeekOffRule
 from app.db.models.notification import CompanyHolidayNotification
-from app.db.models.notification import CompanyHolidayNotification
 from app.db.models.leave_config import LeaveAllocationConfig
 from app.db.models.leave import Leave
 from app.db.models.user import User
+from app.utils.tenant_scope import assigned_company_admins
 from sqlalchemy import and_, func
 from datetime import timedelta
 
@@ -178,6 +178,11 @@ def create_holiday_notifications(
     if branch_id is not None:
         users_q = users_q.filter(User.branch_id == branch_id)
     users = users_q.all()
+    seen = {user.user_id for user in users}
+    for admin in assigned_company_admins(db, company_id):
+        if admin.user_id not in seen:
+            seen.add(admin.user_id)
+            users.append(admin)
     if not users:
         return 0
 
@@ -202,7 +207,7 @@ def create_holiday_notifications(
             continue
         notification = CompanyHolidayNotification(
             user_id=user.user_id,
-            holiday_id=holiday.id if action_key == "created" else None,
+            holiday_id=holiday.id,
             notification_type=notification_type,
             title=title,
             message=message,
@@ -218,28 +223,38 @@ def create_holiday_notifications(
     return len(notifications)
 
 
-def list_holiday_notifications(db: Session, user_id: int) -> list[CompanyHolidayNotification]:
-    return (
-        db.query(CompanyHolidayNotification)
-        .filter(CompanyHolidayNotification.user_id == user_id)
-        .order_by(CompanyHolidayNotification.created_at.desc())
-        .all()
+def list_holiday_notifications(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+) -> list[CompanyHolidayNotification]:
+    q = db.query(CompanyHolidayNotification).filter(
+        CompanyHolidayNotification.user_id == user_id
     )
+    if company_id is not None:
+        q = q.join(
+            CompanyHoliday, CompanyHoliday.id == CompanyHolidayNotification.holiday_id
+        ).filter(CompanyHoliday.company_id == int(company_id))
+    return q.order_by(CompanyHolidayNotification.created_at.desc()).all()
 
 
 def mark_holiday_notification_as_read(
     db: Session,
     notification_id: int,
     user_id: int,
+    *,
+    company_id: int | None = None,
 ) -> Optional[CompanyHolidayNotification]:
-    notification = (
-        db.query(CompanyHolidayNotification)
-        .filter(
-            CompanyHolidayNotification.notification_id == notification_id,
-            CompanyHolidayNotification.user_id == user_id,
-        )
-        .first()
+    q = db.query(CompanyHolidayNotification).filter(
+        CompanyHolidayNotification.notification_id == notification_id,
+        CompanyHolidayNotification.user_id == user_id,
     )
+    if company_id is not None:
+        q = q.join(
+            CompanyHoliday, CompanyHoliday.id == CompanyHolidayNotification.holiday_id
+        ).filter(CompanyHoliday.company_id == int(company_id))
+    notification = q.first()
     if not notification:
         return None
 
