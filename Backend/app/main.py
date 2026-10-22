@@ -34,11 +34,21 @@ from app.db.models import (  # noqa: F401
     company,
     company_branch,
     branch_admin_assignment,
+    expense,
+    vendor,
+    expense_document,
 )
+
+from app.db.models.vendor import Vendor
+from app.db.models.expense_document import ExpenseDocument
+
 from app.routes import (
     user_routes,
     attendance_routes,
     leave_routes,
+    expense_routes,
+    vendor_routes,
+    expense_document_routes,
     leave_calendar_routes,
     task_routes,
     task_comment_routes,
@@ -322,6 +332,9 @@ tenant_router = APIRouter(
 tenant_router.include_router(user_routes.router)
 tenant_router.include_router(attendance_routes.router)
 tenant_router.include_router(leave_routes.router)
+tenant_router.include_router(expense_routes.router)
+tenant_router.include_router(vendor_routes.router)
+tenant_router.include_router(expense_document_routes.router)
 tenant_router.include_router(leave_calendar_routes.router)
 tenant_router.include_router(task_routes.router)
 tenant_router.include_router(task_comment_routes.router)
