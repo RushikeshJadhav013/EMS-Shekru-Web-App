@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import Optional, List, Literal, Tuple
+from typing import Optional, List, Literal, Tuple, Union
 from datetime import datetime
 from calendar import monthrange
 import logging
@@ -15,13 +15,13 @@ import traceback
 from app.db.database import get_db
 from app.db.models.user import User
 from app.db.models.department import Department
-from app.db.models.salary import EmployeeSalary, SalaryIncrement
+from app.db.models.salary import EmployeeSalary, EmployeeSalaryHistory, SalaryIncrement
 from app.dependencies import get_current_user, get_tenant_scope, require_roles
 from app.enums import RoleEnum
 from app.schemas.salary_schema import (
     EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryManualFullUpdate, EmployeeSalaryOut,
     EmployeeSalaryCTCCreate, EmployeeSalaryCTCUpdate, SalaryCalculationPreview,
-    SalaryIncrementCreate, SalaryIncrementOut,
+    SalaryIncrementCreate, SalaryIncrementOut, SalaryHistoryOut, SalarySlipHistoryOut,
     SalarySlipRequest, IncrementLetterRequest, SalaryAnnexureRequest,
     EmailResponse, VariablePayType, SalaryNotificationOut,
     EmployeeSalaryStatusUpdate,
@@ -30,10 +30,10 @@ from app.crud.salary_crud import (
     create_employee_salary, create_employee_salary_from_ctc, get_employee_salary, 
     update_employee_salary, update_employee_salary_manual_full, update_employee_salary_from_ctc, delete_employee_salary, 
     list_employee_salaries, preview_salary_calculation,
-    create_salary_increment, get_salary_increment, get_user_increments,
+    create_salary_increment, get_salary_increment, get_user_increments, get_salary_history,
     get_latest_increment, update_increment_letter_sent,
     create_salary_slip_history, get_salary_slip_history, update_slip_email_sent,
-    get_user_salary_slip_history,
+    get_user_salary_slip_history, get_salary_structure_for_period,
     create_salary_notification, list_salary_notifications,
     mark_salary_notification_as_read, get_unread_salary_notifications_count,
     _has_pf_account,
@@ -178,16 +178,64 @@ def _reject_future_salary_slip_period(month: int, year: int) -> None:
 # Helper to attach variable pay info from the current salary record
 def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncrementOut:
     """
-    Build SalaryIncrementOut and map variable_pay_value from the employee's current salary.
-    Note: variable_pay_type is left as None because it is not stored per-increment.
+    Build SalaryIncrementOut and map variable_pay_value from the employee's current salary,
+    along with approver name/role, effective month/year, and previous vs new component breakdowns.
     """
     salary = get_employee_salary(db, increment.user_id)
     variable_pay_value = getattr(salary, "variable_pay", None) if salary is not None else None
 
+    approved_by_name = increment.approved_by_name
+    approved_by_role = increment.approved_by_role
+    if not approved_by_name and increment.approved_by:
+        approver = db.query(User).filter(User.user_id == increment.approved_by).first()
+        if approver:
+            approved_by_name = approver.name
+            approved_by_role = approver.role.value if hasattr(approver.role, "value") else str(approver.role)
+
+    previous_components = None
+    if increment.salary_history:
+        sh = increment.salary_history
+        previous_components = {
+            "basic_annual": sh.basic_annual,
+            "hra_annual": sh.hra_annual,
+            "special_allowance_annual": sh.special_allowance_annual,
+            "medical_allowance_annual": sh.medical_allowance_annual,
+            "conveyance_annual": sh.conveyance_annual,
+            "other_allowance_annual": sh.other_allowance_annual,
+            "professional_tax_annual": sh.professional_tax_annual,
+            "pf_annual": sh.pf_annual,
+            "package_ctc_annual": sh.package_ctc_annual,
+            "monthly_gross": sh.monthly_gross,
+            "monthly_basic": round((sh.basic_annual or 0) / 12, 2),
+            "monthly_hra": round((sh.hra_annual or 0) / 12, 2),
+            "monthly_in_hand": sh.monthly_in_hand,
+        }
+
+    new_components = None
+    if salary:
+        new_components = {
+            "basic_annual": salary.basic_annual,
+            "hra_annual": salary.hra_annual,
+            "special_allowance_annual": salary.special_allowance_annual,
+            "medical_allowance_annual": salary.medical_allowance_annual,
+            "conveyance_annual": salary.conveyance_annual,
+            "other_allowance_annual": salary.other_allowance_annual,
+            "professional_tax_annual": salary.professional_tax_annual,
+            "pf_annual": salary.pf_annual,
+            "package_ctc_annual": salary.package_ctc_annual,
+            "monthly_gross": salary.monthly_gross,
+            "monthly_basic": round((salary.basic_annual or 0) / 12, 2),
+            "monthly_hra": round((salary.hra_annual or 0) / 12, 2),
+            "monthly_in_hand": salary.monthly_in_hand,
+        }
+
+    eff_month = increment.effective_month or (increment.effective_date.month if increment.effective_date else None)
+    eff_year = increment.effective_year or (increment.effective_date.year if increment.effective_date else None)
+
     return SalaryIncrementOut(
         id=increment.id,
         user_id=increment.user_id,
-        # variable_pay_type is intentionally omitted from response mapping
+        salary_history_id=increment.salary_history_id,
         variable_pay_value=variable_pay_value,
         previous_salary=float(increment.previous_salary),
         increment_amount=float(increment.increment_amount),
@@ -197,8 +245,14 @@ def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncremen
         new_ctc_annual=increment.new_ctc_annual,
         increment_percentage=increment.increment_percentage,
         effective_date=increment.effective_date,
+        effective_month=eff_month,
+        effective_year=eff_year,
         reason=increment.reason,
         approved_by=increment.approved_by,
+        approved_by_name=approved_by_name,
+        approved_by_role=approved_by_role,
+        previous_components=previous_components,
+        new_components=new_components,
         letter_sent=increment.letter_sent,
         letter_sent_at=increment.letter_sent_at,
         created_at=increment.created_at,
@@ -312,7 +366,15 @@ def update_salary_from_ctc(
     _enforce_hr_non_privileged_target(current_user, user, "update salary")
 
     try:
-        salary = update_employee_salary_from_ctc(db, user_id, ctc_update)
+        role_str = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+        salary = update_employee_salary_from_ctc(
+            db,
+            user_id,
+            ctc_update,
+            changed_by=current_user.user_id,
+            changed_by_name=current_user.name,
+            changed_by_role=role_str,
+        )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -681,7 +743,14 @@ def create_increment(
     _enforce_hr_non_privileged_target(current_user, user, "create increment")
     
     try:
-        increment = create_salary_increment(db, increment_data, current_user.user_id)
+        role_str = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+        increment = create_salary_increment(
+            db,
+            increment_data,
+            current_user.user_id,
+            approved_by_name=current_user.name,
+            approved_by_role=role_str,
+        )
         
         # Create notification for the employee with CTC details
         create_salary_notification(
@@ -786,6 +855,28 @@ def get_user_increment_history(
         branch_id=scope.get("branch_id"),
     )
     return [_increment_to_out(inc, db) for inc in increments]
+
+
+@router.get("/employee/{user_id}/salary-history", response_model=List[SalaryHistoryOut])
+def get_employee_salary_history(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    """Get full historical salary-structure snapshots for an employee."""
+    _enforce_admin_block_by_user_id(db, current_user, user_id, "view salary history")
+    _assert_current_in_scope(db, current_user, scope)
+    target_user = _get_user_in_scope(db, user_id, scope)
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id {user_id} not found")
+    if current_user.user_id != user_id and current_user.role not in [RoleEnum.ADMIN, RoleEnum.HR]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only view your own salary history")
+    if current_user.role == RoleEnum.HR:
+        _enforce_hr_non_privileged_target(current_user, target_user, "view salary history")
+    return get_salary_history(
+        db, user_id, company_id=scope["company_id"], branch_id=scope.get("branch_id")
+    )
 
 
 # ==================== PDF GENERATION ENDPOINTS ====================
@@ -1004,7 +1095,7 @@ def _resolve_slip_custom_deductions(
 
 
 def _compute_slip_matched_totals(
-    salary: EmployeeSalary,
+    salary: Union[EmployeeSalary, EmployeeSalaryHistory],
     month: int,
     custom_deductions_total: float,
 ) -> Tuple[float, float, float]:
@@ -1095,17 +1186,27 @@ def download_salary_slip(
         # HR restriction: HR can only download PDFs for non-Admin and non-HR users.
         # HR is allowed to download their own (target == current_user) slip.
         _enforce_hr_non_privileged_target(current_user, user, "view salary slip")
+
+        # Validation: employee must have already joined prior to or during the requested period
+        if user.joining_date:
+            if (year, month) < (user.joining_date.year, user.joining_date.month):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Salary slip cannot be generated for a period prior to employee joining date ({user.joining_date.strftime('%d-%m-%Y')})."
+                )
         
-        salary = get_employee_salary(
+        salary = get_salary_structure_for_period(
             db,
             user_id,
+            month,
+            year,
             company_id=scope["company_id"],
             branch_id=scope.get("branch_id"),
         )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salary record not found for this employee"
+                detail=f"Salary record not found for this employee for {_get_month_name(month)} {year}"
             )
 
         monthly_gross = round(float(salary.total_earnings_annual or 0) / 12, 2)
@@ -1150,6 +1251,17 @@ def download_salary_slip(
                 or existing_history is None
             )
             if should_persist:
+                basic_m = round((salary.basic_annual or 0) / 12, 2)
+                hra_m = round((salary.hra_annual or 0) / 12, 2)
+                special_m = round((salary.special_allowance_annual or 0) / 12, 2)
+                conveyance_m = round((salary.conveyance_annual or 0) / 12, 2)
+                medical_m = round((salary.medical_allowance_annual or 0) / 12, 2)
+                other_m = round((salary.other_allowance_annual or 0) / 12, 2)
+                pt_m = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
+                pf_m = round((salary.pf_annual or 0) / 12, 2) if _has_pf_account(getattr(salary, "pf_no", None)) else 0.0
+                var_pay_m = round((salary.variable_pay or 0) / 12, 2) if getattr(salary, "variable_pay", None) else 0.0
+                history_id = salary.id if isinstance(salary, EmployeeSalaryHistory) else None
+
                 create_salary_slip_history(
                     db,
                     user_id,
@@ -1159,6 +1271,16 @@ def download_salary_slip(
                     employee_deductions,
                     net,
                     current_user.user_id,
+                    basic=basic_m,
+                    hra=hra_m,
+                    special_allowance=special_m,
+                    conveyance=conveyance_m,
+                    medical_allowance=medical_m,
+                    other_allowance=other_m,
+                    professional_tax=pt_m,
+                    pf=pf_m,
+                    variable_pay=var_pay_m,
+                    salary_history_id=history_id,
                     **breakdown_kwargs,
                 )
 
@@ -1234,6 +1356,14 @@ def send_salary_slip(
         # HR restriction: HR cannot send salary slips for Admin/HR targets,
         # including themselves (target == current_user).
         _enforce_hr_non_privileged_target(current_user, user, "send salary slip")
+
+        # Validation: employee must have already joined prior to or during the requested period
+        if user.joining_date:
+            if (year, month) < (user.joining_date.year, user.joining_date.month):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Salary slip cannot be generated for a period prior to employee joining date ({user.joining_date.strftime('%d-%m-%Y')})."
+                )
         
         if not user.email:
             raise HTTPException(
@@ -1248,16 +1378,18 @@ def send_salary_slip(
                 detail="Employee email is not verified. Employee must login via OTP at least once before receiving salary documents."
             )
         
-        salary = get_employee_salary(
+        salary = get_salary_structure_for_period(
             db,
             user_id,
+            month,
+            year,
             company_id=scope["company_id"],
             branch_id=scope.get("branch_id"),
         )
         if not salary:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salary record not found for this employee"
+                detail=f"Salary record not found for this employee for {_get_month_name(month)} {year}"
             )
 
         monthly_gross = round(float(salary.total_earnings_annual or 0) / 12, 2)
@@ -1311,6 +1443,17 @@ def send_salary_slip(
                 or existing_history is None
             )
             if should_persist:
+                basic_m = round((salary.basic_annual or 0) / 12, 2)
+                hra_m = round((salary.hra_annual or 0) / 12, 2)
+                special_m = round((salary.special_allowance_annual or 0) / 12, 2)
+                conveyance_m = round((salary.conveyance_annual or 0) / 12, 2)
+                medical_m = round((salary.medical_allowance_annual or 0) / 12, 2)
+                other_m = round((salary.other_allowance_annual or 0) / 12, 2)
+                pt_m = 0.0 if (salary.professional_tax_annual or 0) <= 0 else (300.0 if month == 2 else 200.0)
+                pf_m = round((salary.pf_annual or 0) / 12, 2) if _has_pf_account(getattr(salary, "pf_no", None)) else 0.0
+                var_pay_m = round((salary.variable_pay or 0) / 12, 2) if getattr(salary, "variable_pay", None) else 0.0
+                history_id = salary.id if isinstance(salary, EmployeeSalaryHistory) else None
+
                 history = create_salary_slip_history(
                     db,
                     user_id,
@@ -1320,6 +1463,16 @@ def send_salary_slip(
                     employee_deductions,
                     net_salary,
                     current_user.user_id,
+                    basic=basic_m,
+                    hra=hra_m,
+                    special_allowance=special_m,
+                    conveyance=conveyance_m,
+                    medical_allowance=medical_m,
+                    other_allowance=other_m,
+                    professional_tax=pt_m,
+                    pf=pf_m,
+                    variable_pay=var_pay_m,
+                    salary_history_id=history_id,
                     **breakdown_kwargs,
                 )
                 update_slip_email_sent(db, history.id)
@@ -2111,7 +2264,7 @@ def _salary_to_response(salary: EmployeeSalary) -> dict:
 
 def _generate_salary_slip(
     user: User,
-    salary: EmployeeSalary,
+    salary: Union[EmployeeSalary, EmployeeSalaryHistory],
     month: int,
     year: int,
     pf_no: Optional[str] = None,

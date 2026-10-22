@@ -60,6 +60,13 @@ class SalaryCalculator:
     BASIC_PERCENTAGE = 0.50
     HRA_PERCENTAGE = 0.50
 
+    @classmethod
+    def get_minimum_ctc(cls) -> float:
+        """Minimum annual CTC required so that special allowance remains >= 0."""
+        fixed_sum = cls.MEDICAL_ALLOWANCE_ANNUAL + cls.CONVEYANCE_ALLOWANCE_ANNUAL + cls.OTHER_ALLOWANCE_ANNUAL
+        factor = 1.0 - cls.BASIC_PERCENTAGE - (cls.BASIC_PERCENTAGE * cls.HRA_PERCENTAGE)
+        return round(fixed_sum / factor, 2)
+
     # ==================================================
 
     @classmethod
@@ -210,6 +217,19 @@ class SalaryCalculator:
             return round(variable_pay_value, 2)
 
         raise ValueError("Invalid variable pay type")
+
+    @classmethod
+    def get_salary_breakdown_summary(cls, annual_ctc: float) -> Dict[str, str]:
+        comps = cls.calculate_salary_components(annual_ctc)
+        return {
+            "annual_ctc": f"₹{comps['package_ctc_annual']:,.2f}",
+            "monthly_ctc": f"₹{comps['monthly_ctc']:,.2f}",
+            "basic_annual": f"₹{comps['basic_annual']:,.2f}",
+            "hra_annual": f"₹{comps['hra_annual']:,.2f}",
+            "special_allowance_annual": f"₹{comps['special_allowance_annual']:,.2f}",
+            "monthly_in_hand": f"₹{comps['monthly_in_hand']:,.2f}",
+        }
+
 
 
 # ======================================================
