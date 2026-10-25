@@ -14,7 +14,11 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_tenant_scope, require_roles
+from app.dependencies import (
+    get_current_user,
+    get_tenant_scope,
+    require_roles,
+)
 from app.enums import RoleEnum
 from app.db.models.user import User
 
@@ -70,9 +74,7 @@ def get_company_id(scope: dict) -> int:
 def upload_expense_document(
     expense_id: int = APIPath(..., ge=1),
     file: UploadFile = File(...),
-    current_user: User = Depends(
-        require_roles(RoleEnum.ADMIN)
-    ),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db),
 ):
@@ -218,6 +220,7 @@ def list_expense_documents(
     return documents
 
 
+
 # DELETE DOCUMENT FROM PENDING EXPENSE
 @router.delete(
     "/{document_id}",
@@ -226,9 +229,7 @@ def list_expense_documents(
 def remove_expense_document(
     expense_id: int = APIPath(..., ge=1),
     document_id: int = APIPath(..., ge=1),
-    current_user: User = Depends(
-        require_roles(RoleEnum.ADMIN)
-    ),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db),
 ):
@@ -246,6 +247,7 @@ def remove_expense_document(
             detail="Expense not found.",
         )
 
+    # Documents can only be deleted while expense is Pending
     if expense.status != "Pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -263,6 +265,13 @@ def remove_expense_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Expense document not found.",
+        )
+
+    # Only the user who uploaded the document can delete it
+    if document.uploaded_by != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the user who uploaded the document is authorized to delete it.",
         )
 
     file_path = FilePath(document.document_path)

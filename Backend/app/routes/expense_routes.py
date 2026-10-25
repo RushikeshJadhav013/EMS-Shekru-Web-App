@@ -14,7 +14,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_tenant_scope, require_roles
+from app.dependencies import (
+    get_current_user,
+    get_tenant_scope,
+    require_roles,
+)
 from app.enums import RoleEnum
 from app.db.models.user import User
 from app.schemas.expense_schema import (
@@ -112,9 +116,7 @@ def get_expense_categories(
 def create_expense_record(
     expense: ExpenseCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_roles(RoleEnum.ADMIN)
-    ),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
     created = create_expense(
