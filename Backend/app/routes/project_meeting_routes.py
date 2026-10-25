@@ -12,6 +12,7 @@ from app.db.models.user import User
 from app.dependencies import get_current_user, get_tenant_scope
 from app.enums import RoleEnum
 from app.utils.timezone import now_ist
+from app.utils.tenant_scope import user_in_tenant_scope_clauses
 from app.schemas.meeting_schema import (
     MeetingCreate,
     MeetingOut,
@@ -28,11 +29,12 @@ router = APIRouter(
 
 
 def _user_scope_filters(scope: dict, user_alias=User) -> list:
-    clauses = [user_alias.company_id == scope["company_id"]]
-    branch_id = scope.get("branch_id")
-    if branch_id is not None:
-        clauses.append(user_alias.branch_id == branch_id)
-    return clauses
+    return user_in_tenant_scope_clauses(
+        company_id=scope.get("company_id"),
+        branch_id=scope.get("branch_id"),
+        user_alias=user_alias,
+        include_assigned_admins=True,
+    )
 
 
 def _assert_current_in_scope(db: Session, current_user: User, scope: dict) -> None:
@@ -453,7 +455,7 @@ def delete_project_meeting(
         notification_type="Project Meeting Cancelled",
         title="Meeting Cancelled",
         message=f"Project meeting '{meeting.title}' was cancelled.",
-        store_meeting_id=None,
+        store_meeting_id=meeting.id,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )

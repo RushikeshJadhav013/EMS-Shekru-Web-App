@@ -4,7 +4,7 @@ Database operations for WFH request management.
 """
 import re
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy import and_, or_, func
 from datetime import datetime, date
 from typing import Optional, List, Tuple, Set
@@ -19,6 +19,7 @@ from app.utils.team_lead_scope import (
     get_team_lead_managed_employee_ids,
     team_lead_can_manage_employee,
 )
+from app.utils.tenant_scope import assigned_company_admins, user_in_tenant_scope
 
 
 def _resolved_company_id(company_id: int | None, user: User) -> int | None:
@@ -56,12 +57,13 @@ def _user_scope_filters(*, company_id: int | None, branch_id: int | None, user_a
 
 
 def _user_in_scope(db: Session, *, user_id: int, company_id: int | None, branch_id: int | None) -> bool:
-    if company_id is None and branch_id is None:
-        return True
-    q = db.query(User.user_id).filter(User.user_id == user_id, User.is_active.is_(True))
-    for clause in _user_scope_filters(company_id=company_id, branch_id=branch_id):
-        q = q.filter(clause)
-    return q.first() is not None
+    return user_in_tenant_scope(
+        db,
+        user_id=user_id,
+        company_id=company_id,
+        branch_id=branch_id,
+        include_assigned_admins=True,
+    )
 
 
 def create_wfh_request(
@@ -616,27 +618,30 @@ def _get_wfh_notification_recipients(
         ]
 
     if role_value == RoleEnum.MANAGER.value:
-        return (
+        hrs = (
             db.query(User)
             .filter(
-                User.role.in_([RoleEnum.HR, RoleEnum.ADMIN]),
+                User.role == RoleEnum.HR,
                 User.is_active == True,  # noqa: E712
                 User.user_id != requester.user_id,
                 *_user_scope_filters(company_id=company_id, branch_id=branch_id),
             )
             .all()
         )
+        admins = assigned_company_admins(
+            db, company_id, exclude_user_id=requester.user_id
+        )
+        seen = {user.user_id for user in hrs}
+        merged = list(hrs)
+        for admin in admins:
+            if admin.user_id not in seen:
+                seen.add(admin.user_id)
+                merged.append(admin)
+        return merged
 
     if role_value == RoleEnum.HR.value:
-        return (
-            db.query(User)
-            .filter(
-                User.role == RoleEnum.ADMIN,
-                User.is_active == True,  # noqa: E712
-                User.user_id != requester.user_id,
-                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
-            )
-            .all()
+        return assigned_company_admins(
+            db, company_id, exclude_user_id=requester.user_id
         )
 
     return []
@@ -792,7 +797,7 @@ def create_wfh_deletion_notification(
     for recipient in recipients:
         notification = WFHNotification(
             user_id=recipient.user_id,
-            wfh_id=None,
+            wfh_id=wfh_request.wfh_id,
             notification_type="WFH Withdrawal",
             title=title,
             message=message,
@@ -842,6 +847,26 @@ def _resolve_wfh_notification_requester(
     return db.query(User).filter(User.employee_id == employee_id).first()
 
 
+def _wfh_notification_in_company(
+    db: Session,
+    notification: WFHNotification,
+    *,
+    company_id: int,
+) -> bool:
+    if notification.wfh_id is None:
+        return False
+    requester = (
+        db.query(User.user_id)
+        .join(WFHRequest, WFHRequest.user_id == User.user_id)
+        .filter(
+            WFHRequest.wfh_id == notification.wfh_id,
+            User.company_id == int(company_id),
+        )
+        .first()
+    )
+    return requester is not None
+
+
 def _wfh_notification_visible_to_user(
     db: Session,
     viewer: User,
@@ -850,6 +875,9 @@ def _wfh_notification_visible_to_user(
     company_id: int,
     branch_id: Optional[int] = None,
 ) -> bool:
+    if not _wfh_notification_in_company(db, notification, company_id=company_id):
+        return False
+
     viewer_role = getattr(viewer.role, "value", str(viewer.role))
     if viewer_role != RoleEnum.TEAM_LEAD.value:
         return True
@@ -874,6 +902,23 @@ def _wfh_notification_visible_to_user(
     )
 
 
+def _wfh_notifications_base_query(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: int | None = None,
+):
+    q = db.query(WFHNotification).filter(WFHNotification.user_id == user_id)
+    if company_id is not None:
+        Requester = aliased(User)
+        q = (
+            q.join(WFHRequest, WFHRequest.wfh_id == WFHNotification.wfh_id)
+            .join(Requester, Requester.user_id == WFHRequest.user_id)
+            .filter(Requester.company_id == int(company_id))
+        )
+    return q
+
+
 def list_wfh_notifications(
     db: Session,
     user_id: int,
@@ -887,8 +932,7 @@ def list_wfh_notifications(
         return []
 
     notifications = (
-        db.query(WFHNotification)
-        .filter(WFHNotification.user_id == user_id)
+        _wfh_notifications_base_query(db, user_id, company_id=company_id)
         .order_by(WFHNotification.created_at.desc())
         .all()
     )
@@ -921,11 +965,8 @@ def mark_wfh_notification_as_read(
     if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
         return None
     notification = (
-        db.query(WFHNotification)
-        .filter(
-            WFHNotification.notification_id == notification_id,
-            WFHNotification.user_id == user_id,
-        )
+        _wfh_notifications_base_query(db, user_id, company_id=company_id)
+        .filter(WFHNotification.notification_id == notification_id)
         .first()
     )
     if not notification:

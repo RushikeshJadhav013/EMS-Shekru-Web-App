@@ -10,6 +10,7 @@ from app.db.models.salary import EmployeeSalary, SalaryIncrement, SalarySlipHist
 from app.db.models.user import User
 from app.db.models.notification import SalaryNotification
 from app.utils.department_utils import department_token_regex_pattern
+from app.utils.tenant_scope import user_in_tenant_scope
 from app.schemas.salary_schema import (
     EmployeeSalaryCreate, EmployeeSalaryUpdate, EmployeeSalaryCTCCreate,
     EmployeeSalaryCTCUpdate, EmployeeSalaryManualFullUpdate, SalaryIncrementCreate, SalaryCalculationPreview
@@ -34,13 +35,12 @@ def _user_scope_filters(*, company_id: int | None, branch_id: int | None) -> lis
 
 
 def _user_in_scope(db: Session, *, user_id: int, company_id: int | None, branch_id: int | None) -> bool:
-    if company_id is None and branch_id is None:
-        return True
-    return (
-        db.query(User.user_id)
-        .filter(User.user_id == user_id, *_user_scope_filters(company_id=company_id, branch_id=branch_id))
-        .first()
-        is not None
+    return user_in_tenant_scope(
+        db,
+        user_id=user_id,
+        company_id=company_id,
+        branch_id=branch_id,
+        include_assigned_admins=True,
     )
 
 

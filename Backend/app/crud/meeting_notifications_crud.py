@@ -2,29 +2,16 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, aliased
 
 from app.db.models.meeting import Meeting, MeetingParticipant
 from app.db.models.notification import MeetingNotification
 from app.db.models.user import User
-from app.enums import RoleEnum
+from app.utils.tenant_scope import user_in_tenant_scope_clauses
 
 
-def _user_scope_filters(*, company_id: int | None, branch_id: int | None, user_alias=User) -> list:
-    clauses = []
-    if company_id is not None:
-        clauses.append(user_alias.company_id == company_id)
-    if branch_id is not None:
-        clauses.append(user_alias.branch_id == branch_id)
-    return clauses
-
-
-def _meeting_row_scope_clauses(MeetingAlias, scope: dict) -> list:
-    clauses = [MeetingAlias.company_id == scope["company_id"]]
-    if scope.get("branch_id") is not None:
-        clauses.append(MeetingAlias.branch_id == scope["branch_id"])
-    return clauses
+def _meeting_company_clause(MeetingAlias, scope: dict) -> list:
+    return [MeetingAlias.company_id == int(scope["company_id"])]
 
 
 def _get_meeting_participants(
@@ -45,9 +32,10 @@ def _get_meeting_participants(
     )
     if company_id is not None or branch_id is not None:
         q = q.filter(
-            or_(
-                User.role == RoleEnum.ADMIN,
-                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+            *user_in_tenant_scope_clauses(
+                company_id=company_id,
+                branch_id=branch_id,
+                include_assigned_admins=True,
             )
         )
     if exclude_user_id is not None:
@@ -70,8 +58,8 @@ def create_meeting_notifications(
     """
     Create notifications for all meeting participants except the actor.
 
-    `store_meeting_id` is used for deletions where we want notifications to persist
-    even after the meeting row is removed (set to None in that case).
+    Keep meeting_id when possible so list/read can join meetings.company_id.
+    After the meeting is deleted, SET NULL / missing join hides the bell (Option B).
     """
     meeting_id_to_query = meeting.id
     recipients = _get_meeting_participants(
@@ -110,11 +98,8 @@ def list_meeting_notifications(
     q = db.query(MeetingNotification).filter(MeetingNotification.user_id == user_id)
     if scope is not None:
         Mt = aliased(Meeting)
-        q = q.outerjoin(Mt, MeetingNotification.meeting_id == Mt.id).filter(
-            or_(
-                MeetingNotification.meeting_id.is_(None),
-                and_(Mt.id.isnot(None), *_meeting_row_scope_clauses(Mt, scope)),
-            )
+        q = q.join(Mt, MeetingNotification.meeting_id == Mt.id).filter(
+            *_meeting_company_clause(Mt, scope)
         )
     return q.order_by(MeetingNotification.created_at.desc()).all()
 
@@ -132,11 +117,8 @@ def mark_meeting_notification_as_read(
     )
     if scope is not None:
         Mt = aliased(Meeting)
-        q = q.outerjoin(Mt, MeetingNotification.meeting_id == Mt.id).filter(
-            or_(
-                MeetingNotification.meeting_id.is_(None),
-                and_(Mt.id.isnot(None), *_meeting_row_scope_clauses(Mt, scope)),
-            )
+        q = q.join(Mt, MeetingNotification.meeting_id == Mt.id).filter(
+            *_meeting_company_clause(Mt, scope)
         )
     notification = q.first()
     if not notification:

@@ -467,13 +467,11 @@ def get_shift_notifications(
     q = (
         db.query(ShiftNotification)
         .join(ShiftAssignment, ShiftAssignment.assignment_id == ShiftNotification.shift_assignment_id)
-        .join(User, User.user_id == ShiftNotification.user_id)
+        .join(Shift, Shift.shift_id == ShiftAssignment.shift_id)
         .filter(ShiftNotification.user_id == user_id)
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
-    if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.filter(Shift.company_id == int(company_id))
     return q.order_by(ShiftNotification.created_at.desc()).all()
 
 
@@ -488,16 +486,15 @@ def mark_notification_as_read(
     """Mark a notification as read"""
     q = (
         db.query(ShiftNotification)
-        .join(User, User.user_id == ShiftNotification.user_id)
+        .join(ShiftAssignment, ShiftAssignment.assignment_id == ShiftNotification.shift_assignment_id)
+        .join(Shift, Shift.shift_id == ShiftAssignment.shift_id)
         .filter(
             ShiftNotification.notification_id == notification_id,
             ShiftNotification.user_id == user_id,
         )
     )
     if company_id is not None:
-        q = q.filter(User.company_id == company_id)
-    if branch_id is not None:
-        q = q.filter(User.branch_id == branch_id)
+        q = q.filter(Shift.company_id == int(company_id))
     notification = q.first()
     
     if not notification:
