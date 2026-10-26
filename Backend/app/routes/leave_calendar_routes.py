@@ -270,7 +270,9 @@ def get_holiday_notifications(
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    return list_holiday_notifications(db, current_user.user_id)
+    return list_holiday_notifications(
+        db, current_user.user_id, company_id=int(scope["company_id"])
+    )
 
 
 @router.put("/notifications/{notification_id}/read", response_model=CompanyHolidayNotificationOut)
@@ -280,7 +282,12 @@ def mark_holiday_notification_read(
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
-    notification = mark_holiday_notification_as_read(db, notification_id, current_user.user_id)
+    notification = mark_holiday_notification_as_read(
+        db,
+        notification_id,
+        current_user.user_id,
+        company_id=int(scope["company_id"]),
+    )
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
     return notification

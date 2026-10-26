@@ -11,6 +11,7 @@ from app.db.models.project import Project
 from app.db.models.user import User
 from app.enums import RoleEnum, TaskAction, TaskStatus
 from app.utils.timezone import now_ist
+from app.utils.tenant_scope import user_in_tenant_scope
 
 
 _TASK_PASS_COLUMNS_READY = False
@@ -100,10 +101,19 @@ def _get_user_in_scope(
     company_id: int | None = None,
     branch_id: int | None = None,
 ) -> Optional[User]:
-    q = db.query(User).filter(User.user_id == user_id)
-    for clause in _user_scope_clauses(User, company_id, branch_id):
-        q = q.filter(clause)
-    return q.first()
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if user is None:
+        return None
+    if not user_in_tenant_scope(
+        db,
+        user_id=user_id,
+        company_id=company_id,
+        branch_id=branch_id,
+        include_assigned_admins=True,
+        require_active=False,
+    ):
+        return None
+    return user
 
 
 def _party_in_tenant_scope(
@@ -504,12 +514,20 @@ def _task_notification_visible_to_user(
 ) -> bool:
     from app.utils.team_lead_scope import team_lead_can_view_task
 
+    if notification.task_id is None:
+        return False
+
     viewer_role = getattr(viewer.role, "value", str(viewer.role))
     if viewer_role != RoleEnum.TEAM_LEAD.value:
-        return True
-
-    if notification.task_id is None:
-        return True
+        task = (
+            db.query(Task.task_id)
+            .filter(
+                Task.task_id == notification.task_id,
+                Task.company_id == int(company_id),
+            )
+            .first()
+        )
+        return task is not None
 
     task_query = db.query(Task).filter(Task.task_id == notification.task_id)
     task_query = _apply_task_scope(task_query, company_id=company_id, branch_id=branch_id)
@@ -572,12 +590,12 @@ def list_task_notifications(
     ) is None:
         return []
 
-    notifications = (
-        db.query(TaskNotification)
-        .filter(TaskNotification.user_id == user_id)
-        .order_by(TaskNotification.created_at.desc())
-        .all()
-    )
+    q = db.query(TaskNotification).filter(TaskNotification.user_id == user_id)
+    if company_id is not None:
+        q = q.join(Task, Task.task_id == TaskNotification.task_id).filter(
+            Task.company_id == int(company_id)
+        )
+    notifications = q.order_by(TaskNotification.created_at.desc()).all()
     if viewer is None or company_id is None:
         return notifications
 
@@ -608,14 +626,15 @@ def mark_task_notification_as_read(
         db, user_id=user_id, company_id=company_id, branch_id=branch_id
     ) is None:
         return None
-    notification = (
-        db.query(TaskNotification)
-        .filter(
-            TaskNotification.notification_id == notification_id,
-            TaskNotification.user_id == user_id,
-        )
-        .first()
+    q = db.query(TaskNotification).filter(
+        TaskNotification.notification_id == notification_id,
+        TaskNotification.user_id == user_id,
     )
+    if company_id is not None:
+        q = q.join(Task, Task.task_id == TaskNotification.task_id).filter(
+            Task.company_id == int(company_id)
+        )
+    notification = q.first()
 
     if not notification:
         return None

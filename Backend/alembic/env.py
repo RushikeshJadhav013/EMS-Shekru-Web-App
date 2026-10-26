@@ -23,6 +23,16 @@ from app.db.models.office_timing import OfficeTiming
 from app.db.models.notification import LeaveNotification, TaskNotification
 from app.db.models.hiring import Vacancy, Candidate
 from app.db.models.chat import ChatSession, ChatMember, ChatMessage
+from app.db.models.company import Company
+from app.db.models.company_branch import CompanyBranch
+from app.db.models.super_admin import SuperAdmin
+from app.db.models.leave_calendar import CompanyHoliday
+from app.db.models.meeting import Meeting
+from app.db.models.project import Project
+from app.db.models.wfh_request import WFHRequest
+from app.db.models.expense import Expense
+from app.db.models.expense_document import ExpenseDocument
+from app.db.models.vendor import Vendor
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

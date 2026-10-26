@@ -45,11 +45,11 @@ def upgrade() -> None:
         ("optional_deduction_4_amount", sa.Column("optional_deduction_4_amount", sa.Float(), nullable=True)),
         (
             "manual_leave_days",
-            sa.Column("manual_leave_days", sa.Float(), nullable=False, server_default="0"),
+            sa.Column("manual_leave_days", sa.Float(), nullable=True),
         ),
         (
             "manual_leave_amount",
-            sa.Column("manual_leave_amount", sa.Float(), nullable=False, server_default="0"),
+            sa.Column("manual_leave_amount", sa.Float(), nullable=True),
         ),
     ]
     for name, column in columns:

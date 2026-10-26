@@ -834,13 +834,22 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
     Get notification recipients based on requester's role and department:
     - Employee → notify Manager, HR, and TeamLead (same department + shared active project)
     - TeamLead → notify Manager & HR from same department(s) ONLY
-    - Manager/HR → notify Admin only
+    - Manager/HR → notify Admin only (assigned to requester's company)
     """
     from app.utils.team_lead_scope import team_lead_can_manage_employee
+    from app.utils.tenant_scope import assigned_company_admins, user_in_tenant_scope_clauses
+
     role_value = getattr(requester.role, "value", str(requester.role))
     requester_role = role_value
     requester_tokens = department_tokens_lower(requester.department)
-    
+    company_id = getattr(requester, "company_id", None)
+    branch_id = getattr(requester, "branch_id", None)
+    tenant_clauses = user_in_tenant_scope_clauses(
+        company_id=company_id,
+        branch_id=None,
+        include_assigned_admins=False,
+    )
+
     # Employee: notify Manager + HR + TeamLead from same department(s) ONLY
     if requester_role == RoleEnum.EMPLOYEE.value:
         if not requester_tokens:
@@ -853,13 +862,12 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
                 User.department.isnot(None),
                 User.role.in_(roles_to_notify),
                 User.is_active == True,
+                *tenant_clauses,
             )
             .all()
         )
 
         recipients: List[User] = []
-        company_id = getattr(requester, "company_id", None)
-        branch_id = getattr(requester, "branch_id", None)
         for user in candidates:
             if not user.department:
                 continue
@@ -895,6 +903,7 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
                 User.department.isnot(None),
                 User.role.in_(roles_to_notify),
                 User.is_active == True,
+                *tenant_clauses,
             )
             .all()
         )
@@ -911,18 +920,13 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
                 recipients.append(user)
         return recipients
 
-    # Manager or HR: notify Admin only (exclude the requester)
+    # Manager or HR: notify company-assigned admins only
     elif role_value in (RoleEnum.MANAGER.value, RoleEnum.HR.value):
-        recipients = (
-            db.query(User)
-            .filter(
-                User.role == RoleEnum.ADMIN,
-                User.is_active == True,  # Only active users
-                User.user_id != requester.user_id  # Exclude the requester themselves
-            )
-            .all()
+        return assigned_company_admins(
+            db,
+            company_id,
+            exclude_user_id=requester.user_id,
         )
-        return recipients
     
     # Admin or other roles: no notifications
     return []
@@ -1056,8 +1060,10 @@ def create_leave_decision_notification(
 
 def create_leave_deletion_notification(db: Session, leave: Leave, requester: User) -> List[LeaveNotification]:
     """
-    Create notifications for approvers when a leave request is withdrawn/deleted by the requester.
-    These notifications will persist after the leave is deleted by using a NULL leave_id.
+    Create notifications for approvers when a leave request is withdrawn/deleted.
+
+    Keep leave_id so list/read can join leaves.company_id. After the leave row is
+    deleted, CASCADE removes these bells (Option B: no orphan cross-company rows).
     """
     recipients = _get_leave_notification_recipients(db, requester)
     if not recipients:
@@ -1077,10 +1083,9 @@ def create_leave_deletion_notification(db: Session, leave: Leave, requester: Use
 
     notifications: List[LeaveNotification] = []
     for recipient in recipients:
-        # Create a standalone notification that doesn't reference the leave (to avoid CASCADE deletion)
         notification = LeaveNotification(
             user_id=recipient.user_id,
-            leave_id=None,  # Set to None so it won't be deleted when leave is removed
+            leave_id=leave.leave_id,
             notification_type="Leave Withdrawal",
             title=title,
             message=message,
@@ -1089,7 +1094,6 @@ def create_leave_deletion_notification(db: Session, leave: Leave, requester: Use
         db.add(notification)
         notifications.append(notification)
 
-    # Commit the notifications before the leave is deleted
     db.commit()
     for notification in notifications:
         db.refresh(notification)
@@ -1131,6 +1135,25 @@ def _resolve_leave_notification_requester(
     return db.query(User).filter(User.employee_id == employee_id).first()
 
 
+def _leave_notification_in_company(
+    db: Session,
+    notification: LeaveNotification,
+    *,
+    company_id: int,
+) -> bool:
+    if notification.leave_id is None:
+        return False
+    leave = (
+        db.query(Leave.leave_id)
+        .filter(
+            Leave.leave_id == notification.leave_id,
+            Leave.company_id == int(company_id),
+        )
+        .first()
+    )
+    return leave is not None
+
+
 def _leave_notification_visible_to_user(
     db: Session,
     viewer: User,
@@ -1139,6 +1162,9 @@ def _leave_notification_visible_to_user(
     company_id: int,
     branch_id: Optional[int] = None,
 ) -> bool:
+    if not _leave_notification_in_company(db, notification, company_id=company_id):
+        return False
+
     viewer_role = getattr(viewer.role, "value", str(viewer.role))
     if viewer_role != RoleEnum.TEAM_LEAD.value:
         return True
@@ -1165,6 +1191,20 @@ def _leave_notification_visible_to_user(
     )
 
 
+def _leave_notifications_base_query(
+    db: Session,
+    user_id: int,
+    *,
+    company_id: Optional[int] = None,
+):
+    q = db.query(LeaveNotification).filter(LeaveNotification.user_id == user_id)
+    if company_id is not None:
+        q = q.join(Leave, Leave.leave_id == LeaveNotification.leave_id).filter(
+            Leave.company_id == int(company_id)
+        )
+    return q
+
+
 def list_leave_notifications(
     db: Session,
     user_id: int,
@@ -1175,8 +1215,7 @@ def list_leave_notifications(
 ) -> List[LeaveNotification]:
     """Get leave notifications for a user, ordered by most recent first."""
     notifications = (
-        db.query(LeaveNotification)
-        .filter(LeaveNotification.user_id == user_id)
+        _leave_notifications_base_query(db, user_id, company_id=company_id)
         .order_by(LeaveNotification.created_at.desc())
         .all()
     )
@@ -1206,14 +1245,10 @@ def mark_leave_notification_as_read(
     branch_id: Optional[int] = None,
 ) -> Optional[LeaveNotification]:
     """Mark a leave notification as read for a specific user."""
-    notification = (
-        db.query(LeaveNotification)
-        .filter(
-            LeaveNotification.notification_id == notification_id,
-            LeaveNotification.user_id == user_id,
-        )
-        .first()
+    q = _leave_notifications_base_query(db, user_id, company_id=company_id).filter(
+        LeaveNotification.notification_id == notification_id,
     )
+    notification = q.first()
 
     if not notification:
         return None
