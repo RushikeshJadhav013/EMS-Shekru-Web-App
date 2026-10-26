@@ -220,14 +220,21 @@ class SalaryIncrement(Base):
     increment_ctc_annual = Column(Float, nullable=True)  # Increment amount (annual)
     new_ctc_annual = Column(Float, nullable=True)  # New annual CTC after increment
     
+    # Link to the full salary snapshot that existed before this increment.
+    salary_history_id = Column(Integer, ForeignKey("employee_salary_history.id"), nullable=True, index=True)
+
     # Effective date
     effective_date = Column(DateTime, nullable=False)
+    effective_month = Column(Integer, nullable=True)
+    effective_year = Column(Integer, nullable=True)
     
     # Reason/remarks
     reason = Column(Text, nullable=True)
     
     # Approved by
     approved_by = Column(Integer, ForeignKey("users.user_id"), nullable=True)
+    approved_by_name = Column(String(150), nullable=True)
+    approved_by_role = Column(String(50), nullable=True)
     
     # Letter sent status
     letter_sent = Column(Boolean, default=False)
@@ -239,6 +246,114 @@ class SalaryIncrement(Base):
     # Relationships
     user = relationship("User", foreign_keys=[user_id], backref="increments")
     approver = relationship("User", foreign_keys=[approved_by])
+    salary_history = relationship("EmployeeSalaryHistory", foreign_keys=[salary_history_id])
+
+
+class EmployeeSalaryHistory(Base):
+    """Immutable snapshot of an employee salary structure before a change."""
+    __tablename__ = "employee_salary_history"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False, index=True)
+    source_salary_id = Column(Integer, ForeignKey("employee_salaries.id"), nullable=False, index=True)
+
+    # Copy all persisted salary fields so the prior structure remains recoverable.
+    basic_annual = Column(Float, nullable=True)
+    hra_annual = Column(Float, nullable=True)
+    special_allowance_annual = Column(Float, nullable=True)
+    conveyance_annual = Column(Float, nullable=True)
+    medical_allowance_annual = Column(Float, nullable=True)
+    other_allowance_annual = Column(Float, nullable=True)
+    professional_tax_annual = Column(Float, nullable=True)
+    other_deduction_annual = Column(Float, nullable=True)
+    pf_annual = Column(Float, nullable=True)
+    package_ctc_annual = Column(Float, nullable=False)
+    pan_number = Column(String(20), nullable=True)
+    uan_number = Column(String(20), nullable=True)
+    pf_no = Column(String(30), nullable=True)
+    bank_name = Column(String(100), nullable=True)
+    bank_account = Column(String(50), nullable=True)
+    ifsc_code = Column(String(20), nullable=True)
+    variable_pay = Column(Float, nullable=True)
+    working_days_per_month = Column(Integer, nullable=True)
+    payment_mode = Column(String(50), nullable=True)
+    is_active = Column(Boolean, nullable=True)
+    source_created_at = Column(DateTime, nullable=True)
+    source_updated_at = Column(DateTime, nullable=True)
+
+    effective_from = Column(DateTime, nullable=True)
+    effective_to = Column(DateTime, nullable=False)
+    change_type = Column(String(50), nullable=False, default="increment")
+    reason = Column(Text, nullable=True)
+    changed_by = Column(Integer, ForeignKey("users.user_id"), nullable=True)
+    changed_by_name = Column(String(150), nullable=True)
+    changed_by_role = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
+
+    employee = relationship("User", foreign_keys=[user_id])
+    changed_by_user = relationship("User", foreign_keys=[changed_by])
+
+    # ==================== CALCULATED PROPERTIES ====================
+    @property
+    def total_gross_annual(self):
+        return (
+            (self.basic_annual or 0.0)
+            + (self.hra_annual or 0.0)
+            + (self.special_allowance_annual or 0.0)
+            + (self.conveyance_annual or 0.0)
+            + (self.medical_allowance_annual or 0.0)
+            + (self.other_allowance_annual or 0.0)
+        )
+
+    @property
+    def total_earnings_annual(self):
+        return self.total_gross_annual
+
+    @property
+    def monthly_gross(self):
+        return round(self.total_gross_annual / 12, 2)
+
+    @property
+    def total_employee_deductions_annual(self):
+        return (self.professional_tax_annual or 0.0) + (self.pf_annual or 0.0)
+
+    @property
+    def total_deductions_annual(self):
+        return (self.professional_tax_annual or 0.0) + (self.pf_annual or 0.0)
+
+    @property
+    def ctc_annual(self):
+        if self.package_ctc_annual is not None:
+            return self.package_ctc_annual
+        return (
+            self.total_gross_annual
+            + (self.pf_annual or 0.0)
+            + (self.professional_tax_annual or 0.0)
+        )
+
+    @property
+    def monthly_ctc(self):
+        return round(self.ctc_annual / 12, 2)
+
+    @property
+    def net_annual(self):
+        return self.total_gross_annual - self.total_employee_deductions_annual
+
+    @property
+    def monthly_in_hand(self):
+        return round(
+            (self.total_gross_annual - (self.professional_tax_annual or 0.0) - (self.pf_annual or 0.0))
+            / 12,
+            2,
+        )
+
+    @property
+    def display_ctc_annual(self):
+        return self.package_ctc_annual if self.package_ctc_annual is not None else self.ctc_annual
+
+    @property
+    def display_monthly_ctc(self):
+        return round(self.display_ctc_annual / 12, 2)
 
 
 class SalarySlipHistory(Base):
@@ -256,6 +371,18 @@ class SalarySlipHistory(Base):
     gross_salary = Column(Float, nullable=False)
     total_deductions = Column(Float, nullable=False)
     net_salary = Column(Float, nullable=False)
+
+    # Full component breakdown frozen at generation time
+    basic = Column(Float, nullable=True)
+    hra = Column(Float, nullable=True)
+    special_allowance = Column(Float, nullable=True)
+    conveyance = Column(Float, nullable=True)
+    medical_allowance = Column(Float, nullable=True)
+    other_allowance = Column(Float, nullable=True)
+    professional_tax = Column(Float, nullable=True)
+    pf = Column(Float, nullable=True)
+    variable_pay = Column(Float, default=0.0)
+    salary_history_id = Column(Integer, ForeignKey("employee_salary_history.id"), nullable=True)
 
     # Optional deduction breakdown (saved on finalize; absent on legacy rows)
     optional_deduction_1_label = Column(String(120), nullable=True)
@@ -280,3 +407,5 @@ class SalarySlipHistory(Base):
     # Relationships
     user = relationship("User", foreign_keys=[user_id], backref="salary_slips")
     generator = relationship("User", foreign_keys=[generated_by])
+    salary_history = relationship("EmployeeSalaryHistory", foreign_keys=[salary_history_id])
+

@@ -379,6 +379,82 @@ class EmployeeSalaryOut(BaseModel):
         from_attributes = True
 
 
+class SalaryHistoryOut(BaseModel):
+    id: int
+    user_id: int
+    source_salary_id: int
+    basic_annual: Optional[float] = None
+    hra_annual: Optional[float] = None
+    special_allowance_annual: Optional[float] = None
+    conveyance_annual: Optional[float] = None
+    medical_allowance_annual: Optional[float] = None
+    other_allowance_annual: Optional[float] = None
+    professional_tax_annual: Optional[float] = None
+    other_deduction_annual: Optional[float] = None
+    pf_annual: Optional[float] = None
+    package_ctc_annual: float
+    pan_number: Optional[str] = None
+    uan_number: Optional[str] = None
+    pf_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    variable_pay: Optional[float] = None
+    working_days_per_month: Optional[int] = None
+    payment_mode: Optional[str] = None
+    is_active: Optional[bool] = None
+    source_created_at: Optional[datetime] = None
+    source_updated_at: Optional[datetime] = None
+    effective_from: Optional[datetime] = None
+    effective_to: datetime
+    change_type: str
+    reason: Optional[str] = None
+    changed_by: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    changed_by_role: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SalarySlipHistoryOut(BaseModel):
+    id: int
+    user_id: int
+    month: int
+    year: int
+    gross_salary: float
+    total_deductions: float
+    net_salary: float
+    basic: Optional[float] = None
+    hra: Optional[float] = None
+    special_allowance: Optional[float] = None
+    conveyance: Optional[float] = None
+    medical_allowance: Optional[float] = None
+    other_allowance: Optional[float] = None
+    professional_tax: Optional[float] = None
+    pf: Optional[float] = None
+    variable_pay: Optional[float] = 0.0
+    salary_history_id: Optional[int] = None
+    optional_deduction_1_label: Optional[str] = None
+    optional_deduction_1_amount: Optional[float] = None
+    optional_deduction_2_label: Optional[str] = None
+    optional_deduction_2_amount: Optional[float] = None
+    optional_deduction_3_label: Optional[str] = None
+    optional_deduction_3_amount: Optional[float] = None
+    optional_deduction_4_label: Optional[str] = None
+    optional_deduction_4_amount: Optional[float] = None
+    manual_leave_days: Optional[float] = 0.0
+    manual_leave_amount: Optional[float] = 0.0
+    generated_by: Optional[int] = None
+    generated_at: Optional[datetime] = None
+    email_sent: Optional[bool] = False
+    email_sent_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 class SalaryCalculationPreview(BaseModel):
     """Schema for previewing salary calculation before saving"""
     package_ctc_annual: float
@@ -459,6 +535,7 @@ class SalaryIncrementOut(BaseModel):
     """Schema for increment output"""
     id: int
     user_id: int
+    salary_history_id: Optional[int] = None
     
     # Variable pay configuration that was applied (if any)
     # variable_pay_type: Optional[VariablePayType] = None  # commented out as per requirement
@@ -476,8 +553,14 @@ class SalaryIncrementOut(BaseModel):
     increment_percentage: Optional[float]
     
     effective_date: datetime
+    effective_month: Optional[int] = None
+    effective_year: Optional[int] = None
     reason: Optional[str]
     approved_by: Optional[int]
+    approved_by_name: Optional[str] = None
+    approved_by_role: Optional[str] = None
+    previous_components: Optional[dict] = None
+    new_components: Optional[dict] = None
     letter_sent: bool
     letter_sent_at: Optional[datetime]
     created_at: datetime

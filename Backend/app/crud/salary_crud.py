@@ -3,10 +3,10 @@ Salary CRUD Operations - Database operations for salary management
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import datetime
 
-from app.db.models.salary import EmployeeSalary, SalaryIncrement, SalarySlipHistory
+from app.db.models.salary import EmployeeSalary, EmployeeSalaryHistory, SalaryIncrement, SalarySlipHistory
 from app.db.models.user import User
 from app.db.models.notification import SalaryNotification
 from app.utils.department_utils import department_token_regex_pattern
@@ -275,12 +275,14 @@ def create_employee_salary(db: Session, salary_data: EmployeeSalaryCreate) -> Em
     return db_salary
 
 
-def update_employee_salary_from_ctc(
+def _update_employee_salary_from_ctc(
     db: Session,
     user_id: int,
-    ctc_update: EmployeeSalaryCTCUpdate
+    ctc_update: EmployeeSalaryCTCUpdate,
+    *,
+    commit: bool,
 ) -> Optional[EmployeeSalary]:
-    """Update employee salary by recalculating from new CTC"""
+    """Recalculate salary; optionally leave commit to the caller."""
     salary = get_employee_salary(db, user_id)
     if not salary:
         return None
@@ -334,11 +336,71 @@ def update_employee_salary_from_ctc(
     salary.other_deduction_annual = 0.0
     
     salary.updated_at = now_ist()
-    db.commit()
-    db.refresh(salary)
+    if commit:
+        db.commit()
+        db.refresh(salary)
     
     logger.info(f"Updated salary record from package CTC {ctc_update.package_ctc_annual} for user_id: {user_id}")
     return salary
+
+
+def update_employee_salary_from_ctc(
+    db: Session,
+    user_id: int,
+    ctc_update: EmployeeSalaryCTCUpdate,
+    changed_by: Optional[int] = None,
+    changed_by_name: Optional[str] = None,
+    changed_by_role: Optional[str] = None,
+) -> Optional[EmployeeSalary]:
+    """Public wrapper that snapshots prior salary to history and commits the salary update."""
+    salary = get_employee_salary(db, user_id)
+    if salary:
+        latest_inc = (
+            db.query(SalaryIncrement)
+            .filter(SalaryIncrement.user_id == user_id)
+            .order_by(SalaryIncrement.effective_date.desc(), SalaryIncrement.id.desc())
+            .first()
+        )
+        effective_from = latest_inc.effective_date if latest_inc else salary.created_at
+        now = now_ist()
+        history = EmployeeSalaryHistory(
+            user_id=salary.user_id,
+            source_salary_id=salary.id,
+            basic_annual=salary.basic_annual,
+            hra_annual=salary.hra_annual,
+            special_allowance_annual=salary.special_allowance_annual,
+            conveyance_annual=salary.conveyance_annual,
+            medical_allowance_annual=salary.medical_allowance_annual,
+            other_allowance_annual=salary.other_allowance_annual,
+            professional_tax_annual=salary.professional_tax_annual,
+            other_deduction_annual=salary.other_deduction_annual,
+            pf_annual=salary.pf_annual,
+            package_ctc_annual=salary.package_ctc_annual,
+            pan_number=salary.pan_number,
+            uan_number=salary.uan_number,
+            pf_no=salary.pf_no,
+            bank_name=salary.bank_name,
+            bank_account=salary.bank_account,
+            ifsc_code=salary.ifsc_code,
+            variable_pay=salary.variable_pay,
+            working_days_per_month=salary.working_days_per_month,
+            payment_mode=salary.payment_mode,
+            is_active=salary.is_active,
+            source_created_at=salary.created_at,
+            source_updated_at=salary.updated_at,
+            effective_from=effective_from,
+            effective_to=now,
+            change_type="update",
+            reason="Direct CTC update",
+            changed_by=changed_by,
+            changed_by_name=changed_by_name,
+            changed_by_role=changed_by_role,
+        )
+        db.add(history)
+        db.flush()
+
+    return _update_employee_salary_from_ctc(db, user_id, ctc_update, commit=True)
+
 
 
 def get_employee_salary(
@@ -365,6 +427,48 @@ def get_employee_salary_by_id(db: Session, salary_id: int) -> Optional[EmployeeS
     return db.query(EmployeeSalary).filter(
         EmployeeSalary.id == salary_id
     ).first()
+
+
+def get_salary_structure_for_period(
+    db: Session,
+    user_id: int,
+    month: int,
+    year: int,
+    *,
+    company_id: int | None = None,
+    branch_id: int | None = None,
+) -> Optional[Union[EmployeeSalary, EmployeeSalaryHistory]]:
+    """
+    Get the salary structure (current EmployeeSalary or historical EmployeeSalaryHistory)
+    effective during a specific (month, year) period.
+
+    Logic:
+    - Target period begins on datetime(year, month, 1).
+    - If there are historical snapshots in EmployeeSalaryHistory whose effective_to > datetime(year, month, 1),
+      the one with the earliest effective_to (ascending) that is after datetime(year, month, 1)
+      was the active salary during that month.
+    - If no snapshot has effective_to > datetime(year, month, 1), then all increments occurred
+      prior to this month, meaning the current active EmployeeSalary applies.
+    """
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return None
+
+    period_start = datetime(year, month, 1)
+
+    historical_snapshot = (
+        db.query(EmployeeSalaryHistory)
+        .filter(
+            EmployeeSalaryHistory.user_id == user_id,
+            EmployeeSalaryHistory.effective_to > period_start,
+        )
+        .order_by(EmployeeSalaryHistory.effective_to.asc(), EmployeeSalaryHistory.id.asc())
+        .first()
+    )
+    if historical_snapshot:
+        return historical_snapshot
+
+    return get_employee_salary(db, user_id, company_id=company_id, branch_id=branch_id)
+
 
 
 def update_employee_salary(
@@ -698,92 +802,172 @@ def preview_salary_calculation(
 # ==================== SALARY INCREMENT CRUD ====================
 
 def create_salary_increment(
-    db: Session, 
+    db: Session,
     increment_data: SalaryIncrementCreate,
-    approved_by: int
+    approved_by: int,
+    approved_by_name: Optional[str] = None,
+    approved_by_role: Optional[str] = None,
 ) -> SalaryIncrement:
-    """
-    Create a new salary increment record with automatic CTC calculation and update.
-    
-    This function:
-    1. Fetches the employee's current salary record to get their current CTC
-    2. Calculates the new CTC based on increment amount OR percentage
-    3. Updates the employee's salary record with the new CTC (recalculates all components)
-    4. Creates an increment record with both CTC (annual) and monthly salary values
-    """
-    # 1. Get employee's current salary record
-    current_salary = get_employee_salary(db, increment_data.user_id)
-    if not current_salary:
-        raise ValueError(f"No salary record found for user_id {increment_data.user_id}. "
-                        f"Please create a salary record before applying increment.")
-    
-    # 2. Calculate CTC increment
-    previous_ctc = current_salary.ctc_annual
-    
-    if increment_data.increment_ctc_annual is not None:
-        # Option 1: Increment amount provided
-        increment_ctc = increment_data.increment_ctc_annual
-        increment_percentage = round((increment_ctc / previous_ctc) * 100, 2) if previous_ctc > 0 else 0
-    else:
-        # Option 2: Increment percentage provided
-        increment_percentage = increment_data.increment_percentage
-        increment_ctc = round((previous_ctc * increment_percentage) / 100, 2)
-    
-    new_ctc = previous_ctc + increment_ctc
-    
-    logger.info(f"Calculating increment for user_id {increment_data.user_id}: "
-                f"Previous CTC: ₹{previous_ctc:,.2f}, "
-                f"Increment: ₹{increment_ctc:,.2f} ({increment_percentage}%), "
-                f"New CTC: ₹{new_ctc:,.2f}")
-    
-    # 3. Update employee's CTC (this recalculates all salary components)
-    #    Optionally, override variable pay configuration if provided in the increment request.
-    from app.schemas.salary_schema import EmployeeSalaryCTCUpdate
-    ctc_update = EmployeeSalaryCTCUpdate(
-        package_ctc_annual=new_ctc,
-        variable_pay_type=increment_data.variable_pay_type,
-        variable_pay_value=increment_data.variable_pay_value,
+    """Record the previous salary, update the current structure and add the increment atomically."""
+    try:
+        # Lock the current salary row so concurrent increments cannot snapshot the same version.
+        current_salary = (
+            db.query(EmployeeSalary)
+            .filter(EmployeeSalary.user_id == increment_data.user_id, EmployeeSalary.is_active.is_(True))
+            .with_for_update()
+            .first()
+        )
+        if not current_salary:
+            raise ValueError(
+                f"No salary record found for user_id {increment_data.user_id}. "
+                "Please create a salary record before applying increment."
+            )
+
+        # Validation: Joining date check
+        user = db.query(User).filter(User.user_id == increment_data.user_id).first()
+        if user and user.joining_date:
+            inc_date = (
+                increment_data.effective_date.date()
+                if isinstance(increment_data.effective_date, datetime)
+                else increment_data.effective_date
+            )
+            user_joining = (
+                user.joining_date.date()
+                if isinstance(user.joining_date, datetime)
+                else user.joining_date
+            )
+            if inc_date < user_joining:
+                raise ValueError(
+                    f"Increment effective date ({inc_date.strftime('%d-%m-%Y')}) "
+                    f"cannot be before employee joining date ({user_joining.strftime('%d-%m-%Y')})"
+                )
+
+        # Validation: Chronological order check against latest increment
+        latest_inc = (
+            db.query(SalaryIncrement)
+            .filter(SalaryIncrement.user_id == increment_data.user_id)
+            .order_by(SalaryIncrement.effective_date.desc(), SalaryIncrement.id.desc())
+            .first()
+        )
+        if latest_inc and increment_data.effective_date <= latest_inc.effective_date:
+            raise ValueError(
+                f"Increment effective date ({increment_data.effective_date.strftime('%d-%m-%Y')}) "
+                f"must be after the previous increment date ({latest_inc.effective_date.strftime('%d-%m-%Y')})"
+            )
+
+        previous_ctc = float(current_salary.ctc_annual)
+        if increment_data.increment_ctc_annual is not None:
+            increment_ctc = float(increment_data.increment_ctc_annual)
+            increment_percentage = round((increment_ctc / previous_ctc) * 100, 2) if previous_ctc > 0 else 0
+        else:
+            increment_percentage = float(increment_data.increment_percentage)
+            increment_ctc = round((previous_ctc * increment_percentage) / 100, 2)
+        new_ctc = previous_ctc + increment_ctc
+
+        # Validation: Minimum CTC check
+        min_ctc = SalaryCalculator.get_minimum_ctc()
+        if new_ctc < min_ctc:
+            raise ValueError(f"New CTC ₹{new_ctc:,.2f} cannot be less than minimum allowed CTC ₹{min_ctc:,.2f}")
+
+        # Determine effective_from for historical snapshot:
+        # If there was a previous increment, the previous structure started then; otherwise when created.
+        effective_from = latest_inc.effective_date if latest_inc else current_salary.created_at
+
+        # Snapshot every persisted EmployeeSalary field before any mutation.
+        history = EmployeeSalaryHistory(
+            user_id=current_salary.user_id,
+            source_salary_id=current_salary.id,
+            basic_annual=current_salary.basic_annual,
+            hra_annual=current_salary.hra_annual,
+            special_allowance_annual=current_salary.special_allowance_annual,
+            conveyance_annual=current_salary.conveyance_annual,
+            medical_allowance_annual=current_salary.medical_allowance_annual,
+            other_allowance_annual=current_salary.other_allowance_annual,
+            professional_tax_annual=current_salary.professional_tax_annual,
+            other_deduction_annual=current_salary.other_deduction_annual,
+            pf_annual=current_salary.pf_annual,
+            package_ctc_annual=current_salary.package_ctc_annual,
+            pan_number=current_salary.pan_number,
+            uan_number=current_salary.uan_number,
+            pf_no=current_salary.pf_no,
+            bank_name=current_salary.bank_name,
+            bank_account=current_salary.bank_account,
+            ifsc_code=current_salary.ifsc_code,
+            variable_pay=current_salary.variable_pay,
+            working_days_per_month=current_salary.working_days_per_month,
+            payment_mode=current_salary.payment_mode,
+            is_active=current_salary.is_active,
+            source_created_at=current_salary.created_at,
+            source_updated_at=current_salary.updated_at,
+            effective_from=effective_from,
+            effective_to=increment_data.effective_date,
+            change_type="increment",
+            reason=increment_data.reason,
+            changed_by=approved_by,
+            changed_by_name=approved_by_name,
+            changed_by_role=approved_by_role,
+        )
+        db.add(history)
+        db.flush()
+
+        from app.schemas.salary_schema import EmployeeSalaryCTCUpdate
+        ctc_update = EmployeeSalaryCTCUpdate(
+            package_ctc_annual=new_ctc,
+            variable_pay_type=increment_data.variable_pay_type,
+            variable_pay_value=increment_data.variable_pay_value,
+        )
+        updated_salary = _update_employee_salary_from_ctc(
+            db, increment_data.user_id, ctc_update, commit=False
+        )
+        if not updated_salary:
+            raise ValueError(f"Failed to update salary for user_id {increment_data.user_id}")
+
+        previous_monthly = (Decimal(str(previous_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        increment_monthly = (Decimal(str(increment_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        new_monthly = (Decimal(str(new_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        db_increment = SalaryIncrement(
+            user_id=increment_data.user_id,
+            previous_ctc_annual=previous_ctc,
+            increment_ctc_annual=increment_ctc,
+            new_ctc_annual=new_ctc,
+            increment_percentage=increment_percentage,
+            previous_salary=previous_monthly,
+            increment_amount=increment_monthly,
+            new_salary=new_monthly,
+            effective_date=increment_data.effective_date,
+            effective_month=increment_data.effective_date.month,
+            effective_year=increment_data.effective_date.year,
+            reason=increment_data.reason,
+            approved_by=approved_by,
+            approved_by_name=approved_by_name,
+            approved_by_role=approved_by_role,
+            salary_history_id=history.id,
+        )
+        db.add(db_increment)
+        db.commit()
+        db.refresh(db_increment)
+        logger.info(
+            "Created increment record for user_id=%s increment_id=%s history_id=%s previous_ctc=%s new_ctc=%s approved_by=%s role=%s",
+            increment_data.user_id, db_increment.id, history.id, previous_ctc, new_ctc, approved_by_name, approved_by_role
+        )
+        return db_increment
+    except Exception:
+        db.rollback()
+        raise
+
+
+def get_salary_history(
+    db: Session, user_id: int, *, company_id: int | None = None, branch_id: int | None = None
+) -> List[EmployeeSalaryHistory]:
+    """Return salary snapshots newest first, scoped to the employee's tenant."""
+    if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
+        return []
+    return (
+        db.query(EmployeeSalaryHistory)
+        .filter(EmployeeSalaryHistory.user_id == user_id)
+        .order_by(EmployeeSalaryHistory.effective_to.desc(), EmployeeSalaryHistory.id.desc())
+        .all()
     )
-    updated_salary = update_employee_salary_from_ctc(db, increment_data.user_id, ctc_update)
-    
-    if not updated_salary:
-        raise ValueError(f"Failed to update salary for user_id {increment_data.user_id}")
-    
-    # 4. Calculate monthly values for legacy fields (backward compatibility)
-    # Use Decimal with fixed 2-decimal quantization for monthly monetary fields
-    previous_monthly = (Decimal(str(previous_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    increment_monthly = (Decimal(str(increment_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    new_monthly = (Decimal(str(new_ctc)) / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    
-    # 5. Create increment record with both CTC and monthly values
-    db_increment = SalaryIncrement(
-        user_id=increment_data.user_id,
-        # CTC values (annual)
-        previous_ctc_annual=previous_ctc,
-        increment_ctc_annual=increment_ctc,
-        new_ctc_annual=new_ctc,
-        increment_percentage=increment_percentage,
-        # Monthly values (for backward compatibility)
-        previous_salary=previous_monthly,
-        increment_amount=increment_monthly,
-        new_salary=new_monthly,
-        # Other fields
-        effective_date=increment_data.effective_date,
-        reason=increment_data.reason,
-        approved_by=approved_by
-    )
-    
-    db.add(db_increment)
-    db.commit()
-    db.refresh(db_increment)
-    
-    logger.info(f"Created increment record for user_id: {increment_data.user_id}, "
-                f"increment_id: {db_increment.id}, "
-                f"previous_ctc: ₹{previous_ctc:,.2f}, "
-                f"new_ctc: ₹{new_ctc:,.2f}, "
-                f"increment: ₹{increment_ctc:,.2f} ({increment_percentage}%)")
-    
-    return db_increment
 
 
 def get_salary_increment(
@@ -867,6 +1051,16 @@ def create_salary_slip_history(
     net_salary: float,
     generated_by: int,
     *,
+    basic: Optional[float] = None,
+    hra: Optional[float] = None,
+    special_allowance: Optional[float] = None,
+    conveyance: Optional[float] = None,
+    medical_allowance: Optional[float] = None,
+    other_allowance: Optional[float] = None,
+    professional_tax: Optional[float] = None,
+    pf: Optional[float] = None,
+    variable_pay: Optional[float] = 0.0,
+    salary_history_id: Optional[int] = None,
     optional_deduction_1_label: Optional[str] = None,
     optional_deduction_1_amount: Optional[float] = None,
     optional_deduction_2_label: Optional[str] = None,
@@ -913,6 +1107,27 @@ def create_salary_slip_history(
         "generated_by": generated_by,
         "generated_at": now_ist(),
     }
+
+    if basic is not None:
+        breakdown["basic"] = float(basic)
+    if hra is not None:
+        breakdown["hra"] = float(hra)
+    if special_allowance is not None:
+        breakdown["special_allowance"] = float(special_allowance)
+    if conveyance is not None:
+        breakdown["conveyance"] = float(conveyance)
+    if medical_allowance is not None:
+        breakdown["medical_allowance"] = float(medical_allowance)
+    if other_allowance is not None:
+        breakdown["other_allowance"] = float(other_allowance)
+    if professional_tax is not None:
+        breakdown["professional_tax"] = float(professional_tax)
+    if pf is not None:
+        breakdown["pf"] = float(pf)
+    if variable_pay is not None:
+        breakdown["variable_pay"] = float(variable_pay)
+    if salary_history_id is not None:
+        breakdown["salary_history_id"] = salary_history_id
 
     if existing:
         for key, value in breakdown.items():
