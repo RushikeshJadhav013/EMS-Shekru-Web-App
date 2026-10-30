@@ -1752,8 +1752,46 @@ def download_increment_letter(
             branch_id=scope.get("branch_id"),
         )
         
-        # Generate PDF with salary annexure if salary record exists
-        if salary:
+        # Calculate salary annexure components tailored to this increment's revised CTC
+        inc_ctc = float(increment.new_ctc_annual) if increment.new_ctc_annual else (float(increment.new_salary) * 12)
+        has_pf = bool(salary and salary.pf_no and salary.pf_annual and salary.pf_annual > 0)
+        pf_pct = 0.12 if has_pf else 0.0
+
+        inc_components = None
+        try:
+            inc_components = SalaryCalculator.calculate_salary_components(
+                annual_ctc=inc_ctc,
+                variable_pay_type=VariablePayType.NONE,
+                variable_pay_value=0.0,
+                employer_pf_percentage=pf_pct
+            )
+        except Exception:
+            pass
+
+        # Generate PDF with salary annexure matching the increment
+        if inc_components:
+            pdf_buffer = generate_increment_letter_pdf(
+                employee_name=user.name,
+                designation=user.designation or "Employee",
+                location=user.address or "Office",
+                previous_salary=increment.previous_salary,
+                increment_amount=increment.increment_amount,
+                new_salary=increment.new_salary,
+                effective_date=increment.effective_date,
+                title=title,
+                include_salary_annexure=True,
+                basic_annual=inc_components["basic_annual"],
+                hra_annual=inc_components["hra_annual"],
+                special_allowance_annual=inc_components["special_allowance_annual"],
+                conveyance_annual=inc_components["conveyance_annual"],
+                medical_allowance_annual=inc_components["medical_allowance_annual"],
+                other_allowance_annual=inc_components["other_allowance_annual"],
+                professional_tax_annual=inc_components["professional_tax_annual"],
+                other_deduction_annual=inc_components["other_tax_annual"],
+                employer_pf_annual=inc_components["employer_pf_annual"],
+                variable_pay_annual=inc_components["variable_pay_annual"],
+            )
+        elif salary:
             pdf_buffer = generate_increment_letter_pdf(
                 employee_name=user.name,
                 designation=user.designation or "Employee",
@@ -1863,8 +1901,46 @@ def send_increment_letter(
             branch_id=scope.get("branch_id"),
         )
         
-        # Generate PDF with salary annexure if salary record exists
-        if salary:
+        # Calculate salary annexure components tailored to this increment's revised CTC
+        inc_ctc = float(increment.new_ctc_annual) if increment.new_ctc_annual else (float(increment.new_salary) * 12)
+        has_pf = bool(salary and salary.pf_no and salary.pf_annual and salary.pf_annual > 0)
+        pf_pct = 0.12 if has_pf else 0.0
+
+        inc_components = None
+        try:
+            inc_components = SalaryCalculator.calculate_salary_components(
+                annual_ctc=inc_ctc,
+                variable_pay_type=VariablePayType.NONE,
+                variable_pay_value=0.0,
+                employer_pf_percentage=pf_pct
+            )
+        except Exception:
+            pass
+
+        # Generate PDF with salary annexure matching the increment
+        if inc_components:
+            pdf_buffer = generate_increment_letter_pdf(
+                employee_name=user.name,
+                designation=user.designation or "Employee",
+                location=user.address or "Office",
+                previous_salary=increment.previous_salary,
+                increment_amount=increment.increment_amount,
+                new_salary=increment.new_salary,
+                effective_date=increment.effective_date,
+                title=title,
+                include_salary_annexure=True,
+                basic_annual=inc_components["basic_annual"],
+                hra_annual=inc_components["hra_annual"],
+                special_allowance_annual=inc_components["special_allowance_annual"],
+                conveyance_annual=inc_components["conveyance_annual"],
+                medical_allowance_annual=inc_components["medical_allowance_annual"],
+                other_allowance_annual=inc_components["other_allowance_annual"],
+                professional_tax_annual=inc_components["professional_tax_annual"],
+                other_deduction_annual=inc_components["other_tax_annual"],
+                employer_pf_annual=inc_components["employer_pf_annual"],
+                variable_pay_annual=inc_components["variable_pay_annual"],
+            )
+        elif salary:
             pdf_buffer = generate_increment_letter_pdf(
                 employee_name=user.name,
                 designation=user.designation or "Employee",
@@ -1984,6 +2060,16 @@ def download_offer_letter(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Salary record not found for this employee"
             )
+
+        # Freeze Day-1 offer baseline: use earliest salary history snapshot if available,
+        # ensuring subsequent increments do not alter historical offer letters.
+        earliest_history = (
+            db.query(EmployeeSalaryHistory)
+            .filter(EmployeeSalaryHistory.user_id == user_id)
+            .order_by(EmployeeSalaryHistory.id.asc())
+            .first()
+        )
+        salary_source = earliest_history if earliest_history else salary
         
         # Parse and validate letter_date (required)
         try:
@@ -2005,16 +2091,16 @@ def download_offer_letter(
             designation=user.designation or "Employee",
             location=user.address or "Office",
             joining_date=resolved_joining_date,
-            basic_annual=salary.basic_annual,
-            hra_annual=salary.hra_annual,
-            special_allowance_annual=salary.special_allowance_annual,
-            conveyance_annual=salary.conveyance_annual,
-            medical_allowance_annual=salary.medical_allowance_annual,
-            other_allowance_annual=salary.other_allowance_annual,
-            professional_tax_annual=salary.professional_tax_annual,
-            other_deduction_annual=salary.other_deduction_annual,
-            employer_pf_annual=salary.pf_annual,
-            variable_pay_annual=salary.variable_pay,
+            basic_annual=float(salary_source.basic_annual or 0.0),
+            hra_annual=float(salary_source.hra_annual or 0.0),
+            special_allowance_annual=float(salary_source.special_allowance_annual or 0.0),
+            conveyance_annual=float(salary_source.conveyance_annual or 0.0),
+            medical_allowance_annual=float(salary_source.medical_allowance_annual or 0.0),
+            other_allowance_annual=float(salary_source.other_allowance_annual or 0.0),
+            professional_tax_annual=float(salary_source.professional_tax_annual or 0.0),
+            other_deduction_annual=float(salary_source.other_deduction_annual or 0.0),
+            employer_pf_annual=float(salary_source.pf_annual or 0.0),
+            variable_pay_annual=float(salary_source.variable_pay or 0.0),
             letter_date=parsed_letter
         )
         
