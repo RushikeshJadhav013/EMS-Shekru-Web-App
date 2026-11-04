@@ -1,9 +1,9 @@
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.models.expense import Expense
@@ -11,7 +11,9 @@ from app.db.models.vendor import Vendor
 from app.enums import ExpenseCategoryEnum
 
 
-EXPENSE_CATEGORIES = [category.value for category in ExpenseCategoryEnum]
+EXPENSE_CATEGORIES = [
+    category.value for category in ExpenseCategoryEnum
+]
 
 VALID_EXPENSE_STATUSES = {
     "Pending",
@@ -42,27 +44,75 @@ REQUIRED_UPDATE_FIELDS = {
     "sub_category",
     "expense_date",
     "amount",
+    "vendor_id",
+}
+
+TEXT_FIELDS = {
+    "sub_category",
+    "description",
+    "invoice_number",
+    "gst_number",
+    "cost_center",
+    "project_name",
+    "client_name",
 }
 
 
-def validate_expense_category(category: str, sub_category: str) -> bool:
+def validate_expense_category(
+    category: str,
+    sub_category: str,
+) -> bool:
+    if not category or not sub_category:
+        return False
+
+    category = category.strip()
+    sub_category = sub_category.strip()
+
     if category not in EXPENSE_CATEGORIES:
         return False
 
-    return bool(sub_category and sub_category.strip())
+    return bool(sub_category)
 
 
-def get_vendor(db: Session, vendor_id: int, company_id: int):
+def validate_expense_date(expense_date: datetime) -> bool:
+    if not isinstance(expense_date, datetime):
+        return False
+
+    return expense_date.date() < date.today()
+
+
+def validate_text_fields(data: dict) -> bool:
+    for field in TEXT_FIELDS:
+        if field in data:
+            value = data[field]
+
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    return False
+
+    return True
+
+
+def get_vendor(
+    db: Session,
+    vendor_id: int,
+    company_id: int,
+):
+    if not vendor_id or vendor_id <= 0:
+        return None
+
     return (
         db.query(Vendor)
         .filter(
             Vendor.vendor_id == vendor_id,
             Vendor.company_id == company_id,
+            Vendor.is_deleted.is_(False),
         )
         .first()
     )
 
 
+# CREATE EXPENSE
 def create_expense(
     db: Session,
     company_id: int,
@@ -81,34 +131,50 @@ def create_expense(
     project_name: str | None = None,
     client_name: str | None = None,
 ):
+    data = {
+        "sub_category": sub_category,
+        "description": description,
+        "invoice_number": invoice_number,
+        "gst_number": gst_number,
+        "cost_center": cost_center,
+        "project_name": project_name,
+        "client_name": client_name,
+    }
+
+    if not validate_text_fields(data):
+        return None
+
     if not validate_expense_category(category, sub_category):
         return None
 
-    if amount <= 0:
+    if not validate_expense_date(expense_date):
+        return None
+
+    if amount is None or amount <= 0:
         return None
 
     if gst_amount is not None and gst_amount < 0:
         return None
 
-    if vendor_id is not None and not get_vendor(db, vendor_id, company_id):
+    if not get_vendor(db, vendor_id, company_id):
         return None
 
     expense = Expense(
         company_id=company_id,
         user_id=user_id,
-        category=category,
+        category=category.strip(),
         sub_category=sub_category.strip(),
         expense_date=expense_date,
         amount=amount,
-        description=description,
+        description=description.strip() if description else None,
         vendor_id=vendor_id,
-        invoice_number=invoice_number,
+        invoice_number=invoice_number.strip() if invoice_number else None,
         invoice_date=invoice_date,
-        gst_number=gst_number,
+        gst_number=gst_number.strip() if gst_number else None,
         gst_amount=gst_amount,
-        cost_center=cost_center,
-        project_name=project_name,
-        client_name=client_name,
+        cost_center=cost_center.strip() if cost_center else None,
+        project_name=project_name.strip() if project_name else None,
+        client_name=client_name.strip() if client_name else None,
         status="Pending",
         payment_status="Unpaid",
     )
@@ -123,72 +189,29 @@ def create_expense(
         raise
 
 
+# GET ALL EXPENSES
 def get_expenses(
     db: Session,
     company_id: int,
-    status: str | None = None,
-    category: str | None = None,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    search: str | None = None,
-    page: int = 1,
-    limit: int = 20,
     user_id: int | None = None,
 ):
-    query = db.query(Expense).filter(Expense.company_id == company_id)
+    query = db.query(Expense).filter(
+        Expense.company_id == company_id
+    )
 
     if user_id is not None:
-        query = query.filter(Expense.user_id == user_id)
-
-    if status == "Paid":
-        query = query.filter(Expense.payment_status == "Paid")
-    elif status:
-        query = query.filter(Expense.status == status)
-
-    if category:
-        query = query.filter(Expense.category == category)
-
-    if start_date:
         query = query.filter(
-            Expense.expense_date >= datetime.combine(start_date, time.min)
+            Expense.user_id == user_id
         )
 
-    if end_date:
-        query = query.filter(
-            Expense.expense_date
-            < datetime.combine(end_date + timedelta(days=1), time.min)
-        )
-
-    if search and search.strip():
-        term = f"%{search.strip()}%"
-        query = query.filter(
-            or_(
-                Expense.description.ilike(term),
-                Expense.category.ilike(term),
-                Expense.sub_category.ilike(term),
-                Expense.invoice_number.ilike(term),
-                Expense.vendor.has(Vendor.vendor_name.ilike(term)),
-            )
-        )
-
-    total = query.count()
-
-    expenses = (
-        query.order_by(Expense.expense_id.desc())
-        .offset((page - 1) * limit)
-        .limit(limit)
+    return (
+        query
+        .order_by(Expense.expense_id.desc())
         .all()
     )
 
-    return {
-        "total": total,
-        "page": page,
-        "limit": limit,
-        "total_pages": (total + limit - 1) // limit,
-        "expenses": expenses,
-    }
 
-
+# GET EXPENSE BY ID
 def get_expense(
     db: Session,
     expense_id: int,
@@ -201,20 +224,31 @@ def get_expense(
     )
 
     if user_id is not None:
-        query = query.filter(Expense.user_id == user_id)
+        query = query.filter(
+            Expense.user_id == user_id
+        )
 
     return query.first()
 
 
+# UPDATE EXPENSE
 def update_expense(
     db: Session,
     expense_id: int,
     company_id: int,
     **updates,
 ):
-    expense = get_expense(db, expense_id, company_id)
+    expense = get_expense(
+        db,
+        expense_id,
+        company_id,
+    )
 
-    if expense is None or expense.status != "Pending" or not updates:
+    if (
+        expense is None
+        or expense.status != "Pending"
+        or not updates
+    ):
         return None
 
     if not set(updates).issubset(UPDATABLE_FIELDS):
@@ -224,29 +258,63 @@ def update_expense(
         if field in updates and updates[field] is None:
             return None
 
-    new_category = updates.get("category", expense.category)
-    new_sub_category = updates.get("sub_category", expense.sub_category)
-
-    if not validate_expense_category(new_category, new_sub_category):
+    if not validate_text_fields(updates):
         return None
+
+    new_category = updates.get(
+        "category",
+        expense.category,
+    )
+
+    new_sub_category = updates.get(
+        "sub_category",
+        expense.sub_category,
+    )
+
+    if not validate_expense_category(
+        new_category,
+        new_sub_category,
+    ):
+        return None
+
+    if "category" in updates:
+        updates["category"] = updates["category"].strip()
 
     if "sub_category" in updates:
         updates["sub_category"] = updates["sub_category"].strip()
 
-    vendor_id = updates.get("vendor_id", expense.vendor_id)
+    if "expense_date" in updates:
+        if not validate_expense_date(updates["expense_date"]):
+            return None
 
-    if vendor_id is not None and not get_vendor(db, vendor_id, company_id):
+    vendor_id = updates.get(
+        "vendor_id",
+        expense.vendor_id,
+    )
+
+    if not get_vendor(db, vendor_id, company_id):
         return None
 
-    if updates.get("amount", expense.amount) <= 0:
+    new_amount = updates.get(
+        "amount",
+        expense.amount,
+    )
+
+    if new_amount is None or new_amount <= 0:
         return None
 
-    gst_amount = updates.get("gst_amount", expense.gst_amount)
+    gst_amount = updates.get(
+        "gst_amount",
+        expense.gst_amount,
+    )
 
     if gst_amount is not None and gst_amount < 0:
         return None
 
     for field, value in updates.items():
+        if isinstance(value, str):
+            value = value.strip()
+
         setattr(expense, field, value)
 
     try:
@@ -258,15 +326,23 @@ def update_expense(
         raise
 
 
+# DELETE PENDING EXPENSE
 def delete_expense(
     db: Session,
     expense_id: int,
     company_id: int,
 ):
-    expense = get_expense(db, expense_id, company_id)
+    expense = get_expense(
+        db,
+        expense_id,
+        company_id,
+    )
 
-    if expense is None or expense.status != "Pending":
-        return None
+    if expense is None:
+        return "not_found"
+
+    if expense.status != "Pending":
+        return "not_pending"
 
     document_paths = [
         Path(document.document_path)
@@ -287,9 +363,10 @@ def delete_expense(
         except OSError:
             pass
 
-    return True
+    return "deleted"
 
 
+# APPROVE EXPENSE
 def approve_expense(
     db: Session,
     expense_id: int,
@@ -297,7 +374,11 @@ def approve_expense(
     approved_by: int | None = None,
     approved_amount: Decimal | None = None,
 ):
-    expense = get_expense(db, expense_id, company_id)
+    expense = get_expense(
+        db,
+        expense_id,
+        company_id,
+    )
 
     if expense is None or expense.status != "Pending":
         return None
@@ -329,20 +410,27 @@ def approve_expense(
         raise
 
 
+# REJECT EXPENSE
 def reject_expense(
     db: Session,
     expense_id: int,
     company_id: int,
     rejection_reason: str,
 ):
-    expense = get_expense(db, expense_id, company_id)
-    reason = rejection_reason.strip()
+    expense = get_expense(
+        db,
+        expense_id,
+        company_id,
+    )
 
-    if expense is None or expense.status != "Pending" or not reason:
+    if expense is None or expense.status != "Pending":
+        return None
+
+    if not rejection_reason or not rejection_reason.strip():
         return None
 
     expense.status = "Rejected"
-    expense.rejection_reason = reason
+    expense.rejection_reason = rejection_reason.strip()
 
     try:
         db.commit()
@@ -353,6 +441,7 @@ def reject_expense(
         raise
 
 
+# PAY APPROVED EXPENSE
 def pay_expense(
     db: Session,
     expense_id: int,
@@ -362,7 +451,11 @@ def pay_expense(
     transaction_reference: str | None = None,
     paid_by: int | None = None,
 ):
-    expense = get_expense(db, expense_id, company_id)
+    expense = get_expense(
+        db,
+        expense_id,
+        company_id,
+    )
 
     if expense is None or expense.status != "Approved":
         return None
@@ -370,13 +463,22 @@ def pay_expense(
     if not payment_mode or not payment_mode.strip():
         return None
 
+    if (
+        transaction_reference is not None
+        and not transaction_reference.strip()
+    ):
+        return None
+
     expense.payment_mode = payment_mode.strip()
     expense.payment_date = payment_date
-    expense.transaction_reference = transaction_reference
+    expense.transaction_reference = (
+        transaction_reference.strip()
+        if transaction_reference
+        else None
+    )
     expense.paid_by = paid_by
     expense.payment_status = "Paid"
 
-    # Automatically close the expense after successful payment.
     expense.status = "Closed"
     expense.closed_at = datetime.utcnow()
 
@@ -389,6 +491,7 @@ def pay_expense(
         raise
 
 
+# EXPENSE DASHBOARD
 def get_expense_dashboard(
     db: Session,
     company_id: int,
@@ -398,7 +501,9 @@ def get_expense_dashboard(
             func.count(Expense.expense_id),
             func.coalesce(func.sum(Expense.amount), 0),
         )
-        .filter(Expense.company_id == company_id)
+        .filter(
+            Expense.company_id == company_id
+        )
         .first()
     )
 
@@ -408,18 +513,26 @@ def get_expense_dashboard(
             func.count(Expense.expense_id),
             func.coalesce(func.sum(Expense.amount), 0),
         )
-        .filter(Expense.company_id == company_id)
+        .filter(
+            Expense.company_id == company_id
+        )
         .group_by(Expense.status)
         .all()
     )
 
     status_summary = {
-        expense_status: {"count": 0, "amount": 0}
+        expense_status: {
+            "count": 0,
+            "amount": 0,
+        }
         for expense_status in VALID_EXPENSE_STATUSES
     }
 
     for name, count, amount in status_data:
-        status_summary[name] = {"count": count, "amount": amount}
+        status_summary[name] = {
+            "count": count,
+            "amount": amount,
+        }
 
     category_data = (
         db.query(
@@ -427,7 +540,9 @@ def get_expense_dashboard(
             func.count(Expense.expense_id),
             func.coalesce(func.sum(Expense.amount), 0),
         )
-        .filter(Expense.company_id == company_id)
+        .filter(
+            Expense.company_id == company_id
+        )
         .group_by(Expense.category)
         .all()
     )

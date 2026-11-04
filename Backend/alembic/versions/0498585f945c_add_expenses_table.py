@@ -2,7 +2,7 @@
 """Add expenses table migration.
 
 Revision ID: 0498585f945c
-Revises: add_salary_slip_history_breakdown
+Revises: 89119bca2961
 """
 
 from typing import Sequence, Union
@@ -13,9 +13,7 @@ from sqlalchemy import inspect
 
 
 revision: str = "0498585f945c"
-down_revision: Union[str, Sequence[str], None] = (
-    "add_salary_slip_history_breakdown"
-)
+down_revision: Union[str, Sequence[str], None] = "89119bca2961"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
