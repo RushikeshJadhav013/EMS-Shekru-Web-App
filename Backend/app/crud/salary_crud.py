@@ -4,7 +4,7 @@ Salary CRUD Operations - Database operations for salary management
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from typing import Optional, List, Union
-from datetime import datetime
+from datetime import datetime, date, time
 
 from app.db.models.salary import EmployeeSalary, EmployeeSalaryHistory, SalaryIncrement, SalarySlipHistory
 from app.db.models.user import User
@@ -16,7 +16,7 @@ from app.schemas.salary_schema import (
     EmployeeSalaryCTCUpdate, EmployeeSalaryManualFullUpdate, SalaryIncrementCreate, SalaryCalculationPreview
 )
 from app.services.salary_calculation_service import calculate_salary_from_ctc, SalaryCalculator
-from app.utils.timezone import now_ist
+from app.utils.timezone import now_ist, IST
 import logging
 import re
 from decimal import Decimal, ROUND_HALF_UP
@@ -443,23 +443,29 @@ def get_salary_structure_for_period(
     effective during a specific (month, year) period.
 
     Logic:
-    - Target period begins on datetime(year, month, 1).
-    - If there are historical snapshots in EmployeeSalaryHistory whose effective_to > datetime(year, month, 1),
-      the one with the earliest effective_to (ascending) that is after datetime(year, month, 1)
-      was the active salary during that month.
-    - If no snapshot has effective_to > datetime(year, month, 1), then all increments occurred
-      prior to this month, meaning the current active EmployeeSalary applies.
+    - Target period covers the calendar month (year, month).
+    - An old snapshot in EmployeeSalaryHistory was replaced when an increment/update occurred
+      at effective_to. That old snapshot applies to (year, month) only if its effective_to >= next_month_start
+      (meaning the old structure remained in effect through the entirety of (year, month) and only expired later).
+    - If an increment had effective_date in (year, month) (e.g., 1st Oct), the historical snapshot's
+      effective_to will be < next_month_start (1st Nov), so the new incremented salary applies
+      from that month (October) itself.
+    - If no snapshot has effective_to >= next_month_start, all increments occurred
+      in or prior to this month, meaning the current active EmployeeSalary applies.
     """
     if not _user_in_scope(db, user_id=user_id, company_id=company_id, branch_id=branch_id):
         return None
 
-    period_start = datetime(year, month, 1)
+    if month == 12:
+        next_month_start = datetime(year + 1, 1, 1)
+    else:
+        next_month_start = datetime(year, month + 1, 1)
 
     historical_snapshot = (
         db.query(EmployeeSalaryHistory)
         .filter(
             EmployeeSalaryHistory.user_id == user_id,
-            EmployeeSalaryHistory.effective_to > period_start,
+            EmployeeSalaryHistory.effective_to >= next_month_start,
         )
         .order_by(EmployeeSalaryHistory.effective_to.asc(), EmployeeSalaryHistory.id.asc())
         .first()
@@ -823,13 +829,20 @@ def create_salary_increment(
                 "Please create a salary record before applying increment."
             )
 
+        # Normalize effective_date to a naive datetime in IST if timezone-aware
+        effective_dt = increment_data.effective_date
+        if isinstance(effective_dt, datetime) and effective_dt.tzinfo is not None:
+            effective_dt = effective_dt.astimezone(IST).replace(tzinfo=None)
+        elif isinstance(effective_dt, date) and not isinstance(effective_dt, datetime):
+            effective_dt = datetime.combine(effective_dt, time.min)
+
         # Validation: Joining date check
         user = db.query(User).filter(User.user_id == increment_data.user_id).first()
         if user and user.joining_date:
             inc_date = (
-                increment_data.effective_date.date()
-                if isinstance(increment_data.effective_date, datetime)
-                else increment_data.effective_date
+                effective_dt.date()
+                if isinstance(effective_dt, datetime)
+                else effective_dt
             )
             user_joining = (
                 user.joining_date.date()
@@ -849,11 +862,22 @@ def create_salary_increment(
             .order_by(SalaryIncrement.effective_date.desc(), SalaryIncrement.id.desc())
             .first()
         )
-        if latest_inc and increment_data.effective_date <= latest_inc.effective_date:
-            raise ValueError(
-                f"Increment effective date ({increment_data.effective_date.strftime('%d-%m-%Y')}) "
-                f"must be after the previous increment date ({latest_inc.effective_date.strftime('%d-%m-%Y')})"
+        if latest_inc:
+            latest_date = (
+                latest_inc.effective_date.date()
+                if isinstance(latest_inc.effective_date, datetime)
+                else latest_inc.effective_date
             )
+            inc_date = (
+                effective_dt.date()
+                if isinstance(effective_dt, datetime)
+                else effective_dt
+            )
+            if inc_date <= latest_date:
+                raise ValueError(
+                    f"Increment effective date ({inc_date.strftime('%d-%m-%Y')}) "
+                    f"must be after the previous increment date ({latest_date.strftime('%d-%m-%Y')})"
+                )
 
         previous_ctc = float(current_salary.ctc_annual)
         if increment_data.increment_ctc_annual is not None:
@@ -872,6 +896,8 @@ def create_salary_increment(
         # Determine effective_from for historical snapshot:
         # If there was a previous increment, the previous structure started then; otherwise when created.
         effective_from = latest_inc.effective_date if latest_inc else current_salary.created_at
+        if isinstance(effective_from, datetime) and effective_from.tzinfo is not None:
+            effective_from = effective_from.astimezone(IST).replace(tzinfo=None)
 
         # Snapshot every persisted EmployeeSalary field before any mutation.
         history = EmployeeSalaryHistory(
@@ -900,7 +926,7 @@ def create_salary_increment(
             source_created_at=current_salary.created_at,
             source_updated_at=current_salary.updated_at,
             effective_from=effective_from,
-            effective_to=increment_data.effective_date,
+            effective_to=effective_dt,
             change_type="increment",
             reason=increment_data.reason,
             changed_by=approved_by,
@@ -934,9 +960,9 @@ def create_salary_increment(
             previous_salary=previous_monthly,
             increment_amount=increment_monthly,
             new_salary=new_monthly,
-            effective_date=increment_data.effective_date,
-            effective_month=increment_data.effective_date.month,
-            effective_year=increment_data.effective_date.year,
+            effective_date=effective_dt,
+            effective_month=effective_dt.month,
+            effective_year=effective_dt.year,
             reason=increment_data.reason,
             approved_by=approved_by,
             approved_by_name=approved_by_name,

@@ -253,7 +253,7 @@ def _increment_to_out(increment: SalaryIncrement, db: Session) -> SalaryIncremen
         approved_by_role=approved_by_role,
         previous_components=previous_components,
         new_components=new_components,
-        letter_sent=increment.letter_sent,
+        letter_sent=bool(increment.letter_sent),
         letter_sent_at=increment.letter_sent_at,
         created_at=increment.created_at,
     )
@@ -764,6 +764,8 @@ def create_increment(
         )
         
         return _increment_to_out(increment, db)
+    except HTTPException:
+        raise
     except ValueError as e:
         # Handle validation errors (e.g., no salary record found)
         logger.error(f"Validation error creating increment: {str(e)}")
@@ -772,10 +774,10 @@ def create_increment(
             detail=str(e)
         )
     except Exception as e:
-        logger.error(f"Error creating increment: {str(e)}")
+        logger.error(f"Error creating increment: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating increment record"
+            detail=f"Error creating increment record: {str(e)}"
         )
 
 
