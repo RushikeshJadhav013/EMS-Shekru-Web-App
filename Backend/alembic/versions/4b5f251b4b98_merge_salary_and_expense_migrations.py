@@ -1,7 +1,7 @@
 """merge salary and expense migrations
 
 Revision ID: 4b5f251b4b98
-Revises: 1eb21f204450, add_slip_components_and_increment_tracking
+Revises: 1eb21f204450, 8d206b940fdb
 Create Date: 2026-11-03 19:11:01.898341
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '4b5f251b4b98'
-down_revision: Union[str, Sequence[str], None] = ('1eb21f204450', 'add_slip_components_and_increment_tracking')
+down_revision: Union[str, Sequence[str], None] = ('1eb21f204450', '8d206b940fdb')
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
