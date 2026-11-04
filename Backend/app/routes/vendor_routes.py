@@ -3,7 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.dependencies import get_tenant_scope, require_roles
+from app.dependencies import (
+    get_current_user,
+    get_tenant_scope,
+    require_roles,
+)
 from app.enums import RoleEnum
 from app.db.models.user import User
 from app.crud import vendor_crud
@@ -28,7 +32,7 @@ router = APIRouter(
 def create_vendor(
     payload: VendorCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
     return vendor_crud.create_vendor(
@@ -48,7 +52,7 @@ def create_vendor(
 )
 def get_vendors(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
     return vendor_crud.get_vendors(
@@ -64,7 +68,7 @@ def get_vendors(
 def get_vendor(
     vendor_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
     vendor = vendor_crud.get_vendor(

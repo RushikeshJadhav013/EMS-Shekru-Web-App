@@ -1,13 +1,14 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
     Depends,
+    Form,
     HTTPException,
     Path,
-    Query,
     status,
 )
 from pydantic import BaseModel, Field
@@ -21,11 +22,13 @@ from app.dependencies import (
 )
 from app.enums import RoleEnum
 from app.db.models.user import User
+
 from app.schemas.expense_schema import (
     ExpenseCreate,
     ExpenseOut,
     ExpenseUpdate,
 )
+
 from app.crud.expense_crud import (
     EXPENSE_CATEGORIES,
     create_expense,
@@ -74,14 +77,6 @@ class ExpensePayment(BaseModel):
     )
 
 
-class ExpenseListResponse(BaseModel):
-    total: int
-    page: int
-    limit: int
-    total_pages: int
-    expenses: list[ExpenseOut]
-
-
 def get_company_id(scope: dict) -> int:
     company_id = scope.get("company_id")
 
@@ -97,9 +92,7 @@ def get_company_id(scope: dict) -> int:
 # FIXED EXPENSE CATEGORIES
 @router.get("/categories")
 def get_expense_categories(
-    current_user: User = Depends(
-        require_roles(RoleEnum.ADMIN)
-    ),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
     return {
@@ -114,11 +107,17 @@ def get_expense_categories(
     status_code=status.HTTP_201_CREATED,
 )
 def create_expense_record(
-    expense: ExpenseCreate,
+    expense: Annotated[ExpenseCreate, Form()],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
+    if current_user.role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin is not allowed to create expenses.",
+        )
+
     created = create_expense(
         db=db,
         company_id=get_company_id(scope),
@@ -142,81 +141,29 @@ def create_expense_record(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Invalid category, sub-category, or vendor "
-                "for this company."
+                "Invalid category, sub-category, expense date, "
+                "amount, or vendor for this company."
             ),
         )
 
     return created
 
 
-# LIST EXPENSES WITH FILTERS AND PAGINATION
+# GET ALL EXPENSES - WITHOUT FILTERS AND PAGINATION
 @router.get(
     "/",
-    response_model=ExpenseListResponse,
+    response_model=list[ExpenseOut],
 )
 def list_expenses(
-    status_filter: str | None = Query(
-        default=None,
-        alias="status",
-    ),
-    category: str | None = Query(default=None),
-    start_date: date | None = Query(default=None),
-    end_date: date | None = Query(default=None),
-    search: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_roles(RoleEnum.ADMIN)
     ),
     scope: dict = Depends(get_tenant_scope),
 ):
-    allowed_statuses = {
-        "Pending",
-        "Approved",
-        "Rejected",
-        "Paid",
-        "Closed",
-    }
-
-    if (
-        status_filter is not None
-        and status_filter not in allowed_statuses
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "Status must be one of: "
-                + ", ".join(sorted(allowed_statuses))
-            ),
-        )
-
-    if (
-        category is not None
-        and category not in EXPENSE_CATEGORIES
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid expense category.",
-        )
-
-    if start_date and end_date and start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="start_date cannot be after end_date.",
-        )
-
     return get_expenses(
         db=db,
         company_id=get_company_id(scope),
-        status=status_filter,
-        category=category,
-        start_date=start_date,
-        end_date=end_date,
-        search=search,
-        page=page,
-        limit=limit,
     )
 
 
@@ -241,7 +188,7 @@ def expense_dashboard(
     response_model=ExpenseOut,
 )
 def get_expense_record(
-    expense_id: int = Path(..., ge=1),
+    expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_roles(RoleEnum.ADMIN)
@@ -270,7 +217,7 @@ def get_expense_record(
 )
 def update_expense_record(
     expense: ExpenseUpdate,
-    expense_id: int = Path(..., ge=1),
+    expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_roles(RoleEnum.ADMIN)
@@ -307,32 +254,37 @@ def update_expense_record(
 # DELETE PENDING EXPENSE
 @router.delete(
     "/{expense_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
 )
 def delete_expense_record(
-    expense_id: int = Path(..., ge=1),
+    expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_roles(RoleEnum.ADMIN)
     ),
     scope: dict = Depends(get_tenant_scope),
 ):
-    deleted = delete_expense(
+    result = delete_expense(
         db=db,
         expense_id=expense_id,
         company_id=get_company_id(scope),
     )
 
-    if not deleted:
+    if result == "not_found":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Expense not found or only Pending "
-                "expenses can be deleted."
-            ),
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found.",
         )
 
-    return None
+    if result == "not_pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only Pending expenses can be deleted.",
+        )
+
+    return {
+        "message": "Expense deleted successfully."
+    }
 
 
 # APPROVE EXPENSE
@@ -341,7 +293,7 @@ def delete_expense_record(
     response_model=ExpenseOut,
 )
 def approve_expense_record(
-    expense_id: int = Path(..., ge=1),
+    expense_id: int = Path(..., gt=0),
     approval: ExpenseApprove | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(
@@ -373,7 +325,8 @@ def approve_expense_record(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Approval cannot proceed until the required supporting document is attached."
+                "Approval cannot proceed until the required "
+                "supporting document is attached."
             ),
         )
 
@@ -408,7 +361,7 @@ def approve_expense_record(
 )
 def reject_expense_record(
     rejection: ExpenseReject,
-    expense_id: int = Path(..., ge=1),
+    expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_roles(RoleEnum.ADMIN)
@@ -449,7 +402,7 @@ def reject_expense_record(
 )
 def pay_expense_record(
     payment: ExpensePayment,
-    expense_id: int = Path(..., ge=1),
+    expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_roles(RoleEnum.ADMIN)

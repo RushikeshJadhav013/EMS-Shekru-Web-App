@@ -1,5 +1,12 @@
 
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    ForeignKey,
+    DateTime,
+    Boolean,
+)
 from sqlalchemy.sql import func
 
 from app.db.database import Base
@@ -25,6 +32,15 @@ class Vendor(Base):
     email = Column(String(150), nullable=True)
     phone = Column(String(20), nullable=True)
     address = Column(String(255), nullable=True)
+
+    # Soft Delete
+    is_deleted = Column(
+        Boolean,
+        default=False,
+        server_default="0",
+        nullable=False,
+        index=True,
+    )
 
     created_at = Column(
         DateTime,

@@ -44,8 +44,8 @@ class Expense(Base):
     # Vendor and invoice details
     vendor_id = Column(
         Integer,
-        ForeignKey("vendors.vendor_id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("vendors.vendor_id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
     invoice_number = Column(String(100), nullable=True)
