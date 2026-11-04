@@ -1253,7 +1253,8 @@ def create_salary_notification(
         user_id=user_id,
         notification_type=notification_type,
         title=title,
-        message=message
+        message=message,
+        created_at=now_ist(),
     )
     
     db.add(db_notification)

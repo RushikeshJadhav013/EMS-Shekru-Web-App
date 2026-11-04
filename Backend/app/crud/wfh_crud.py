@@ -678,6 +678,7 @@ def create_wfh_request_notifications(db: Session, wfh_request: WFHRequest, reque
             title=title,
             message=message,
             is_read=False,
+            created_at=now_ist(),
         )
         db.add(notification)
         notifications.append(notification)
@@ -757,6 +758,7 @@ def create_wfh_decision_notification(
         title=title,
         message=message,
         is_read=False,
+        created_at=now_ist(),
     )
     db.add(notification)
     db.commit()
@@ -802,6 +804,7 @@ def create_wfh_deletion_notification(
             title=title,
             message=message,
             is_read=False,
+            created_at=now_ist(),
         )
         db.add(notification)
         notifications.append(notification)

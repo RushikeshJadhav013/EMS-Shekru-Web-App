@@ -961,6 +961,7 @@ def create_leave_request_notifications(db: Session, leave: Leave, requester: Use
             title=title,
             message=message,
             is_read=False,
+            created_at=now_ist(),
         )
         db.add(notification)
         notifications.append(notification)
@@ -1049,6 +1050,7 @@ def create_leave_decision_notification(
         title=title,
         message=message,
         is_read=False,
+        created_at=now_ist(),
     )
 
     db.add(notification)
@@ -1090,6 +1092,7 @@ def create_leave_deletion_notification(db: Session, leave: Leave, requester: Use
             title=title,
             message=message,
             is_read=False,
+            created_at=now_ist(),
         )
         db.add(notification)
         notifications.append(notification)

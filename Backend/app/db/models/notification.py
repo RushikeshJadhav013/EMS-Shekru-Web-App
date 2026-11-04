@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, func
 from sqlalchemy.orm import relationship
 from app.db.database import Base
+from app.utils.timezone import now_ist
 
 
 class LeaveNotification(Base):
@@ -13,7 +14,7 @@ class LeaveNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="leave_notifications")
     leave = relationship("Leave", back_populates="notifications")
@@ -30,7 +31,7 @@ class TaskNotification(Base):
     message = Column(Text, nullable=False)
     pass_details = Column(Text, nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="task_notifications")
     task = relationship("Task", back_populates="notifications")
@@ -45,7 +46,7 @@ class SalaryNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="salary_notifications")
 
@@ -60,7 +61,7 @@ class WFHNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="wfh_notifications")
     wfh_request = relationship("WFHRequest", back_populates="notifications")
@@ -76,7 +77,7 @@ class ProjectNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="project_notifications")
     project = relationship("Project", back_populates="notifications")
@@ -93,7 +94,7 @@ class MeetingNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="meeting_notifications")
     meeting = relationship("Meeting", back_populates="notifications")
@@ -111,7 +112,7 @@ class ChatNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", foreign_keys=[user_id], back_populates="chat_notifications")
 
@@ -126,6 +127,6 @@ class CompanyHolidayNotification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, default=now_ist, nullable=False)
 
     user = relationship("User", back_populates="company_holiday_notifications")
