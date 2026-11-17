@@ -620,11 +620,9 @@ def _build_salary_annexure_elements(
                           conveyance_annual + medical_allowance_annual + other_allowance_annual)
     monthly_gross = round(total_gross_annual / 12, 2)
     
-    # STRICT RULE: CTC = Total Gross + Employer PF + PT + Other Tax
-    ctc_annual = (
-        total_gross_annual + employer_pf_annual + professional_tax_annual + other_deduction_annual
-    )
-    monthly_ctc = round(ctc_annual / 12, 2)
+    # CTC equals Total Gross; deductions are subtracted to reach Net In-Hand
+    ctc_annual = total_gross_annual
+    monthly_ctc = monthly_gross
     
     # Employee deductions (Professional Tax + Other Tax + PF)
     total_deductions_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
@@ -703,7 +701,7 @@ def _build_salary_annexure_elements(
     pt_monthly_note = f"PM 200 In Feb 300" if professional_tax_annual > 0 else "-"
     
     deductions_data = [
-        ["B) Employee Contribution", "Per Annum", "Per Month"],
+        ["B) Employee Deductions", "Per Annum", "Per Month"],
         ["Professional Tax Deduction", format_currency_int(professional_tax_annual), pt_monthly_note],
         ["Other", format_currency_int(other_deduction_annual), format_currency(round(other_deduction_annual / 12, 2))],
         ["PF", format_currency_int(employer_pf_annual), format_currency(round(employer_pf_annual / 12, 2))],
@@ -728,15 +726,16 @@ def _build_salary_annexure_elements(
     elements.append(Spacer(1, 10))
     
     # ===== CTC SUMMARY TABLE =====
-    # STRICT RULES: Total Gross (earnings) vs CTC (company cost)
-    # CTC = Total Gross + Employer PF + PT + Other Tax
-    # Keep header row (Per Annum / Per Month) and present A/B/CTC rows
-    employee_contribution_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
+    # CTC Summary table: Cost to Company (Gross), Deductions, and Net Take-Home (A - B)
+    total_deductions_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
+    monthly_deductions = round(total_deductions_annual / 12, 2)
+    net_take_home_annual = max(0.0, total_gross_annual - total_deductions_annual)
+    monthly_take_home = round(net_take_home_annual / 12, 2)
     ctc_data = [
         ["", "Per Annum", "Per Month"],
-        ["A) Gross Salary", format_currency_int(total_gross_annual), format_currency(monthly_gross)],
-        ["B) Employee Contribution", format_currency_int(employee_contribution_annual), format_currency(round(employee_contribution_annual / 12, 2))],
-        ["Total Cost To Company (CTC):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
+        ["A) Total Cost To Company (CTC / Gross):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
+        ["B) Total Deductions (PF + PT):", format_currency_int(total_deductions_annual), format_currency(monthly_deductions)],
+        ["Net In-Hand Salary (A - B):", format_currency_int(net_take_home_annual), format_currency(monthly_take_home)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)
@@ -965,7 +964,7 @@ def generate_increment_letter_pdf(
     eff_year = effective_date.year
     
     body_text = (
-        f"We are pleased to inform you that after evaluating your performance we are your monthly salary "
+        f"We are pleased to inform you that after evaluating your performance your monthly salary "
         f"has been revised w.e.f {eff_day} {eff_month} {eff_year}, and the new salary structure will be:"
     )
     
@@ -1709,11 +1708,9 @@ def generate_offer_letter_pdf(
                           conveyance_annual + medical_allowance_annual + other_allowance_annual)
     monthly_gross = round(total_gross_annual / 12, 2)
     
-    # STRICT RULE: CTC = Total Gross + Employer PF + PT + Other Tax
-    ctc_annual = (
-        total_gross_annual + employer_pf_annual + professional_tax_annual + other_deduction_annual
-    )
-    monthly_ctc = round(ctc_annual / 12, 2)
+    # CTC equals Total Gross; deductions are subtracted to reach Net In-Hand
+    ctc_annual = total_gross_annual
+    monthly_ctc = monthly_gross
     
     # Employee deductions (Professional Tax + Other Tax + PF)
     total_deductions_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
@@ -1785,7 +1782,7 @@ def generate_offer_letter_pdf(
     pt_monthly_note = "PM 200 In Feb 300" if professional_tax_annual > 0 else "-"
     
     deductions_data = [
-        ["B) Employee Contribution", "Per Annum", "Per Month"],
+        ["B) Employee Deductions", "Per Annum", "Per Month"],
         ["Professional Tax Deduction", format_currency_int(professional_tax_annual), pt_monthly_note],
         ["Other", format_currency_int(other_deduction_annual), format_currency(round(other_deduction_annual / 12, 2))],
         ["PF", format_currency_int(employer_pf_annual), format_currency(round(employer_pf_annual / 12, 2))],
@@ -1810,15 +1807,16 @@ def generate_offer_letter_pdf(
     elements.append(deductions_table)
     elements.append(Spacer(1, 10))
     
-    # CTC Summary table - STRICT RULES: Total Gross vs CTC
-    # CTC = Total Gross + Employer PF + PT + Other Tax
-    # Keep header row (Per Annum / Per Month) and present A/B/CTC rows
-    employee_contribution_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
+    # CTC Summary table: Cost to Company (Gross), Deductions, and Net Take-Home (A - B)
+    total_deductions_annual = professional_tax_annual + other_deduction_annual + employer_pf_annual
+    monthly_deductions = round(total_deductions_annual / 12, 2)
+    net_take_home_annual = max(0.0, total_gross_annual - total_deductions_annual)
+    monthly_take_home = round(net_take_home_annual / 12, 2)
     ctc_data = [
         ["", "Per Annum", "Per Month"],
-        ["A) Gross Salary", format_currency_int(total_gross_annual), format_currency(monthly_gross)],
-        ["B) Employee Contribution", format_currency_int(employee_contribution_annual), format_currency(round(employee_contribution_annual / 12, 2))],
-        ["Total Cost To Company (CTC):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
+        ["A) Total Cost To Company (CTC / Gross):", format_currency_int(ctc_annual), format_currency(monthly_ctc)],
+        ["B) Total Deductions (PF + PT):", format_currency_int(total_deductions_annual), format_currency(monthly_deductions)],
+        ["Net In-Hand Salary (A - B):", format_currency_int(net_take_home_annual), format_currency(monthly_take_home)],
     ]
     
     ctc_table = Table(ctc_data, colWidths=col_widths)

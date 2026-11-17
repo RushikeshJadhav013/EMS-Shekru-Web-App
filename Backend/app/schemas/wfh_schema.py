@@ -2,7 +2,7 @@
 Work From Home (WFH) Request Schemas
 Pydantic models for request validation and response serialization.
 """
-from pydantic import BaseModel, Field, field_validator, model_validator, constr
+from pydantic import BaseModel, Field, field_validator, model_validator, constr, computed_field
 from datetime import date, datetime, timedelta
 from typing import Optional, Literal
 
@@ -149,4 +149,16 @@ class WFHNotificationOut(BaseModel):
     created_at: datetime = Field(..., description="Creation timestamp")
 
     model_config = {"from_attributes": True}
+
+    @computed_field
+    @property
+    def time_12h(self) -> str:
+        """12-hour clock format with AM/PM (e.g. '03:30 PM')"""
+        return self.created_at.strftime("%I:%M %p") if self.created_at else ""
+
+    @computed_field
+    @property
+    def formatted_created_at(self) -> str:
+        """Formatted date and 12-hour time (e.g. '04 Nov 2026, 03:30 PM')"""
+        return self.created_at.strftime("%d %b %Y, %I:%M %p") if self.created_at else ""
 
