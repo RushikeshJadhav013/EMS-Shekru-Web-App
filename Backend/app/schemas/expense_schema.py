@@ -60,11 +60,10 @@ class ExpenseBase(BaseModel):
     @field_validator("expense_date")
     @classmethod
     def validate_expense_date(cls, value: datetime) -> datetime:
-        if value.date() >= date.today():
-            raise ValueError("Expense date must be earlier than today.")
+        if value.date() > date.today():
+            raise ValueError("Only past and today's dates are accepted.")
 
         return value
-
 
 class ExpenseCreate(ExpenseBase):
 
@@ -130,11 +129,10 @@ class ExpenseUpdate(BaseModel):
     @field_validator("expense_date")
     @classmethod
     def validate_expense_date(cls, value: datetime | None) -> datetime | None:
-        if value is not None and value.date() >= date.today():
-            raise ValueError("Expense date must be earlier than today.")
+        if value is not None and value.date() > date.today():
+            raise ValueError("Only past and today's dates are accepted.")
 
         return value
-
 
 class ExpenseOut(BaseModel):
     expense_id: int

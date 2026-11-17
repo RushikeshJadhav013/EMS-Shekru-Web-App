@@ -29,7 +29,7 @@ class VendorCreate(BaseModel):
     )
     email: EmailStr
     phone: str = Field(
-        ..., pattern=r"^[0-9]{10}$"
+        ...,pattern=r"^[6-9][0-9]{9}$"
     )
     address: str = Field(
         ..., min_length=1, max_length=255
@@ -57,7 +57,7 @@ class VendorUpdate(BaseModel):
     )
     email: EmailStr | None = None
     phone: str | None = Field(
-        default=None, pattern=r"^[0-9]{10}$"
+        default=None, pattern=r"^[6-9][0-9]{9}$"
     )
     address: str | None = Field(
         default=None, min_length=1, max_length=255

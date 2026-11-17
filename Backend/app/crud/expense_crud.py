@@ -7,6 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.models.expense import Expense
+from app.db.models.expense import Expense
 from app.db.models.vendor import Vendor
 from app.enums import ExpenseCategoryEnum
 
@@ -73,13 +74,11 @@ def validate_expense_category(
 
     return bool(sub_category)
 
-
 def validate_expense_date(expense_date: datetime) -> bool:
     if not isinstance(expense_date, datetime):
         return False
 
-    return expense_date.date() < date.today()
-
+    return expense_date.date() <= date.today()
 
 def validate_text_fields(data: dict) -> bool:
     for field in TEXT_FIELDS:
@@ -424,6 +423,9 @@ def reject_expense(
     )
 
     if expense is None or expense.status != "Pending":
+        return None
+
+    if not expense.documents:
         return None
 
     if not rejection_reason or not rejection_reason.strip():

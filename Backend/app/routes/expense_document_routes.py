@@ -65,6 +65,14 @@ def get_company_id(scope: dict) -> int:
     return int(company_id)
 
 
+def check_expense_creator(expense, current_user: User):
+    if expense.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the expense creator can manage documents.",
+        )
+
+
 # UPLOAD DOCUMENT FOR PENDING EXPENSE
 @router.post(
     "/",
@@ -80,6 +88,26 @@ def upload_expense_document(
 ):
     company_id = get_company_id(scope)
 
+    expense = get_expense(
+        db=db,
+        expense_id=expense_id,
+        company_id=company_id,
+    )
+
+    if expense is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found.",
+        )
+
+    check_expense_creator(expense, current_user)
+
+    if expense.status != "Pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Documents can only be uploaded for Pending expenses.",
+        )
+
     original_filename = FilePath(file.filename or "").name
 
     if not original_filename or original_filename in {".", ".."}:
@@ -94,24 +122,6 @@ def upload_expense_document(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unsupported file type.",
-        )
-
-    expense = get_expense(
-        db=db,
-        expense_id=expense_id,
-        company_id=company_id,
-    )
-
-    if expense is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Expense not found.",
-        )
-
-    if expense.status != "Pending":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Documents can only be uploaded for Pending expenses.",
         )
 
     upload_dir = UPLOAD_DIR / str(company_id) / str(expense_id)
@@ -192,7 +202,7 @@ def upload_expense_document(
         file.file.close()
 
 
-# LIST DOCUMENTS FOR AN EXPENSE
+# LIST DOCUMENTS FOR AN EXPENSE - ADMIN ONLY
 @router.get(
     "/",
     response_model=list[ExpenseDocumentResponse],
@@ -220,8 +230,7 @@ def list_expense_documents(
     return documents
 
 
-
-# DELETE DOCUMENT FROM PENDING EXPENSE
+# DELETE DOCUMENT - EXPENSE CREATOR ONLY
 @router.delete(
     "/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -247,7 +256,8 @@ def remove_expense_document(
             detail="Expense not found.",
         )
 
-    # Documents can only be deleted while expense is Pending
+    check_expense_creator(expense, current_user)
+
     if expense.status != "Pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -265,13 +275,6 @@ def remove_expense_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Expense document not found.",
-        )
-
-    # Only the user who uploaded the document can delete it
-    if document.uploaded_by != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the user who uploaded the document is authorized to delete it.",
         )
 
     file_path = FilePath(document.document_path)

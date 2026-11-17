@@ -6,8 +6,8 @@ from typing import Optional
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Employee Management System"
-    # DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
-    DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
+    DATABASE_URL: str = "mysql+pymysql://root:root@localhost/empl"
+    # DATABASE_URL: str = "mysql+pymysql://staffly:staff9612@localhost/empl"
     # Keep connection usage conservative for low-memory nodes.
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "4"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "2"))

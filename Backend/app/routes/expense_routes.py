@@ -376,24 +376,49 @@ def reject_expense_record(
             detail="Rejection reason cannot be empty.",
         )
 
+    company_id = get_company_id(scope)
+
+    existing_expense = get_expense(
+        db=db,
+        expense_id=expense_id,
+        company_id=company_id,
+    )
+
+    if existing_expense is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found.",
+        )
+
+    if existing_expense.status != "Pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only Pending expenses can be rejected.",
+        )
+
+    if not existing_expense.documents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Rejection cannot proceed until the required "
+                "supporting document is attached."
+            ),
+        )
+
     expense = reject_expense(
         db=db,
         expense_id=expense_id,
-        company_id=get_company_id(scope),
+        company_id=company_id,
         rejection_reason=reason,
     )
 
     if expense is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Expense not found or only Pending "
-                "expenses can be rejected."
-            ),
+            detail="Unable to reject expense.",
         )
 
     return expense
-
 
 # PAY APPROVED EXPENSE
 @router.post(
