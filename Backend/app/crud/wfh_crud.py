@@ -565,69 +565,96 @@ def _get_wfh_notification_recipients(
     role_value = getattr(requester.role, "value", str(requester.role))
     requester_tokens = set(department_tokens_lower(requester.department))
 
-    if role_value == RoleEnum.EMPLOYEE.value:
-        if not requester_tokens:
+    # Helper to fetch active company HR users
+    def _get_company_hr() -> List[User]:
+        if company_id is None:
             return []
-        roles_to_notify = [RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR]
-        candidates = (
-            db.query(User)
-            .filter(
-                User.role.in_(roles_to_notify),
-                User.department.isnot(None),
-                User.is_active == True,  # noqa: E712
-                User.user_id != requester.user_id,
-                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
-            )
-            .all()
-        )
-        recipients: List[User] = []
-        for user in candidates:
-            if not set(department_tokens_lower(user.department)).intersection(requester_tokens):
-                continue
-            if user.role == RoleEnum.TEAM_LEAD:
-                if company_id is None or not team_lead_can_manage_employee(
-                    db,
-                    user,
-                    requester,
-                    company_id=int(company_id),
-                    branch_id=branch_id,
-                ):
-                    continue
-            recipients.append(user)
-        return recipients
-
-    if role_value == RoleEnum.TEAM_LEAD.value:
-        if not requester_tokens:
-            return []
-        roles_to_notify = [RoleEnum.MANAGER, RoleEnum.HR]
-        candidates = (
-            db.query(User)
-            .filter(
-                User.role.in_(roles_to_notify),
-                User.department.isnot(None),
-                User.is_active == True,  # noqa: E712
-                User.user_id != requester.user_id,
-                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
-            )
-            .all()
-        )
-        return [
-            user
-            for user in candidates
-            if set(department_tokens_lower(user.department)).intersection(requester_tokens)
-        ]
-
-    if role_value == RoleEnum.MANAGER.value:
-        hrs = (
+        return (
             db.query(User)
             .filter(
                 User.role == RoleEnum.HR,
+                User.company_id == company_id,
                 User.is_active == True,  # noqa: E712
                 User.user_id != requester.user_id,
-                *_user_scope_filters(company_id=company_id, branch_id=branch_id),
             )
             .all()
         )
+
+    if role_value == RoleEnum.EMPLOYEE.value:
+        recipients: List[User] = []
+        seen = set()
+
+        # 1. Add company HR
+        for hr in _get_company_hr():
+            if hr.user_id not in seen:
+                seen.add(hr.user_id)
+                recipients.append(hr)
+
+        # 2. Add TeamLead and Manager from same department
+        if requester_tokens:
+            roles_to_notify = [RoleEnum.TEAM_LEAD, RoleEnum.MANAGER]
+            candidates = (
+                db.query(User)
+                .filter(
+                    User.role.in_(roles_to_notify),
+                    User.department.isnot(None),
+                    User.is_active == True,  # noqa: E712
+                    User.user_id != requester.user_id,
+                    *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+                )
+                .all()
+            )
+            for user in candidates:
+                if not set(department_tokens_lower(user.department)).intersection(requester_tokens):
+                    continue
+                if user.role == RoleEnum.TEAM_LEAD:
+                    if company_id is None or not team_lead_can_manage_employee(
+                        db,
+                        user,
+                        requester,
+                        company_id=int(company_id),
+                        branch_id=branch_id,
+                    ):
+                        continue
+                if user.user_id not in seen:
+                    seen.add(user.user_id)
+                    recipients.append(user)
+
+        return recipients
+
+    if role_value == RoleEnum.TEAM_LEAD.value:
+        recipients: List[User] = []
+        seen = set()
+
+        # 1. Add company HR
+        for hr in _get_company_hr():
+            if hr.user_id not in seen:
+                seen.add(hr.user_id)
+                recipients.append(hr)
+
+        # 2. Add Manager from same department
+        if requester_tokens:
+            candidates = (
+                db.query(User)
+                .filter(
+                    User.role == RoleEnum.MANAGER,
+                    User.department.isnot(None),
+                    User.is_active == True,  # noqa: E712
+                    User.user_id != requester.user_id,
+                    *_user_scope_filters(company_id=company_id, branch_id=branch_id),
+                )
+                .all()
+            )
+            for user in candidates:
+                if set(department_tokens_lower(user.department)).intersection(requester_tokens):
+                    if user.user_id not in seen:
+                        seen.add(user.user_id)
+                        recipients.append(user)
+
+        return recipients
+
+    if role_value == RoleEnum.MANAGER.value:
+        hrs = _get_company_hr()
         admins = assigned_company_admins(
             db, company_id, exclude_user_id=requester.user_id
         )

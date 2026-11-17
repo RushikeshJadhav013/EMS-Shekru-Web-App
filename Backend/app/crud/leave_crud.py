@@ -829,12 +829,27 @@ def list_decided_by_approver(
     return q.all()
 
 
+def _get_company_hr_users(db: Session, company_id: Optional[int], exclude_user_id: Optional[int] = None) -> List[User]:
+    """Return all active HR users for the company."""
+    if company_id is None:
+        return []
+    q = db.query(User).filter(
+        User.company_id == int(company_id),
+        User.role == RoleEnum.HR,
+        User.is_active == True,
+    )
+    if exclude_user_id is not None:
+        q = q.filter(User.user_id != exclude_user_id)
+    return q.all()
+
+
 def _get_leave_notification_recipients(db: Session, requester: User) -> List[User]:
     """
     Get notification recipients based on requester's role and department:
-    - Employee → notify Manager, HR, and TeamLead (same department + shared active project)
-    - TeamLead → notify Manager & HR from same department(s) ONLY
-    - Manager/HR → notify Admin only (assigned to requester's company)
+    - Employee → notify Manager, TeamLead (same department + shared active project), and company HR
+    - TeamLead → notify Manager (same department) and company HR
+    - Manager → notify company HR and company-assigned Admins
+    - HR → notify company-assigned Admins only
     """
     from app.utils.team_lead_scope import team_lead_can_manage_employee
     from app.utils.tenant_scope import assigned_company_admins, user_in_tenant_scope_clauses
@@ -850,84 +865,125 @@ def _get_leave_notification_recipients(db: Session, requester: User) -> List[Use
         include_assigned_admins=False,
     )
 
-    # Employee: notify Manager + HR + TeamLead from same department(s) ONLY
+    company_hrs = _get_company_hr_users(db, company_id, exclude_user_id=requester.user_id)
+
+    # Employee: notify Manager + TeamLead from same department AND company HR
     if requester_role == RoleEnum.EMPLOYEE.value:
-        if not requester_tokens:
-            return []
-
-        roles_to_notify = [RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.TEAM_LEAD]
-        candidates = (
-            db.query(User)
-            .filter(
-                User.department.isnot(None),
-                User.role.in_(roles_to_notify),
-                User.is_active == True,
-                *tenant_clauses,
-            )
-            .all()
-        )
-
         recipients: List[User] = []
-        for user in candidates:
-            if not user.department:
-                continue
-            if user.user_id == requester.user_id:
-                continue
+        seen_ids = set()
 
-            user_tokens = department_tokens_lower(user.department)
-            if not (user_tokens and set(user_tokens).intersection(requester_tokens)):
-                continue
+        # 1. Add company HR users
+        for hr in company_hrs:
+            if hr.user_id not in seen_ids:
+                seen_ids.add(hr.user_id)
+                recipients.append(hr)
 
-            if user.role == RoleEnum.TEAM_LEAD:
-                if company_id is None or not team_lead_can_manage_employee(
-                    db,
-                    user,
-                    requester,
-                    company_id=int(company_id),
-                    branch_id=branch_id,
-                ):
+        # 2. Add Manager and TeamLead from same department
+        if requester_tokens:
+            roles_to_notify = [RoleEnum.MANAGER, RoleEnum.TEAM_LEAD]
+            candidates = (
+                db.query(User)
+                .filter(
+                    User.department.isnot(None),
+                    User.role.in_(roles_to_notify),
+                    User.is_active == True,
+                    *tenant_clauses,
+                )
+                .all()
+            )
+
+            for user in candidates:
+                if not user.department or user.user_id == requester.user_id:
                     continue
 
-            recipients.append(user)
+                user_tokens = department_tokens_lower(user.department)
+                if not (user_tokens and set(user_tokens).intersection(requester_tokens)):
+                    continue
+
+                if user.role == RoleEnum.TEAM_LEAD:
+                    if company_id is None or not team_lead_can_manage_employee(
+                        db,
+                        user,
+                        requester,
+                        company_id=int(company_id),
+                        branch_id=branch_id,
+                    ):
+                        continue
+
+                if user.user_id not in seen_ids:
+                    seen_ids.add(user.user_id)
+                    recipients.append(user)
+
         return recipients
 
-    # TeamLead request: keep existing behavior (notify Manager + HR only)
+    # TeamLead request: notify Manager from same department AND company HR
     if requester_role == RoleEnum.TEAM_LEAD.value:
-        if not requester_tokens:
-            return []
-
-        roles_to_notify = [RoleEnum.MANAGER, RoleEnum.HR]
-        candidates = (
-            db.query(User)
-            .filter(
-                User.department.isnot(None),
-                User.role.in_(roles_to_notify),
-                User.is_active == True,
-                *tenant_clauses,
-            )
-            .all()
-        )
-
         recipients: List[User] = []
-        for user in candidates:
-            if not user.department:
-                continue
-            if user.user_id == requester.user_id:
-                continue
+        seen_ids = set()
 
-            user_tokens = department_tokens_lower(user.department)
-            if user_tokens and set(user_tokens).intersection(requester_tokens):
-                recipients.append(user)
+        # 1. Add company HR users
+        for hr in company_hrs:
+            if hr.user_id not in seen_ids:
+                seen_ids.add(hr.user_id)
+                recipients.append(hr)
+
+        # 2. Add Manager from same department
+        if requester_tokens:
+            candidates = (
+                db.query(User)
+                .filter(
+                    User.department.isnot(None),
+                    User.role == RoleEnum.MANAGER,
+                    User.is_active == True,
+                    *tenant_clauses,
+                )
+                .all()
+            )
+
+            for user in candidates:
+                if not user.department or user.user_id == requester.user_id:
+                    continue
+
+                user_tokens = department_tokens_lower(user.department)
+                if user_tokens and set(user_tokens).intersection(requester_tokens):
+                    if user.user_id not in seen_ids:
+                        seen_ids.add(user.user_id)
+                        recipients.append(user)
+
         return recipients
 
-    # Manager or HR: notify company-assigned admins only
-    elif role_value in (RoleEnum.MANAGER.value, RoleEnum.HR.value):
+    # Manager request: notify company HR and company-assigned Admins
+    elif role_value == RoleEnum.MANAGER.value:
+        recipients: List[User] = []
+        seen_ids = set()
+
+        # 1. Add company HR users
+        for hr in company_hrs:
+            if hr.user_id not in seen_ids:
+                seen_ids.add(hr.user_id)
+                recipients.append(hr)
+
+        # 2. Add company-assigned Admins
+        admins = assigned_company_admins(
+            db,
+            company_id,
+            exclude_user_id=requester.user_id,
+        )
+        for admin in admins:
+            if admin.user_id not in seen_ids:
+                seen_ids.add(admin.user_id)
+                recipients.append(admin)
+
+        return recipients
+
+    # HR request: notify company-assigned admins only
+    elif role_value == RoleEnum.HR.value:
         return assigned_company_admins(
             db,
             company_id,
             exclude_user_id=requester.user_id,
         )
-    
+
     # Admin or other roles: no notifications
     return []
 
