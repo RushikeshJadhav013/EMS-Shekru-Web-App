@@ -1969,10 +1969,10 @@ def download_attendance_csv(
     department: Optional[str] = Query(None, description="Filter by department"),
     date_range: Optional[str] = Query(None, description="Optional date range: 'last_6_months' or 'last_1_year'"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
     scope: dict = Depends(get_tenant_scope),
 ):
-    """Download attendance data as a CSV file with optional filters. Only accessible by Admin and HR."""
+    """Download attendance data as a CSV file with optional filters. Only accessible by Admin."""
     from app.crud.attendance_crud import export_attendance_csv
     
     # Parse dates if provided
@@ -2040,11 +2040,11 @@ def download_attendance_pdf(
     quarter: Optional[int] = Query(None, ge=1, le=4, description="Quarter (1-4) for quarterly period"),
     year: Optional[int] = Query(None, description="Year for monthly or quarterly period"),
     department: Optional[str] = Query(None, description="Filter by department"),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
     db: Session = Depends(get_db),
     scope: dict = Depends(get_tenant_scope),
 ):
-    """Download attendance data as a PDF file with optional filters. Only accessible by Admin and HR."""
+    """Download attendance data as a PDF file with optional filters. Only accessible by Admin."""
     from app.crud.attendance_crud import export_attendance_pdf
     
     # Determine date range: support monthly/quarterly/custom without changing existing logic.
