@@ -291,10 +291,10 @@ def get_all_wfh_requests(
             )
         
         if requester_user.role == RoleEnum.ADMIN:
-            # Admin can see all pending requests except Admins and self
+            # Admin only approves HR and Manager pending requests (matches table query and role hierarchy)
             pending_query = pending_query.filter(
-                User.role != RoleEnum.ADMIN,
-                User.user_id != requester_user.user_id
+                User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+                User.user_id != requester_user.user_id,
             )
         elif requester_user.role == RoleEnum.HR:
             # HR can see all pending requests except Admins, HRs, and self
@@ -424,6 +424,15 @@ def update_wfh_request(
     
     if not wfh_request:
         return None
+
+    new_start = start_date or wfh_request.start_date
+    new_end = end_date or wfh_request.end_date
+    if new_end < new_start:
+        return None
+
+    duration = (new_end.date() - new_start.date()).days + 1
+    if duration > 30:
+        return None
     
     if start_date:
         wfh_request.start_date = start_date
@@ -506,6 +515,32 @@ def check_overlapping_wfh(
     return query.first() is not None
 
 
+def check_overlapping_leave(
+    db: Session,
+    user_id: int,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    company_id: int | None = None,
+):
+    """
+    Check if there's an overlapping approved or pending Leave request.
+    Returns the Leave instance if overlap exists, else None.
+    """
+    from app.db.models.leave import Leave
+
+    query = db.query(Leave).filter(
+        Leave.user_id == user_id,
+        Leave.status.in_(["Pending", "Approved"]),
+        Leave.start_date <= end_date,
+        Leave.end_date >= start_date,
+    )
+    if company_id is not None:
+        query = query.filter(Leave.company_id == int(company_id))
+
+    return query.first()
+
+
 def get_pending_wfh_count_for_user(
     db: Session,
     requester_user: User,
@@ -520,7 +555,17 @@ def get_pending_wfh_count_for_user(
         WFHRequest.status == WFHStatus.PENDING.value
     )
     
-    if requester_user.role == RoleEnum.MANAGER:
+    if requester_user.role == RoleEnum.ADMIN:
+        query = query.join(User, WFHRequest.user_id == User.user_id).filter(
+            User.role.in_([RoleEnum.HR, RoleEnum.MANAGER]),
+            User.user_id != requester_user.user_id,
+        )
+    elif requester_user.role == RoleEnum.HR:
+        query = query.join(User, WFHRequest.user_id == User.user_id).filter(
+            User.role.notin_([RoleEnum.ADMIN, RoleEnum.HR]),
+            User.user_id != requester_user.user_id,
+        )
+    elif requester_user.role == RoleEnum.MANAGER:
         if requester_user.department:
             manager_tokens = department_tokens_lower(requester_user.department)
             if manager_tokens:
@@ -826,7 +871,7 @@ def create_wfh_deletion_notification(
     for recipient in recipients:
         notification = WFHNotification(
             user_id=recipient.user_id,
-            wfh_id=wfh_request.wfh_id,
+            wfh_id=None,
             notification_type="WFH Withdrawal",
             title=title,
             message=message,
@@ -883,18 +928,24 @@ def _wfh_notification_in_company(
     *,
     company_id: int,
 ) -> bool:
-    if notification.wfh_id is None:
-        return False
-    requester = (
-        db.query(User.user_id)
-        .join(WFHRequest, WFHRequest.user_id == User.user_id)
-        .filter(
-            WFHRequest.wfh_id == notification.wfh_id,
-            User.company_id == int(company_id),
+    if notification.wfh_id is not None:
+        requester = (
+            db.query(User.user_id)
+            .join(WFHRequest, WFHRequest.user_id == User.user_id)
+            .filter(
+                WFHRequest.wfh_id == notification.wfh_id,
+                User.company_id == int(company_id),
+            )
+            .first()
         )
+        if requester is not None:
+            return True
+    recipient = (
+        db.query(User.user_id)
+        .filter(User.user_id == notification.user_id, User.company_id == int(company_id))
         .first()
     )
-    return requester is not None
+    return recipient is not None
 
 
 def _wfh_notification_visible_to_user(
@@ -921,7 +972,8 @@ def _wfh_notification_visible_to_user(
 
     requester = _resolve_wfh_notification_requester(db, notification)
     if requester is None:
-        return False
+        # If wfh_id is None (withdrawal) and requester cannot be resolved, allow viewer
+        return True if notification.wfh_id is None else False
 
     return team_lead_can_manage_employee(
         db,
@@ -940,11 +992,10 @@ def _wfh_notifications_base_query(
 ):
     q = db.query(WFHNotification).filter(WFHNotification.user_id == user_id)
     if company_id is not None:
-        Requester = aliased(User)
+        Recipient = aliased(User)
         q = (
-            q.join(WFHRequest, WFHRequest.wfh_id == WFHNotification.wfh_id)
-            .join(Requester, Requester.user_id == WFHRequest.user_id)
-            .filter(Requester.company_id == int(company_id))
+            q.join(Recipient, Recipient.user_id == WFHNotification.user_id)
+            .filter(Recipient.company_id == int(company_id))
         )
     return q
 

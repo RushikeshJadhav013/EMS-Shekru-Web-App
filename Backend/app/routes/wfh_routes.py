@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, time, date
 from typing import Optional, Literal
+import math
 
 from app.db.database import get_db
 from app.db.models.user import User
@@ -34,6 +35,7 @@ from app.crud.wfh_crud import (
     update_wfh_request,
     delete_wfh_request,
     check_overlapping_wfh,
+    check_overlapping_leave,
     get_pending_wfh_count_for_user,
     create_wfh_request_notifications,
     update_wfh_request_notifications,
@@ -162,7 +164,7 @@ def submit_wfh_request(
             detail="WFH requests must be submitted at least 24 hours in advance and cannot start today or in the past.",
         )
     
-    # Check for overlapping requests
+    # Check for overlapping WFH requests
     if check_overlapping_wfh(
         db,
         current_user.user_id,
@@ -174,6 +176,22 @@ def submit_wfh_request(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You already have a pending or approved WFH request for the selected dates."
+        )
+
+    # Check for overlapping Leave requests
+    existing_leave = check_overlapping_leave(
+        db,
+        current_user.user_id,
+        start_dt,
+        end_dt,
+        company_id=scope["company_id"],
+    )
+    if existing_leave:
+        status_label = existing_leave.status.lower()
+        prefix = "An" if status_label == "approved" else "A"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{prefix} {status_label} leave request already exists for the selected dates."
         )
     
     # Create the request
@@ -211,13 +229,15 @@ def get_my_wfh_requests(
     date_range: Optional[Literal["current_month", "last_month", "last_3_months", "last_6_months", "last_1_year", "custom"]] = Query(None, description="Filter by date range"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
+    page: Optional[int] = Query(None, ge=1, description="Page number for pagination"),
+    page_size: Optional[int] = Query(None, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
     """
     Get all WFH requests submitted by the current user.
-    Supports filtering by status and date range.
+    Supports filtering by status, date range, and pagination.
     """
     _assert_current_in_scope(db, current_user=current_user, scope=scope)
     requests = get_user_wfh_requests(
@@ -293,6 +313,11 @@ def get_my_wfh_requests(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid date format. Use YYYY-MM-DD"
                 )
+            if date_end < date_start:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="start_date cannot be later than end_date"
+                )
         
         # Filter requests by date range (using start_date of the WFH request)
         if date_start and date_end:
@@ -300,6 +325,12 @@ def get_my_wfh_requests(
                 req for req in requests
                 if req.start_date and date_start <= req.start_date <= date_end
             ]
+    
+    # Apply pagination if requested
+    if page is not None or page_size is not None:
+        page_num = page or 1
+        page_size_val = page_size or 20
+        requests = requests[(page_num - 1) * page_size_val : page_num * page_size_val]
     
     return [
         WFHRequestOut(
@@ -419,11 +450,25 @@ def update_my_wfh_request(
                 detail="Updated WFH start date must be at least 24 hours in advance and cannot be today or in the past.",
             )
 
+    # Check date ordering, duration
+    check_start = start_dt or wfh_request.start_date
+    check_end = end_dt or wfh_request.end_date
+
+    if check_end < check_start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Updated end date cannot be earlier than start date."
+        )
+
+    duration = (check_end.date() - check_start.date()).days + 1
+    if duration > 30:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="WFH duration cannot exceed 30 days per request."
+        )
+
     # Check for overlapping requests if dates are being updated
     if start_dt or end_dt:
-        check_start = start_dt or wfh_request.start_date
-        check_end = end_dt or wfh_request.end_date
-        
         if check_overlapping_wfh(
             db,
             current_user.user_id,
@@ -436,6 +481,21 @@ def update_my_wfh_request(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="The updated dates overlap with another pending or approved WFH request."
+            )
+
+        existing_leave = check_overlapping_leave(
+            db,
+            current_user.user_id,
+            check_start,
+            check_end,
+            company_id=scope["company_id"],
+        )
+        if existing_leave:
+            status_label = existing_leave.status.lower()
+            prefix = "An" if status_label == "approved" else "A"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{prefix} {status_label} leave request already exists for the selected dates."
             )
     
     updated = update_wfh_request(
@@ -544,6 +604,8 @@ def get_all_requests(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) for custom range"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) for custom range"),
     role_filter: Optional[Literal["ADMIN", "HR", "MANAGER", "TEAM_LEAD", "EMPLOYEE"]] = Query(None, description="Filter by requester role"),
+    page: Optional[int] = Query(None, ge=1, description="Page number for pagination"),
+    page_size: Optional[int] = Query(None, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(RoleEnum.TEAM_LEAD, RoleEnum.MANAGER, RoleEnum.HR, RoleEnum.ADMIN)),
     scope: dict = Depends(get_tenant_scope),
@@ -558,7 +620,7 @@ def get_all_requests(
     - TeamLead: Can see Employee requests from same department(s) who share an active
       project with the TeamLead, excluding self
     
-    Supports filtering by status, department, date range, and role.
+    Supports filtering by status, department, date range, role, and pagination.
     """
     requests, pending_count = get_all_wfh_requests(
         db=db,
@@ -634,6 +696,11 @@ def get_all_requests(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid date format. Use YYYY-MM-DD"
                 )
+            if date_end < date_start:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="start_date cannot be later than end_date"
+                )
         
         # Filter requests by date range (using start_date of the WFH request)
         if date_start and date_end:
@@ -683,9 +750,23 @@ def get_all_requests(
 
             requests = [req for req in requests if req.get("role") == actual_role_value]
     
+    total = len(requests)
+    page_num = None
+    page_size_val = None
+    total_pages = None
+
+    if page is not None or page_size is not None:
+        page_num = page or 1
+        page_size_val = page_size or 20
+        total_pages = math.ceil(total / page_size_val) if total > 0 else 1
+        requests = requests[(page_num - 1) * page_size_val : page_num * page_size_val]
+
     return WFHRequestListResponse(
-        total=len(requests),
+        total=total,
         pending_count=pending_count,
+        page=page_num,
+        page_size=page_size_val,
+        total_pages=total_pages,
         requests=[
             WFHRequestWithUserOut(**req)
             for req in requests

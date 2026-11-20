@@ -3160,7 +3160,7 @@ def attendance_monthly_grid_report(
     year: int = Query(...),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
     scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_crud import build_monthly_attendance_grid
@@ -3169,9 +3169,7 @@ def attendance_monthly_grid_report(
         month,
         year,
         department,
-        current_user=current_user
-        if current_user.role in [RoleEnum.ADMIN, RoleEnum.HR, RoleEnum.TEAM_LEAD]
-        else None,
+        current_user=current_user,
         company_id=scope["company_id"],
         branch_id=scope.get("branch_id"),
     )
@@ -3184,7 +3182,7 @@ def download_monthly_grid_pdf(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
     scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_pdf
@@ -3217,7 +3215,7 @@ def download_monthly_detailed_grid_pdf(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
     scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_grid_export import export_monthly_detailed_pdf
@@ -3250,7 +3248,7 @@ def download_monthly_grid_csv(
     employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     status: Optional[str] = Query(None, description="Filter by status (Present/Absent/Leave/WFH)"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
     scope: dict = Depends(get_tenant_scope),
 ):
     from app.crud.attendance_grid_export import export_monthly_grid_csv
