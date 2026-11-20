@@ -239,13 +239,17 @@ class UserCreate(UserBase):
     @field_validator('employee_id')
     @classmethod
     def validate_employee_id(cls, v: str) -> str:
-        """Validate employee ID format"""
+        """Validate employee ID format: alphanumeric, no special characters, must not be only string."""
         if not v or not v.strip():
             raise ValueError('Employee ID cannot be empty')
         v = v.strip()
         # Remove spaces from employee ID
         if ' ' in v:
             raise ValueError('Employee ID cannot contain spaces')
+        if not re.fullmatch(r'^[a-zA-Z0-9]+$', v):
+            raise ValueError('Employee ID must contain only alphanumeric characters without special characters')
+        if not re.search(r'\d', v):
+            raise ValueError('Employee ID cannot contain only letters. It must contain at least one number')
         return v
 
 # class UserOut(UserBase):

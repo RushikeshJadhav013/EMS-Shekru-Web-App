@@ -93,6 +93,21 @@ def _user_for_task_report(db: Session, scope: dict, user_id: int | None) -> User
     )
 
 
+def _validate_report_period(month: int, year: int) -> None:
+    """Validate report year format (proper 4 digits) and reject future periods."""
+    if year < 2000 or year > 2099:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid year format: '{year}'. Year must be a valid 4-digit year (e.g., 2026).",
+        )
+    now = datetime.now()
+    if year > now.year or (year == now.year and month > now.month):
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot generate report for future date: {month:02d}/{year}. Please select the current or a past month.",
+        )
+
+
 @router.get("/leave")
 def export_leave_report(
     format: str = Query(..., description="Export format: csv or pdf"),
@@ -204,6 +219,8 @@ def get_employee_performance(
             status_code=http_status.HTTP_403_FORBIDDEN,
             detail="Only Admin and HR users can access the employee performance report.",
         )
+
+    _validate_report_period(month, year)
 
     try:
         # Calculate date range for the month
@@ -368,6 +385,8 @@ def get_department_metrics(
             detail="Only Admin and HR users can access the department metrics report.",
         )
 
+    _validate_report_period(month, year)
+
     try:
         # Calculate date range
         # Frontend sends 1-indexed month (1-12)
@@ -522,6 +541,8 @@ def get_executive_summary(
             status_code=http_status.HTTP_403_FORBIDDEN,
             detail="Only Admin and HR users can access the executive summary report.",
         )
+
+    _validate_report_period(month, year)
     
     # Calculate date range
     # Frontend sends 1-indexed month (1-12)
@@ -799,6 +820,19 @@ async def export_performance_report(
         # Parse dates
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
+
+        if start.year < 2000 or start.year > 2099 or end.year < 2000 or end.year > 2099:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid year format. Dates must have a valid 4-digit year (e.g., 2026).",
+            )
+
+        today = datetime.now().date()
+        if start.date() > today or end.date() > today:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Cannot export report for future dates. Please select current or past dates.",
+            )
 
         # Validate date range
         if end < start:
