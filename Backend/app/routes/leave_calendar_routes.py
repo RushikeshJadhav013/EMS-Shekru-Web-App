@@ -3,6 +3,9 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
 from app.dependencies import get_current_user, require_roles, get_tenant_scope
@@ -107,14 +110,17 @@ def remove_holiday(
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Holiday not found")
-    create_holiday_notifications(
-        db,
-        holiday=holiday,
-        actor_user_id=current_user.user_id,
-        action="deleted",
-        company_id=scope["company_id"],
-        branch_id=scope.get("branch_id"),
-    )
+    try:
+        create_holiday_notifications(
+            db,
+            holiday=holiday,
+            actor_user_id=current_user.user_id,
+            action="deleted",
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
+    except Exception as exc:
+        logger.error("Failed to create holiday deletion notifications: %s", exc)
     return {"message": "Holiday deleted"}
 
 

@@ -8,7 +8,7 @@ from app.db.models.leave_config import LeaveAllocationConfig
 from app.db.models.leave import Leave
 from app.db.models.user import User
 from app.utils.tenant_scope import assigned_company_admins
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 from datetime import timedelta
 
 
@@ -202,12 +202,13 @@ def create_holiday_notifications(
         message = f"{holiday.name} holiday details for {holiday_date} have been updated."
 
     notifications: list[CompanyHolidayNotification] = []
+    notif_holiday_id = None if action_key == "deleted" else holiday.id
     for user in users:
         if actor_user_id is not None and user.user_id == actor_user_id:
             continue
         notification = CompanyHolidayNotification(
             user_id=user.user_id,
-            holiday_id=holiday.id,
+            holiday_id=notif_holiday_id,
             notification_type=notification_type,
             title=title,
             message=message,
@@ -233,9 +234,14 @@ def list_holiday_notifications(
         CompanyHolidayNotification.user_id == user_id
     )
     if company_id is not None:
-        q = q.join(
+        q = q.outerjoin(
             CompanyHoliday, CompanyHoliday.id == CompanyHolidayNotification.holiday_id
-        ).filter(CompanyHoliday.company_id == int(company_id))
+        ).filter(
+            or_(
+                CompanyHoliday.company_id == int(company_id),
+                CompanyHolidayNotification.holiday_id.is_(None),
+            )
+        )
     return q.order_by(CompanyHolidayNotification.created_at.desc()).all()
 
 
@@ -251,9 +257,14 @@ def mark_holiday_notification_as_read(
         CompanyHolidayNotification.user_id == user_id,
     )
     if company_id is not None:
-        q = q.join(
+        q = q.outerjoin(
             CompanyHoliday, CompanyHoliday.id == CompanyHolidayNotification.holiday_id
-        ).filter(CompanyHoliday.company_id == int(company_id))
+        ).filter(
+            or_(
+                CompanyHoliday.company_id == int(company_id),
+                CompanyHolidayNotification.holiday_id.is_(None),
+            )
+        )
     notification = q.first()
     if not notification:
         return None
