@@ -139,10 +139,16 @@ def set_weekoff_rule(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     scope: dict = Depends(get_tenant_scope),
 ):
+    dept = (payload.department or "").strip()
+    if not dept:
+        raise HTTPException(status_code=400, detail="Department name cannot be empty.")
+    if not payload.days:
+        raise HTTPException(status_code=400, detail="At least one valid week-off day must be provided.")
+
     rule = upsert_weekoff_rule(
         db,
         company_id=int(scope["company_id"]),
-        department=payload.department,
+        department=dept,
         days=payload.days,
         created_by=current_user.user_id,
     )
