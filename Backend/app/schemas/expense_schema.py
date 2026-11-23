@@ -82,6 +82,17 @@ class ExpenseCreate(ExpenseBase):
 
         return data
 
+    @model_validator(mode="after")
+    def validate_invoice_date(self):
+        if (
+            self.invoice_date is not None
+            and self.invoice_date > self.expense_date.date()
+        ):
+            raise ValueError(
+                "Invoice date cannot be later than expense date. "
+                "Future dates are not allowed."
+            )
+        return self
 
 class ExpenseUpdate(BaseModel):
     category: ExpenseCategoryEnum | None = None
@@ -134,6 +145,19 @@ class ExpenseUpdate(BaseModel):
 
         return value
 
+    @model_validator(mode="after")
+    def validate_invoice_date(self):
+        if (
+            self.invoice_date is not None
+            and self.expense_date is not None
+            and self.invoice_date > self.expense_date.date()
+        ):
+            raise ValueError(
+                "Invoice date cannot be later than expense date. "
+                "Future dates are not allowed."
+            )
+        return self
+    
 class ExpenseOut(BaseModel):
     expense_id: int
     company_id: int
