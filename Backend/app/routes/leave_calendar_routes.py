@@ -11,6 +11,7 @@ from app.db.database import get_db
 from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.db.models.user import User
 from app.enums import RoleEnum
+from app.utils.timezone import today_ist
 
 from app.schemas.leave_calendar_schema import (
     CompanyHolidayCreate, CompanyHolidayOut,
@@ -36,6 +37,11 @@ def add_holiday(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     scope: dict = Depends(get_tenant_scope),
 ):
+    if payload.date < today_ist():
+        raise HTTPException(
+            status_code=400,
+            detail="Holiday date cannot be in the past. Please select today or a future date.",
+        )
     try:
         h = create_holiday(
             db,
@@ -55,6 +61,8 @@ def add_holiday(
             branch_id=scope.get("branch_id"),
         )
         return h
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import date, datetime
+from app.utils.timezone import today_ist
 
 
 class CompanyHolidayCreate(BaseModel):
@@ -8,6 +9,13 @@ class CompanyHolidayCreate(BaseModel):
     name: str = Field(..., min_length=1)
     description: Optional[str] = None
     is_recurring: Optional[bool] = True
+
+    @field_validator('date')
+    @classmethod
+    def validate_holiday_date_not_past(cls, v: date) -> date:
+        if v < today_ist():
+            raise ValueError("Holiday date cannot be in the past. Please select today or a future date.")
+        return v
 
 
 class CompanyHolidayOut(BaseModel):
