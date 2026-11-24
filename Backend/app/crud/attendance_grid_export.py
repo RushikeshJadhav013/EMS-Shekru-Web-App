@@ -397,6 +397,19 @@ def export_monthly_detailed_pdf(
                 attendance_map[str(d)] = Paragraph(f"P<br/><b>{lt}</b>", d_style)
                 continue
 
+            # check approved WFH
+            from app.db.models.wfh_request import WFHRequest, WFHStatus
+            wfh_filters = [
+                WFHRequest.user_id == user.user_id,
+                WFHRequest.status == WFHStatus.APPROVED.value,
+                WFHRequest.start_date <= day_end,
+                WFHRequest.end_date >= day_start,
+            ]
+            wfh_approved = db.query(WFHRequest).filter(*wfh_filters).first()
+            if wfh_approved:
+                attendance_map[str(d)] = Paragraph("P<br/><b>WFH</b>", d_style)
+                continue
+
             # attendance records
             day_filters = [
                 Attendance.user_id == user.user_id,

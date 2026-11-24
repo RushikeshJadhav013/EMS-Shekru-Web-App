@@ -134,6 +134,20 @@ def _enforce_leave_business_rules(
             ),
         )
 
+    # Check for overlapping WFH request
+    from app.db.models.wfh_request import WFHRequest, WFHStatus
+    overlapping_wfh = db.query(WFHRequest).filter(
+        WFHRequest.user_id == user.user_id,
+        WFHRequest.status.in_([WFHStatus.PENDING.value, WFHStatus.APPROVED.value]),
+        WFHRequest.start_date <= end_dt,
+        WFHRequest.end_date >= start_dt,
+    ).first()
+    if overlapping_wfh:
+        raise HTTPException(
+            status_code=400,
+            detail="You already have a pending or approved WFH request that conflicts with these dates.",
+        )
+
     if not is_unpaid_leave(leave_type):
         balances = get_leave_balance(db, user.user_id, company_id=company_id)
         eligible_types = {b["leave_type"] for b in balances}

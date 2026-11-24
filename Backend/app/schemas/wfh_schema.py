@@ -120,20 +120,25 @@ class WFHRequestUpdate(BaseModel):
         None, description="Updated reason"
     )
 
-    @field_validator('end_date')
-    @classmethod
-    def validate_end_date(cls, v: Optional[date], info) -> Optional[date]:
-        """Validate end date if provided"""
-        if v is not None and 'start_date' in info.data and info.data['start_date'] is not None:
-            if v < info.data['start_date']:
+    @model_validator(mode='after')
+    def validate_update_payload(self):
+        """Validate update date order if provided."""
+        if self.start_date is not None and self.end_date is not None:
+            if self.end_date < self.start_date:
                 raise ValueError('End date cannot be before start date')
-        return v
+            duration = (self.end_date - self.start_date).days + 1
+            if duration > 30:
+                raise ValueError('WFH duration cannot exceed 30 days per request')
+        return self
 
 
 class WFHRequestListResponse(BaseModel):
     """Schema for paginated list of WFH requests"""
     total: int = Field(..., description="Total number of requests")
     pending_count: int = Field(default=0, description="Number of pending requests")
+    page: Optional[int] = Field(default=None, description="Current page number")
+    page_size: Optional[int] = Field(default=None, description="Number of items per page")
+    total_pages: Optional[int] = Field(default=None, description="Total number of pages")
     requests: list[WFHRequestWithUserOut] = Field(..., description="List of WFH requests")
 
 

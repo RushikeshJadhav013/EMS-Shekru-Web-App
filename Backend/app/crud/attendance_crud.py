@@ -1,9 +1,8 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time, date
 from typing import Optional, Dict, Tuple, List
 from calendar import monthrange
-from datetime import date
 
 from app.db.models.attendance import Attendance
 from app.db.models.user import User  # Import User model
@@ -1008,6 +1007,14 @@ def build_monthly_attendance_grid(
                 User.role == RoleEnum.EMPLOYEE,
                 User.user_id.in_(peer_ids),
             )
+        else:
+            return {
+                "title": "Monthly Standard Attendance Report",
+                "duration": f"01/{month:02d}/{year} - {total_days}/{month:02d}/{year}",
+                "printed_on": date.today().strftime("%d/%m/%Y"),
+                "days": days,
+                "rows": [],
+            }
         # Other roles are not expected to call the grid download endpoints;
         # access is enforced at the router level (require_roles).
 
@@ -1047,6 +1054,51 @@ def build_monthly_attendance_grid(
             r.check_in.day: r for r in records if r.check_in
         }
 
+        # Query approved WFH and Leaves for user in this month
+        from app.db.models.wfh_request import WFHRequest, WFHStatus
+        from app.db.models.leave import Leave
+
+        month_start_dt = datetime.combine(date(year, month, 1), time.min)
+        month_end_dt = datetime.combine(date(year, month, total_days), time(23, 59, 59))
+
+        wfh_records = (
+            db.query(WFHRequest)
+            .filter(
+                WFHRequest.user_id == user.user_id,
+                WFHRequest.status == WFHStatus.APPROVED.value,
+                WFHRequest.start_date <= month_end_dt,
+                WFHRequest.end_date >= month_start_dt,
+            )
+            .all()
+        )
+        wfh_days = set()
+        for w in wfh_records:
+            w_start = max(date(year, month, 1), w.start_date.date())
+            w_end = min(date(year, month, total_days), w.end_date.date())
+            cur = w_start
+            while cur <= w_end:
+                wfh_days.add(cur.day)
+                cur += timedelta(days=1)
+
+        leave_records = (
+            db.query(Leave)
+            .filter(
+                Leave.user_id == user.user_id,
+                Leave.status == "Approved",
+                Leave.start_date <= month_end_dt,
+                Leave.end_date >= month_start_dt,
+            )
+            .all()
+        )
+        leave_days = set()
+        for l in leave_records:
+            l_start = max(date(year, month, 1), l.start_date.date())
+            l_end = min(date(year, month, total_days), l.end_date.date())
+            cur = l_start
+            while cur <= l_end:
+                leave_days.add(cur.day)
+                cur += timedelta(days=1)
+
         today = now_ist().date()
         for d in range(1, total_days + 1):
             day_date = date(year, month, d)
@@ -1056,7 +1108,15 @@ def build_monthly_attendance_grid(
             elif day_date.weekday() == 6:
                 attendance_map[str(d)] = "WO"
             elif d in record_by_day:
-                attendance_map[str(d)] = "P"
+                rec = record_by_day[d]
+                if getattr(rec, "work_location", None) == "work_from_home" or d in wfh_days:
+                    attendance_map[str(d)] = "WFH"
+                else:
+                    attendance_map[str(d)] = "P"
+            elif d in wfh_days:
+                attendance_map[str(d)] = "WFH"
+            elif d in leave_days:
+                attendance_map[str(d)] = "L"
             else:
                 attendance_map[str(d)] = "A"
 
