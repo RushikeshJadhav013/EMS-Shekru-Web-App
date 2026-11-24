@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 from typing import Optional, List, Literal
 from datetime import datetime, date, timedelta, timezone
 import re
+from pydantic import HttpUrl, StrictInt
 
 # Vacancy Schemas
 class VacancyBase(BaseModel):
@@ -17,6 +18,37 @@ class VacancyBase(BaseModel):
     salary_range: Optional[constr(max_length=100, strip_whitespace=True)] = Field(None, description="Salary range")
     status: Optional[Literal['open', 'closed', 'on-hold', 'filled']] = Field("open", description="Vacancy status")
     closing_date: Optional[datetime] = Field(None, description="Application closing date")
+    social_media_links: Optional[constr(max_length=1000)] = Field(
+        None, description="Social media posting links"
+    )
+
+    @field_validator(
+        'title',
+        'department',
+        'description',
+        'requirements',
+        'responsibilities',
+        'nice_to_have_skills',
+        'social_media_links',
+        'location',
+        'experience_required',
+        'salary_range',
+        'employment_type', 
+        mode='before',
+    )
+
+    @classmethod
+    def validate_empty_values(cls, v):
+        if v is None:
+            return v
+
+        if isinstance(v, str):
+            v = v.strip()
+
+            if not v:
+                raise ValueError('Empty or whitespace-only values are not allowed.')
+
+        return v
 
     @field_validator('title')
     @classmethod
@@ -57,13 +89,49 @@ class VacancyUpdate(BaseModel):
     employment_type: Optional[Literal['full-time', 'part-time', 'contract', 'internship', 'temporary']] = None
     experience_required: Optional[constr(max_length=100, strip_whitespace=True)] = None
     salary_range: Optional[constr(max_length=100, strip_whitespace=True)] = None
-    status: Optional[Literal['open', 'closed', 'on-hold', 'filled']] = None
+    status: Optional[Literal['open', 'closed', 'on-hold', 'filled']] = Field(None, description="Vacancy status")
     closing_date: Optional[datetime] = None
     posted_on_linkedin: Optional[bool] = None
     posted_on_naukri: Optional[bool] = None
     posted_on_indeed: Optional[bool] = None
     posted_on_other: Optional[bool] = None
     social_media_links: Optional[constr(max_length=1000)] = None
+
+    
+    @field_validator('closing_date')
+    @classmethod
+    def validate_closing_date(cls, v: Optional[datetime]) -> Optional[datetime]:
+        if v is not None and v.date() < date.today():
+            raise ValueError('Closing date cannot be in the past.')
+        return v
+
+    @field_validator(
+        'title',
+        'department',
+        'description',
+        'requirements',
+        'responsibilities',
+        'nice_to_have_skills',
+        'location',
+        'experience_required',
+        'salary_range',
+        'social_media_links',
+        'employment_type',
+        mode='before',
+    )
+    @classmethod
+    def validate_empty_values(cls, v):
+        if v is None:
+            return v
+
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                raise ValueError(
+                    'Empty or whitespace-only values are not allowed.'
+                )
+
+        return v
 
 class VacancyOut(VacancyBase):
     vacancy_id: int = Field(..., gt=0)
@@ -75,7 +143,6 @@ class VacancyOut(VacancyBase):
     posted_on_naukri: bool
     posted_on_indeed: bool
     posted_on_other: bool
-    social_media_links: Optional[str] = None
     candidates_count: Optional[int] = Field(0, ge=0)
 
     model_config = {"from_attributes": True}
@@ -90,7 +157,7 @@ class CandidateBase(BaseModel):
     experience_years: Optional[int] = Field(None, ge=0, le=70, description="Years of experience (0-70)")
     current_company: Optional[constr(max_length=255, strip_whitespace=True)] = Field(None, description="Current company")
     current_position: Optional[constr(max_length=255, strip_whitespace=True)] = Field(None, description="Current position")
-    expected_salary: Optional[constr(max_length=100, strip_whitespace=True)] = Field(None, description="Expected salary")
+    expected_salary: Optional[StrictInt] = Field(None,gt=0,description="Expected salary must be a positive integer")
     notice_period: Optional[constr(max_length=100, strip_whitespace=True)] = Field(None, description="Notice period")
     source: Optional[Literal['linkedin', 'naukri', 'indeed', 'referral', 'website', 'other']] = Field(None, description="Application source")
 
@@ -140,8 +207,28 @@ class CandidateBase(BaseModel):
                 raise ValueError('Experience years seems unreasonably high')
         return v
 
+    @field_validator('notice_period')
+    @classmethod
+    def validate_notice_period(cls, v: Optional[str]) -> Optional[str]:
+
+        if v is None:
+             return v
+
+        v = v.strip()
+
+        if not v:
+            raise ValueError("Notice period cannot be empty")
+
+        if re.match(r'^-\s*\d+', v):
+            raise ValueError("Notice period cannot be negative")
+
+        return v
+
 class CandidateCreate(CandidateBase):
-    resume_url: Optional[str] = Field(None, description="Resume file URL")
+    resume_url: Optional[HttpUrl] = Field(
+        None,
+        description="Valid resume file URL"
+    )
 
 class CandidateUpdate(BaseModel):
     name: Optional[constr(min_length=2, max_length=255, strip_whitespace=True)] = None
@@ -151,10 +238,25 @@ class CandidateUpdate(BaseModel):
     experience_years: Optional[int] = Field(None, ge=0, le=70)
     current_company: Optional[constr(max_length=255, strip_whitespace=True)] = None
     current_position: Optional[constr(max_length=255, strip_whitespace=True)] = None
-    expected_salary: Optional[constr(max_length=100, strip_whitespace=True)] = None
-    notice_period: Optional[constr(max_length=100, strip_whitespace=True)] = None
+    expected_salary: Optional[StrictInt] = Field(None,gt=0,description="Expected salary must be a positive integer")
+    notice_period: Optional[constr(max_length=100, strip_whitespace=True)] = Field(None,description="Notice period")
     status: Optional[Literal['applied', 'screening', 'interview', 'offered', 'rejected', 'hired', 'withdrawn']] = None
     source: Optional[Literal['linkedin', 'naukri', 'indeed', 'referral', 'website', 'other']] = None
+    resume_url: Optional[HttpUrl] = Field(
+    None,
+    description="Valid resume file URL"
+)
+
+    @field_validator('resume_url')
+    @classmethod
+    def validate_resume_url(cls, v):
+        if v is None:
+            return v
+
+        if not v.path.lower().endswith('.pdf'):
+            raise ValueError('Only PDF resume URLs are allowed.')
+
+        return v
 
     @field_validator('phone')
     @classmethod
@@ -172,6 +274,36 @@ class CandidateUpdate(BaseModel):
             raise ValueError('Phone number must start with 6, 7, 8, or 9')
 
         return digits
+    
+    @field_validator(
+        'cover_letter',
+        'current_company',
+        'current_position',
+        'notice_period',
+        mode='before'
+    )
+    @classmethod
+    def validate_empty_strings(cls, v):
+        if v is None:
+            return v
+
+        if isinstance(v, str):
+            v = v.strip()
+
+            if not v:
+                raise ValueError(
+                    'Empty or whitespace-only values are not allowed.'
+                )
+
+        return v
+
+    @field_validator('notice_period')
+    @classmethod
+    def validate_notice_period(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and re.match(r'^-\s*\d+', v):
+            raise ValueError('Notice period cannot be negative')
+
+        return v
 
 class CandidateOutNoInterview(CandidateBase):
     candidate_id: int = Field(..., gt=0)
@@ -305,14 +437,32 @@ class CandidateStatusUpdate(BaseModel):
 # Social Media Posting Schema
 class SocialMediaPost(BaseModel):
     platforms: List[Literal['linkedin', 'naukri', 'indeed', 'other']] = Field(..., min_length=1, description="Platforms to post on")
-    links: Optional[dict] = Field(None, description="Platform-specific links")
-
+    links: Optional[dict[str, HttpUrl]] = Field(None,description="Platform-specific valid URLs for each platform")
+    
     @field_validator('platforms')
     @classmethod
     def validate_platforms(cls, v: List[str]) -> List[str]:
-        """Validate platforms list"""
+        """Validate platforms and reject duplicate values."""
+
         if not v:
             raise ValueError('At least one platform must be selected')
-        # Remove duplicates
-        return list(set(v))
+
+        if len(v) != len(set(v)):
+            raise ValueError('Duplicate platforms are not allowed.')
+
+        return v
+
+    @model_validator(mode='after')
+    def validate_platform_links(self):
+        """Ensure links match the selected platforms."""
+
+        if self.links:
+            invalid_keys = set(self.links.keys()) - set(self.platforms)
+
+            if invalid_keys:
+                raise ValueError(
+                    f"Links provided for unselected platforms: {', '.join(invalid_keys)}"
+                )
+
+        return self
 

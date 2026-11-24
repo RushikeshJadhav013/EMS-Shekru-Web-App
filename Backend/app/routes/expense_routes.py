@@ -211,6 +211,7 @@ def get_expense_record(
 
 
 
+
 # UPDATE PENDING EXPENSE
 @router.put(
     "/{expense_id}",
@@ -220,11 +221,16 @@ def update_expense_record(
     expense: ExpenseUpdate,
     expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_roles(RoleEnum.ADMIN)
-    ),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
+    # Admin is not allowed to edit expenses
+    if current_user.role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin is not allowed to edit expenses.",
+        )
+
     update_data = expense.model_dump(exclude_unset=True)
 
     if not update_data:
@@ -234,6 +240,68 @@ def update_expense_record(
         )
 
     company_id = get_company_id(scope)
+
+    existing_expense = get_expense(
+        db=db,
+        expense_id=expense_id,
+        company_id=company_id,
+    )
+
+    if existing_expense is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found.",
+        )
+
+    # Allow users to edit only their own expenses
+    if existing_expense.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to edit another user's expense.",
+        )
+
+    # Validate effective expense and invoice dates
+    effective_expense_date = update_data.get(
+        "expense_date",
+        existing_expense.expense_date,
+    )
+
+    effective_invoice_date = update_data.get(
+        "invoice_date",
+        existing_expense.invoice_date,
+    )
+
+    if (
+        effective_invoice_date is not None
+        and effective_expense_date is not None
+        and effective_invoice_date > effective_expense_date.date()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Invoice date cannot be later than expense date. "
+                "Future dates are not allowed."
+            ),
+        )
+
+    updated = update_expense(
+        db=db,
+        expense_id=expense_id,
+        company_id=company_id,
+        **update_data,
+    )
+
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Expense not found, invalid category/sub-category "
+                "or vendor, or expense is not Pending."
+            ),
+        )
+
+    return updated
+
 
     # Get existing expense
     existing_expense = get_expense(
@@ -291,6 +359,7 @@ def update_expense_record(
     return updated
 
 
+
 # DELETE PENDING EXPENSE
 @router.delete(
     "/{expense_id}",
@@ -299,15 +368,42 @@ def update_expense_record(
 def delete_expense_record(
     expense_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_roles(RoleEnum.ADMIN)
-    ),
+    current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
 ):
+    # Admin is not allowed to delete expenses
+    if current_user.role == RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin is not allowed to delete expenses.",
+        )
+
+    company_id = get_company_id(scope)
+
+    # Get existing expense
+    existing_expense = get_expense(
+        db=db,
+        expense_id=expense_id,
+        company_id=company_id,
+    )
+
+    if existing_expense is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found.",
+        )
+
+    # Allow users to delete only their own expenses
+    if existing_expense.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to delete another user's expense.",
+        )
+
     result = delete_expense(
         db=db,
         expense_id=expense_id,
-        company_id=get_company_id(scope),
+        company_id=company_id,
     )
 
     if result == "not_found":

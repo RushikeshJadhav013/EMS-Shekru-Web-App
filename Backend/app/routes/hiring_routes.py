@@ -297,7 +297,6 @@ def create_candidate(
     expected_salary: Optional[str] = Form(None, description="Expected salary"),
     notice_period: Optional[str] = Form(None, description="Notice period"),
     source: Optional[str] = Form(None, description="Application source"),
-    resume_url: Optional[str] = Form(None, description="Resume URL (if already hosted)"),
     resume: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
@@ -317,7 +316,6 @@ def create_candidate(
         "expected_salary": expected_salary,
         "notice_period": notice_period,
         "source": source,
-        "resume_url": resume_url,
     }
 
     try:
@@ -367,17 +365,35 @@ def create_candidate(
         raise HTTPException(status_code=404, detail="Vacancy not found")
     
     # Handle resume upload
-    final_resume_url = candidate_obj.resume_url
+    final_resume_url = None
+
     if resume:
-        # Save resume file (simplified - in production, use proper file storage)
+        file_extension = os.path.splitext(resume.filename or "")[1].lower()
+
+        if file_extension != ".pdf":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid resume format. Only PDF files are allowed."
+            )
+
+        content = resume.file.read()
+
+        if not content.startswith(b"%PDF-"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid PDF document."
+            )
+
         upload_dir = "uploads/resumes"
         os.makedirs(upload_dir, exist_ok=True)
+
         file_path = f"{upload_dir}/{candidate_obj.vacancy_id}_{candidate_obj.email}_{resume.filename}"
+
         with open(file_path, "wb") as buffer:
-            content = resume.file.read()
             buffer.write(content)
+
         final_resume_url = f"/{file_path}"
-    
+
     db_candidate = Candidate(
         **candidate_obj.model_dump(exclude={"resume_url"}),
         resume_url=final_resume_url,
@@ -387,7 +403,7 @@ def create_candidate(
     db.add(db_candidate)
     db.commit()
     db.refresh(db_candidate)
-    
+
     result = CandidateOutNoInterview.model_validate(db_candidate)
     result.vacancy_title = vacancy.title
     result.vacancy_department = vacancy.department
@@ -540,47 +556,75 @@ def get_candidate_resume(
 @router.put("/candidates/{candidate_id}/resume", response_model=CandidateOutNoInterview)
 def update_candidate_resume(
     candidate_id: int,
-    resume: Optional[UploadFile] = File(None),
-    resume_url: Optional[str] = Form(None, description="External resume URL"),
+    resume: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
     db: Session = Depends(get_db)
 ):
-    """Update a candidate's resume, either via file upload or external URL."""
-    candidate = _candidate_scope_query(db, scope).filter(Candidate.candidate_id == candidate_id).first()
-    if not candidate:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    vacancy = _vacancy_scope_query(db, scope).filter(Vacancy.vacancy_id == candidate.vacancy_id).first()
+    """Update a candidate's resume. Only PDF files are allowed."""
 
-    # Ensure exactly one of resume or resume_url is provided
-    if (resume is None and not resume_url) or (resume is not None and resume_url):
+    candidate = _candidate_scope_query(db, scope).filter(
+        Candidate.candidate_id == candidate_id
+    ).first()
+
+    if not candidate:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide exactly one of 'resume' file or 'resume_url'"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate not found"
         )
 
-    final_resume_url = resume_url
+    vacancy = _vacancy_scope_query(db, scope).filter(
+        Vacancy.vacancy_id == candidate.vacancy_id
+    ).first()
 
-    # Handle resume file upload if provided
-    if resume is not None:
-        upload_dir = "uploads/resumes"
-        os.makedirs(upload_dir, exist_ok=True)
-        file_path = f"{upload_dir}/{candidate.vacancy_id}_{candidate.email}_{resume.filename}"
-        with open(file_path, "wb") as buffer:
-            content = resume.file.read()
-            buffer.write(content)
-        final_resume_url = f"/{file_path}"
+    # Validate resume filename
+    filename = resume.filename or ""
 
-    candidate.resume_url = final_resume_url
+    if "://" in filename or filename.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid resume URL. Please upload a PDF file."
+        )
+
+    # Validate file extension
+    file_extension = os.path.splitext(resume.filename or "")[1].lower()
+
+    if file_extension != ".pdf":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid resume format. Only PDF files are allowed."
+        )
+
+    # Validate actual PDF content
+    content = resume.file.read()
+
+    if not content.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid PDF document."
+        )
+
+    # Save resume
+    upload_dir = "uploads/resumes"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    file_path = f"{upload_dir}/{candidate.vacancy_id}_{candidate.email}_{resume.filename}"
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
+
+    candidate.resume_url = f"/{file_path}"
     candidate.updated_at = datetime.now()
+
     db.commit()
     db.refresh(candidate)
 
     result = CandidateOutNoInterview.model_validate(candidate)
+
     if vacancy:
         result.vacancy_title = vacancy.title
         result.vacancy_department = vacancy.department
-    
+
     return result
 
 # @router.post("/candidates/{candidate_id}/shortlist", response_model=CandidateOut)
@@ -913,8 +957,11 @@ def update_candidate(
             )
 
     for field, value in update_data.items():
+        if field == "resume_url" and value is not None:
+            value = str(value)
+
         setattr(candidate, field, value)
-    
+
     candidate.updated_at = datetime.now()
     db.commit()
     db.refresh(candidate)
