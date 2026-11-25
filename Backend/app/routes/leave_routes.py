@@ -26,6 +26,7 @@ from app.crud.leave_crud import (
     list_leave_notifications,
     mark_leave_notification_as_read,
     get_leave_balance,
+    get_admin_leave_history,
 )
 from app.crud.leave_config_crud import (
     get_active_leave_config,
@@ -42,6 +43,7 @@ from app.schemas.leave_schema import (
     LeaveNotificationOut,
     LeaveUpdate,
     LeaveBalanceResponse,
+    AdminLeaveHistoryResponse,
 )
 from app.schemas.leave_config_schema import (
     LeaveAllocationConfigCreate,
@@ -541,6 +543,20 @@ def update_leave_request(
     update_leave_request_notifications(db, updated_leave, user)
     return updated_leave
 
+@router.get("/admin/history", response_model=AdminLeaveHistoryResponse)
+def admin_leave_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(RoleEnum.ADMIN)),
+    scope: dict = Depends(get_tenant_scope),
+):
+   
+    employees = get_admin_leave_history(
+        db,
+        company_id=int(scope["company_id"]),
+        branch_id=scope.get("branch_id"),
+    )
+
+    return {"employees": employees}
 
 @router.delete("/{leave_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_leave_request(

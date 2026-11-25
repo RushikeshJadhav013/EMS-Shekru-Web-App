@@ -642,6 +642,80 @@ def get_leave_balance(db: Session, user_id: int, company_id: int | None = None):
     return list(balances.values())
 
 
+def get_admin_leave_history(
+    db: Session,
+    company_id: int,
+    branch_id: Optional[int] = None,
+):
+    """
+    Get leave balances for all active non-admin employees
+    in the current company and optional branch.
+    """
+
+    query = db.query(User).filter(
+        User.company_id == int(company_id),
+        User.is_active.is_(True),
+        User.role != RoleEnum.ADMIN,
+    )
+
+    if branch_id is not None:
+        query = query.filter(User.branch_id == int(branch_id))
+
+    employees = query.order_by(User.name.asc()).all()
+
+    result = []
+
+    for employee in employees:
+        balances = get_leave_balance(
+            db,
+            employee.user_id,
+            company_id=company_id,
+        )
+
+        # Calculate approved unpaid leave separately.
+        unpaid_leaves = (
+            db.query(Leave)
+            .filter(
+                Leave.user_id == employee.user_id,
+                Leave.company_id == int(company_id),
+                func.lower(Leave.status) == "approved",
+                func.lower(Leave.leave_type) == "unpaid",
+            )
+            .all()
+        )
+
+        unpaid_used = sum(
+            int(compute_chargeable_days(
+                leave.start_date.date() if isinstance(leave.start_date, datetime) else leave.start_date,
+                leave.end_date.date() if isinstance(leave.end_date, datetime) else leave.end_date,
+                duration_days=_duration_days_value(leave),
+            ))
+            for leave in unpaid_leaves
+        )
+
+        balances.append({
+            "leave_type": "unpaid",
+            "allocated": 0,
+            "used": unpaid_used,
+            "remaining": 0,
+        })
+
+        result.append({
+            "user_id": employee.user_id,
+            "employee_id": employee.employee_id or "",
+            "name": employee.name,
+            "department": employee.department,
+            "role": (
+                employee.role.value
+                if hasattr(employee.role, "value")
+                else str(employee.role)
+            ) if employee.role else None,
+            "balances": balances,
+        })
+
+    return result
+
+
 def list_leave_by_period(
     db: Session, 
     user_id: int, 

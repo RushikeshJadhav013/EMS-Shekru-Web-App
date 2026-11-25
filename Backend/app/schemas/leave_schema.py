@@ -193,12 +193,17 @@ class LeaveBalanceItem(BaseModel):
     def validate_remaining(cls, v: int, info) -> int:
         """Validate remaining is consistent with allocated and used"""
         if 'allocated' in info.data and 'used' in info.data:
-            expected_remaining = info.data["allocated"] - info.data["used"]
+            expected_remaining = max(
+                info.data["allocated"] - info.data["used"],
+                0
+            )
+
             if v != expected_remaining:
                 raise ValueError(
                     f'Remaining days ({v}) does not match allocated ({info.data["allocated"]}) '
                     f'- used ({info.data["used"]})'
                 )
+
         return v
 
 
@@ -229,3 +234,15 @@ class LeaveNotificationOut(BaseModel):
     def formatted_created_at(self) -> str:
         """Formatted date and 12-hour time (e.g. '04 Nov 2026, 03:30 PM')"""
         return self.created_at.strftime("%d %b %Y, %I:%M %p") if self.created_at else ""
+
+class AdminEmployeeLeaveBalance(BaseModel):
+    user_id: int
+    employee_id: str
+    name: str
+    department: Optional[str] = None
+    role: Optional[str] = None
+    balances: list[LeaveBalanceItem]
+
+
+class AdminLeaveHistoryResponse(BaseModel):
+    employees: list[AdminEmployeeLeaveBalance]
