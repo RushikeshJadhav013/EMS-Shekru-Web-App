@@ -1,9 +1,28 @@
 import json
+import csv
+
 from datetime import datetime, date, timedelta
+from io import BytesIO, StringIO
+from typing import Optional
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
+
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, joinedload
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Table,
+    TableStyle,
+    Paragraph,
+    Spacer,
+)
 
 from app.db.database import get_db
 from app.crud.task_crud import (
@@ -414,6 +433,109 @@ def _serialize_task_notification(notification: TaskNotificationOut | Task):
         created_at=notification.created_at,
     )
 
+
+def _get_admin_export_tasks(
+    db: Session,
+    scope: dict,
+    *,
+    status_filter: str | None = None,
+    priority: str | None = None,
+    assigned_to: int | None = None,
+    assigned_by: int | None = None,
+    assignee_role: RoleEnum | None = None,
+    created_from: date | None = None,
+    created_to: date | None = None,
+    due_from: date | None = None,
+    due_to: date | None = None,
+    project_id: int | None = None,
+    search: str | None = None,
+):
+    TaskAssigner = aliased(User)
+    TaskAssignee = aliased(User)
+
+    q = db.query(Task).filter(
+        Task.company_id == int(scope["company_id"])
+    )
+
+    q = (
+        q.outerjoin(TaskAssigner, Task.assigned_by == TaskAssigner.user_id)
+        .outerjoin(TaskAssignee, Task.assigned_to == TaskAssignee.user_id)
+    )
+
+    branch_id = scope.get("branch_id")
+
+    if branch_id is not None:
+        q = q.filter(
+            TaskAssigner.branch_id == int(branch_id),
+            TaskAssignee.branch_id == int(branch_id),
+        )
+
+    q = q.options(
+        joinedload(Task.assigned_by_user),
+        joinedload(Task.assigned_to_user),
+        joinedload(Task.project),
+    )
+
+    if status_filter:
+        q = q.filter(Task.status == status_filter)
+
+    if priority:
+        q = q.filter(Task.priority == priority)
+
+    if assigned_to is not None:
+        q = q.filter(Task.assigned_to == assigned_to)
+
+    if assigned_by is not None:
+        q = q.filter(Task.assigned_by == assigned_by)
+
+    if assignee_role is not None:
+        q = q.filter(TaskAssignee.role == assignee_role)
+
+    if created_from:
+        q = q.filter(
+            Task.created_at >= datetime.combine(
+                created_from, datetime.min.time()
+            )
+        )
+
+    if created_to:
+        q = q.filter(
+            Task.created_at < datetime.combine(
+                created_to + timedelta(days=1),
+                datetime.min.time(),
+            )
+        )
+
+    if due_from:
+        q = q.filter(
+            Task.due_date >= datetime.combine(
+                due_from, datetime.min.time()
+            )
+        )
+
+    if due_to:
+        q = q.filter(
+            Task.due_date < datetime.combine(
+                due_to + timedelta(days=1),
+                datetime.min.time(),
+            )
+        )
+
+    if project_id is not None:
+        q = q.filter(Task.project_id == project_id)
+
+    if search:
+        search_value = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Task.title.ilike(search_value),
+                Task.description.ilike(search_value),
+                TaskAssigner.name.ilike(search_value),
+                TaskAssignee.name.ilike(search_value),
+            )
+        )
+
+    return q.order_by(Task.created_at.desc()).all()
 
 @router.post("/", response_model=TaskOut)
 def assign_task(
@@ -1422,3 +1544,258 @@ def get_deadline_warnings(
             })
     
     return {"warnings": warnings}
+
+
+@router.get("/export/pdf")
+def export_tasks_pdf(
+    status_filter: Optional[str] = None,
+    priority: Optional[str] = None,
+    assigned_to: Optional[int] = None,
+    assigned_by: Optional[int] = None,
+    assignee_role: Optional[RoleEnum] = None,
+    created_from: Optional[date] = None,
+    created_to: Optional[date] = None,
+    due_from: Optional[date] = None,
+    due_to: Optional[date] = None,
+    project_id: Optional[int] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    # Admin-only access
+    if user.role != RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Admin can export all tasks"
+        )
+
+    if created_from and created_to and created_from > created_to:
+        raise HTTPException(400, "created_from cannot be after created_to")
+
+    if due_from and due_to and due_from > due_to:
+        raise HTTPException(400, "due_from cannot be after due_to")
+
+    tasks = _get_admin_export_tasks(
+        db,
+        scope,
+        status_filter=status_filter,
+        priority=priority,
+        assigned_to=assigned_to,
+        assigned_by=assigned_by,
+        assignee_role=assignee_role,
+        created_from=created_from,
+        created_to=created_to,
+        due_from=due_from,
+        due_to=due_to,
+        project_id=project_id,
+        search=search,
+    )
+
+    buffer = BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=25,
+        bottomMargin=25,
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "TaskTitle",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontSize=16,
+    )
+
+    cell_style = ParagraphStyle(
+        "TaskCell",
+        parent=styles["Normal"],
+        fontSize=6,
+        leading=8,
+        wordWrap="CJK",
+    )
+
+    elements = [
+        Paragraph("EMS - Complete Task Report", title_style),
+        Spacer(1, 12),
+        Paragraph(f"Total Tasks: {len(tasks)}", styles["Normal"]),
+        Spacer(1, 10),
+    ]
+
+    headers = [
+        "Task ID", "Title", "Description", "Status",
+        "Priority", "Start Date", "Due Date",
+        "Created At", "Assigned By", "Assigner Role",
+        "Assigned To", "Assignee Role", "Project ID",
+    ]
+
+    data = [headers]
+
+    for task in tasks:
+        assigner = task.assigned_by_user
+        assignee = task.assigned_to_user
+
+        row = [
+            task.task_id,
+            task.title or "",
+            task.description or "",
+            task.status.value if hasattr(task.status, "value") else str(task.status or ""),
+            task.priority or "",
+            str(task.start_date.date()) if task.start_date else "",
+            str(task.due_date.date()) if task.due_date else "",
+            str(task.created_at or ""),
+            assigner.name if assigner else "",
+            str(assigner.role.value if hasattr(assigner.role, "value") else assigner.role) if assigner else "",
+            assignee.name if assignee else "",
+            str(assignee.role.value if hasattr(assignee.role, "value") else assignee.role) if assignee else "",
+            task.project_id or "",
+        ]
+
+        data.append([
+            Paragraph(escape(str(value)), cell_style)
+            for value in row
+        ])
+
+    table = Table(
+        data,
+        repeatRows=1,
+        colWidths=[
+             35, 70, 95, 48, 40, 50, 50,
+                75, 65, 55, 65, 55, 40
+        ],
+    )
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263B5E")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+         [colors.white, colors.HexColor("#F1F4F8")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="EMS_Tasks_Report.pdf"'
+        },
+    )
+
+
+
+@router.get("/export/csv")
+def export_tasks_csv(
+    status_filter: Optional[str] = None,
+    priority: Optional[str] = None,
+    assigned_to: Optional[int] = None,
+    assigned_by: Optional[int] = None,
+    assignee_role: Optional[RoleEnum] = None,
+    created_from: Optional[date] = None,
+    created_to: Optional[date] = None,
+    due_from: Optional[date] = None,
+    due_to: Optional[date] = None,
+    project_id: Optional[int] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    scope: dict = Depends(get_tenant_scope),
+):
+    # Admin-only access
+    if user.role != RoleEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Admin can export all tasks"
+        )
+
+    if created_from and created_to and created_from > created_to:
+        raise HTTPException(400, "created_from cannot be after created_to")
+
+    if due_from and due_to and due_from > due_to:
+        raise HTTPException(400, "due_from cannot be after due_to")
+
+    tasks = _get_admin_export_tasks(
+        db,
+        scope,
+        status_filter=status_filter,
+        priority=priority,
+        assigned_to=assigned_to,
+        assigned_by=assigned_by,
+        assignee_role=assignee_role,
+        created_from=created_from,
+        created_to=created_to,
+        due_from=due_from,
+        due_to=due_to,
+        project_id=project_id,
+        search=search,
+    )
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Task ID",
+        "Title",
+        "Description",
+        "Status",
+        "Priority",
+        "Start Date",
+        "Due Date",
+        "Created At",
+        "Assigned By ID",
+        "Assigned By Name",
+        "Assigned By Role",
+        "Assigned To ID",
+        "Assigned To Name",
+        "Assigned To Role",
+        "Project ID",
+    ])
+
+    for task in tasks:
+        assigner = task.assigned_by_user
+        assignee = task.assigned_to_user
+
+        writer.writerow([
+            task.task_id,
+            task.title,
+            task.description or "",
+            task.status.value if hasattr(task.status, "value") else task.status,
+            task.priority,
+            task.start_date.date() if task.start_date else "",
+            task.due_date.date() if task.due_date else "",
+            task.created_at or "",
+            task.assigned_by,
+            assigner.name if assigner else "",
+            assigner.role.value if assigner and hasattr(assigner.role, "value") else (assigner.role if assigner else ""),
+            task.assigned_to,
+            assignee.name if assignee else "",
+            assignee.role.value if assignee and hasattr(assignee.role, "value") else (assignee.role if assignee else ""),
+            task.project_id or "",
+        ])
+
+    output.seek(0)
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="EMS_Tasks_Report.csv"'
+        },
+    )
+
