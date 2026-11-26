@@ -95,6 +95,27 @@ def _build_user_create(**data) -> UserCreate:
         ) from None
 
 
+def _validate_employee_id_format(employee_id: Optional[str]) -> str:
+    """Validate employee ID format: alphanumeric only (no special chars or spaces), not string-only (must contain numbers)."""
+    if not employee_id or not str(employee_id).strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Employee ID cannot be empty",
+        )
+    val = str(employee_id).strip()
+    if ' ' in val or not re.fullmatch(r'^[a-zA-Z0-9]+$', val):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Employee ID must contain only alphanumeric characters without special characters or spaces",
+        )
+    if not re.search(r'\d', val):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Employee ID cannot contain only letters. It must contain at least one number",
+        )
+    return val
+
+
 def _sanitize_user_record(user: User) -> dict:
     data = UserOut.model_validate(user).model_dump()
     if data.get("profile_photo") and not _profile_photo_exists(data["profile_photo"]):
@@ -138,7 +159,7 @@ def register_employee(
 ):
 
     email = email.strip().lower()
-    employee_id = employee_id.strip()
+    employee_id = _validate_employee_id_format(employee_id)
     pan_card = pan_card.strip().upper() if pan_card else None
     aadhar_card = aadhar_card.strip() if aadhar_card else None
     
@@ -582,13 +603,13 @@ def update_employee(
             )
 
     # Check for duplicate employee_id (excluding current user)
-    if employee_id and employee_id.strip():
-        existing_employee = get_user_by_employee_id(db, employee_id.strip())
-        if existing_employee and existing_employee.user_id != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Employee already exists with ID '{employee_id}'",
-            )
+    employee_id = _validate_employee_id_format(employee_id)
+    existing_employee = get_user_by_employee_id(db, employee_id)
+    if existing_employee and existing_employee.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Employee already exists with ID '{employee_id}'",
+        )
 
     # Validate phone format and check for duplicate phone number (excluding current employee)
     digits = None

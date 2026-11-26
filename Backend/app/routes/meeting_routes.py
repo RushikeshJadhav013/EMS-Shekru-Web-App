@@ -198,9 +198,32 @@ def create_meeting(
     """Create a meeting with an existing Google Meet / Zoom URL."""
     _assert_current_in_scope(db, current_user, scope)
     _validate_meeting_times(payload.start_time, payload.end_time)
+
+    # Validate title
+    if not payload.title or not payload.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Meeting title cannot be empty or whitespace only.",
+        )
+
+    # Validate description
+    if not payload.description or not payload.description.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Meeting description cannot be empty or whitespace only.",
+        )
+
+    # Validate participant_ids
+    user_ids = list({uid for uid in payload.participant_ids if uid is not None and uid > 0})
+    if not user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one valid participant is required to create a meeting.",
+        )
+
     meeting = Meeting(
-        title=payload.title,
-        description=payload.description,
+        title=payload.title.strip(),
+        description=payload.description.strip(),
         start_time=payload.start_time,
         end_time=payload.end_time,
         meeting_url=str(payload.meeting_url),
@@ -211,11 +234,9 @@ def create_meeting(
     db.add(meeting)
     db.flush()
 
-    if payload.participant_ids:
-        user_ids = list({uid for uid in payload.participant_ids if uid is not None})
-        _validate_participant_ids(db, user_ids, scope, current_user)
-        for uid in user_ids:
-            db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
+    _validate_participant_ids(db, user_ids, scope, current_user)
+    for uid in user_ids:
+        db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
 
     db.commit()
     db.refresh(meeting)
@@ -299,6 +320,22 @@ def update_meeting(
     data = payload.model_dump(exclude_unset=True)
     participant_ids = data.pop("participant_ids", None)
 
+    if "title" in data:
+        if not data["title"] or not str(data["title"]).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Meeting title cannot be empty or whitespace only.",
+            )
+        data["title"] = str(data["title"]).strip()
+
+    if "description" in data:
+        if not data["description"] or not str(data["description"]).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Meeting description cannot be empty or whitespace only.",
+            )
+        data["description"] = str(data["description"]).strip()
+
     effective_start_time = data.get("start_time", meeting.start_time)
     effective_end_time = data.get("end_time", meeting.end_time)
     _validate_meeting_times(effective_start_time, effective_end_time)
@@ -310,15 +347,19 @@ def update_meeting(
             setattr(meeting, field, value)
 
     if participant_ids is not None:
+        user_ids = list({uid for uid in participant_ids if uid is not None and uid > 0})
+        if not user_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one valid participant is required when updating participants.",
+            )
         db.query(MeetingParticipant).filter(
             MeetingParticipant.meeting_id == meeting.id
         ).delete()
 
-        user_ids = list({uid for uid in participant_ids if uid is not None})
-        if user_ids:
-            _validate_participant_ids(db, user_ids, scope, current_user)
-            for uid in user_ids:
-                db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
+        _validate_participant_ids(db, user_ids, scope, current_user)
+        for uid in user_ids:
+            db.add(MeetingParticipant(meeting_id=meeting.id, user_id=uid))
 
     db.commit()
     db.refresh(meeting)
@@ -357,9 +398,12 @@ def add_meeting_participants(
             detail="Only the meeting creator can add participants",
         )
 
-    user_ids = list({uid for uid in payload.user_ids if uid is not None})
+    user_ids = list({uid for uid in payload.user_ids if uid is not None and uid > 0})
     if not user_ids:
-        return []
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one valid user ID is required to add participants.",
+        )
 
     _validate_participant_ids(db, user_ids, scope, current_user)
 

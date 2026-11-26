@@ -3,11 +3,15 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
 from app.dependencies import get_current_user, require_roles, get_tenant_scope
 from app.db.models.user import User
 from app.enums import RoleEnum
+from app.utils.timezone import today_ist
 
 from app.schemas.leave_calendar_schema import (
     CompanyHolidayCreate, CompanyHolidayOut,
@@ -33,6 +37,11 @@ def add_holiday(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     scope: dict = Depends(get_tenant_scope),
 ):
+    if payload.date < today_ist():
+        raise HTTPException(
+            status_code=400,
+            detail="Holiday date cannot be in the past. Please select today or a future date.",
+        )
     try:
         h = create_holiday(
             db,
@@ -52,6 +61,8 @@ def add_holiday(
             branch_id=scope.get("branch_id"),
         )
         return h
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -107,14 +118,17 @@ def remove_holiday(
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Holiday not found")
-    create_holiday_notifications(
-        db,
-        holiday=holiday,
-        actor_user_id=current_user.user_id,
-        action="deleted",
-        company_id=scope["company_id"],
-        branch_id=scope.get("branch_id"),
-    )
+    try:
+        create_holiday_notifications(
+            db,
+            holiday=holiday,
+            actor_user_id=current_user.user_id,
+            action="deleted",
+            company_id=scope["company_id"],
+            branch_id=scope.get("branch_id"),
+        )
+    except Exception as exc:
+        logger.error("Failed to create holiday deletion notifications: %s", exc)
     return {"message": "Holiday deleted"}
 
 
@@ -125,10 +139,16 @@ def set_weekoff_rule(
     current_user: User = Depends(require_roles(RoleEnum.ADMIN, RoleEnum.HR)),
     scope: dict = Depends(get_tenant_scope),
 ):
+    dept = (payload.department or "").strip()
+    if not dept:
+        raise HTTPException(status_code=400, detail="Department name cannot be empty.")
+    if not payload.days:
+        raise HTTPException(status_code=400, detail="At least one valid week-off day must be provided.")
+
     rule = upsert_weekoff_rule(
         db,
         company_id=int(scope["company_id"]),
-        department=payload.department,
+        department=dept,
         days=payload.days,
         created_by=current_user.user_id,
     )

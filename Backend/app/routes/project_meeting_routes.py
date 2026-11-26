@@ -14,10 +14,10 @@ from app.enums import RoleEnum
 from app.utils.timezone import now_ist
 from app.utils.tenant_scope import user_in_tenant_scope_clauses
 from app.schemas.meeting_schema import (
-    MeetingCreate,
     MeetingOut,
     MeetingParticipantOut,
     MeetingUpdate,
+    ProjectMeetingCreate,
 )
 from app.crud.meeting_notifications_crud import create_meeting_notifications
 
@@ -231,7 +231,7 @@ def _serialize_meeting(db: Session, meeting: Meeting) -> MeetingOut:
 @router.post("/", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
 def create_project_meeting(
     project_id: int,
-    payload: MeetingCreate,
+    payload: ProjectMeetingCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     scope: dict = Depends(get_tenant_scope),
@@ -248,9 +248,22 @@ def create_project_meeting(
     _ensure_project_access(db, project_id, current_user)
 
     _validate_meeting_times(payload.start_time, payload.end_time)
+
+    if not payload.title or not payload.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Meeting title cannot be empty or whitespace only.",
+        )
+
+    if not payload.description or not payload.description.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Meeting description cannot be empty or whitespace only.",
+        )
+
     meeting = Meeting(
-        title=payload.title,
-        description=payload.description,
+        title=payload.title.strip(),
+        description=payload.description.strip(),
         start_time=payload.start_time,
         end_time=payload.end_time,
         meeting_url=str(payload.meeting_url),
